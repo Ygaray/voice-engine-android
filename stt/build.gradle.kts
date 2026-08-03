@@ -90,6 +90,9 @@ dependencies {
     // these exist; it can only be answered by the real recognizer service on the real device.
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.runner)
+    // GrantPermissionRule — the probe runs unattended, so it grants RECORD_AUDIO itself rather than
+    // relying on a host Activity (D-11) that an instrumented run does not have.
+    androidTestImplementation(libs.androidx.test.rules)
 }
 
 // JitPack android-example publishing form. `from(components["release"])` MUST be inside
