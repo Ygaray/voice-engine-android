@@ -1,0 +1,15 @@
+# local.properties carries an absolute SDK path from whoever last opened the project. `android/` is
+# subtree-split into a PUBLIC mirror (D-22), so this file must be ignored from the FIRST commit
+# (D-23, threat T-05-06). NOTE: the sibling backup-engine commits its local.properties — that is an
+# anti-pattern for a public mirror and is deliberately not copied here.
+local.properties
+
+# Gradle / build outputs
+.gradle/
+build/
+.kotlin/
+captures/
+
+# IDE
+.idea/
+*.iml

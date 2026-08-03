@@ -1,0 +1,8 @@
+jdk:
+  - openjdk17
+install:
+  # The module path here MUST match a module settings.gradle.kts actually includes — a mismatch is an
+  # unrecoverable failure discovered only after the mirror tag is immutable (D-23, Pitfall 8).
+  # Name the library module ONLY. The reference host app that plan 07 adds is outside the
+  # published module set (D-23) and must never appear in this install list.
+  - ./gradlew :stt:publishReleasePublicationToMavenLocal

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    :stt library manifest. Under AGP 8 the namespace comes from build.gradle.kts, so no package
+    attribute is needed here. There is no <application> element — this library contributes no
+    components, only a permission declaration and a package-visibility query.
+
+    RECORD_AUDIO is declared here so it merges into every consumer. D-11: the library only CHECKS
+    the permission (Context.checkSelfPermission); the HOST app requests it, because a library has
+    no Activity to request from. This is the one contract asymmetry against the web engine.
+
+    The <queries> element is MANDATORY, not decorative (Obstacle 3 / Pitfall 5). Since Android 11
+    (API 30) package-visibility filtering applies, and without this declaration
+    PackageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0) returns an
+    EMPTY LIST — so the D-04 probe and plan 07's diagnostic surface would silently show "no
+    recognizer installed" on a device that has one. If that list ever comes back empty, suspect
+    this element before suspecting the device.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
+
+</manifest>
