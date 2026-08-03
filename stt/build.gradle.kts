@@ -47,6 +47,35 @@ android {
         // Un-stubbed android.jar methods return a default instead of throwing, so a pure-JVM test
         // can touch the platform surface without a Robolectric runtime.
         unitTests.isReturnDefaultValues = true
+
+        // D-19 parity wiring — ErrorCodeParityTest reads both of these (Obstacle 1, resolution A).
+        unitTests.all { test ->
+            // rootProject.projectDir is <repo>/android in the mono-repo and the mirror root in the
+            // public mirror, where ../web/src/errors.ts therefore does NOT exist — which is the
+            // whole reason the test carries a skip. Passing an absolute path rather than letting
+            // the test resolve one relative to its working directory removes every CWD-dependent
+            // failure mode: the working directory of a Gradle test JVM is not a stable contract.
+            //
+            // Overridable by -Pstt.web.errorsTs=<path> so the guard's OWN failure modes stay
+            // verifiable from the command line — pointing it at a non-existent path must skip by
+            // default and hard-fail under -Pstt.requireWebParity=true. The override cannot be used
+            // to dodge the gate: a bogus path in hard mode fails, and the repo-root three-way
+            // script has no override at all.
+            test.systemProperty(
+                "stt.web.errorsTs",
+                (
+                    project.findProperty("stt.web.errorsTs")
+                        ?: rootProject.file("../web/src/errors.ts").absolutePath
+                    ).toString(),
+            )
+            // Flips that skip into a hard failure. Plan 12's release-android.sh ALWAYS passes
+            // -Pstt.requireWebParity=true, so a release can never be tagged off a parity check
+            // that silently did not run (threat T-05-08).
+            test.systemProperty(
+                "stt.requireWebParity",
+                (project.findProperty("stt.requireWebParity") ?: "false").toString(),
+            )
+        }
     }
 
     // AGP-8 opt-in: declare the single publishable variant + its sources jar. MANDATORY —
