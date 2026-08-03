@@ -76,7 +76,14 @@ dependencies {
     // artifact, not -core. No Hilt: this library has one construction path and no graph, and Hilt
     // would be a transitive burden on every consumer. No androidx.core either:
     // Context.checkSelfPermission is API 23+ and free (D-11 — the HOST requests the permission).
-    implementation(libs.coroutines.android)
+    //
+    // `api`, NOT `implementation` (plan 02). Coroutines types are part of the PUBLIC SIGNATURE:
+    // every member of the SttEngine interface is a Flow or StateFlow (D-07). With `implementation`
+    // the generated POM scopes coroutines `runtime`, so a consumer resolving the published AAR gets
+    // no kotlinx.coroutines on its COMPILE classpath and cannot so much as name `engine.state`'s
+    // type — the library would publish successfully and then fail to compile against. `api` puts it
+    // at `compile` scope, which is what an exported type requires.
+    api(libs.coroutines.android)
 
     // JVM unit tests — the majority of the suite runs here, behind the injected RecognizerHandle
     // seam, with no device and no Robolectric.
