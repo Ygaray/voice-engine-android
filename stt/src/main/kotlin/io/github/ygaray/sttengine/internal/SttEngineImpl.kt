@@ -91,6 +91,7 @@ internal class SttEngineImpl(
     private val config: SttConfig,
     private val handleFactory: RecognizerHandleFactory,
     private val permissions: PermissionChecker,
+    private val log: SessionLog = SessionLog(),
     private val supportsSegmented: Boolean = false,
     private val supportsRawAudio: Boolean = false,
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
@@ -299,6 +300,7 @@ internal class SttEngineImpl(
         segmentResultCount = 0
         endOfSegmentedSessionDelivered = false
 
+        log.rung(currentRung)
         val intent = RecognizerIntents.forRung(currentRung, config, appContext)
         withContext(mainDispatcher) {
             active.setListener(listenerFor(boundEpoch))
@@ -340,12 +342,19 @@ internal class SttEngineImpl(
         restartCount += 1
         restartTriggeredAtMs = monotonicMs()
 
+        val rungBefore = currentRung
         recordOutcome(cause, errorCode)
 
         // 1. commit BEFORE teardown
         commitLivePartial()
 
         val delayMs = delayOverride ?: restartPolicy.delayFor(reason)
+        log.restart(
+            epoch = epoch.current,
+            reason = reason.name,
+            delayMs = delayMs,
+            advanceRung = currentRung != rungBefore,
+        )
         restartJob?.cancel()
         restartJob = scope.launch {
             // 2. teardown
@@ -445,6 +454,7 @@ internal class SttEngineImpl(
 
         errorsChannel.trySend(error)
         _events.tryEmit(SttEvent.Error(error))
+        log.error(error)
         setState(EngineState.Error)
 
         pendingStart?.complete(Unit)
@@ -453,11 +463,13 @@ internal class SttEngineImpl(
 
     // --- emission helpers ------------------------------------------------------------------------------
 
-    /** The ONE place [state] is mutated, so every transition is mirrored onto [events] exactly once. */
+    /** The ONE place [state] is mutated, so every transition is mirrored onto [events] and the
+     *  session log exactly once. */
     private fun setState(next: EngineState) {
         if (_state.value == next) return
         _state.value = next
         _events.tryEmit(SttEvent.State(next))
+        log.state(next)
     }
 
     private fun commitLivePartial() {
@@ -468,6 +480,7 @@ internal class SttEngineImpl(
         _partial.value = ""
         finalsChannel.trySend(segment)
         _events.tryEmit(SttEvent.Final(segment))
+        log.final(segment)
     }
 
     private fun enterReconnecting() {
@@ -493,6 +506,15 @@ internal class SttEngineImpl(
 
         override fun onReadyForSpeech(params: Bundle?) {
             if (!accept()) return
+            // The deaf window is the audio this engine could not hear: the gap between the callback
+            // that triggered the restart and the microphone being live again. The probe measured
+            // 164/198/259 ms (min/median/max) across 13 restarts, which is why plan 08 wants it per
+            // restart rather than as one number. A ready that no restart preceded reports the
+            // sentinel rather than a fabricated zero that would drag the distribution down.
+            val deafWindowMs =
+                if (restartTriggeredAtMs == 0L) SessionLog.NO_DEAF_WINDOW
+                else monotonicMs() - restartTriggeredAtMs
+            log.ready(epoch = boundEpoch, deafWindowMs = deafWindowMs)
             setState(EngineState.Listening)
             pendingStart?.complete(Unit)
             pendingStart = null
@@ -537,6 +559,7 @@ internal class SttEngineImpl(
             accumulator.onPartial(text)
             _partial.value = text
             _events.tryEmit(SttEvent.Partial(text))
+            log.partial(segmentId = accumulator.segmentId, text = text)
         }
 
         override fun onResults(results: Bundle?) {

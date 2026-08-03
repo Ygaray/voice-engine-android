@@ -3,6 +3,7 @@ package io.github.ygaray.sttengine
 import android.content.Context
 import io.github.ygaray.sttengine.internal.ContextPermissionChecker
 import io.github.ygaray.sttengine.internal.PlatformRecognizerHandleFactory
+import io.github.ygaray.sttengine.internal.SessionLog
 import io.github.ygaray.sttengine.internal.SttEngineImpl
 import kotlinx.coroutines.Dispatchers
 
@@ -36,14 +37,24 @@ import kotlinx.coroutines.Dispatchers
  * @param config recognition settings. [SttConfig.language] is passed straight through to the
  *   recognizer and is checked against the device's installed on-device models before any audio is
  *   captured.
+ * @param diagnosticLogging writes a per-session JSONL trace to this app's own external files
+ *   directory. **Off by default and it must stay that way**: the trace contains the user's dictated
+ *   speech, so a diagnostic that quietly became always-on would turn a private, offline engine into
+ *   a transcript on disk. Turn it on for a debugging run, never for a shipped build, and never in a
+ *   demo's default configuration.
  */
-public fun createSttEngine(context: Context, config: SttConfig = SttConfig()): SttEngine {
+public fun createSttEngine(
+    context: Context,
+    config: SttConfig = SttConfig(),
+    diagnosticLogging: Boolean = false,
+): SttEngine {
     val applicationContext = context.applicationContext ?: context
     return SttEngineImpl(
         appContext = applicationContext,
         config = config,
         handleFactory = PlatformRecognizerHandleFactory,
         permissions = ContextPermissionChecker(applicationContext),
+        log = SessionLog.forContext(applicationContext, enabled = diagnosticLogging),
         // The ladder's terminal rung only. The segmented rungs both measured SHIP on the phase's
         // tester and plan 09 turns them on from the probe verdict by flipping these two flags —
         // nothing in the session loop changes.

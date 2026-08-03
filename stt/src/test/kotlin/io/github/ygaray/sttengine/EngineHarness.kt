@@ -6,6 +6,7 @@ import io.github.ygaray.sttengine.internal.LanguageAvailability
 import io.github.ygaray.sttengine.internal.RecognizerHandle
 import io.github.ygaray.sttengine.internal.RecognizerHandleFactory
 import io.github.ygaray.sttengine.internal.PermissionChecker
+import io.github.ygaray.sttengine.internal.SessionLog
 import io.github.ygaray.sttengine.internal.SttEngineImpl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -52,6 +53,7 @@ internal class EngineHarness(
     languageAvailability: LanguageAvailability = LanguageAvailability.INSTALLED,
     private val factoryThrows: Boolean = false,
     config: SttConfig = SttConfig(),
+    log: SessionLog = SessionLog(),
     supportsSegmented: Boolean = false,
     supportsRawAudio: Boolean = false,
 ) {
@@ -79,6 +81,7 @@ internal class EngineHarness(
             handle
         },
         permissions = PermissionChecker { permissionGranted },
+        log = log,
         supportsSegmented = supportsSegmented,
         supportsRawAudio = supportsRawAudio,
         mainDispatcher = dispatcher,
