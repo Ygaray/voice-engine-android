@@ -19,12 +19,21 @@ import org.robolectric.annotation.Config
  * this one function, so its output is asserted key-by-key rather than spot-checked.
  *
  * Robolectric, because `Intent` extras are a real platform behaviour and `Intent.getExtras()` is not
- * a data structure worth faking. Pinned to **SDK 36**: that image is cached on this host and SDK 33
- * is not, and the module's `minSdk` is 33 so every extra used here is unconditionally available —
- * the SDK level under test is a fixture detail, not part of what is being proven.
+ * a data structure worth faking.
+ *
+ * **Pinned to SDK 35**, and the pin is load-bearing in both directions:
+ *  - *not 36* — Robolectric refuses SDK 36 on anything below Java 21
+ *    (`Android SDK 36 requires Java 21 (have Java 17)`), and this module targets Java 17
+ *    deliberately. Raising the toolchain to satisfy a test fixture would put an unproven JVM in
+ *    front of the release path for zero benefit.
+ *  - *not 33* — that image is not cached on this host, and the suite must run offline.
+ *
+ * SDK 35 is cached, runs on Java 17, and is the tester's own API level (SM-S908U, Android 15). The
+ * module's `minSdk` is 33 and every extra used here has been available since 33, so the SDK level
+ * under test is a fixture detail rather than part of what is being proven.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [35])
 class RecognizerIntentsTest {
 
     private val context: Context get() = ApplicationProvider.getApplicationContext()
