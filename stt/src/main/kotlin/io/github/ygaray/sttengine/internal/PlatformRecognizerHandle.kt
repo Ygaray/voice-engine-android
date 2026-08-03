@@ -5,7 +5,14 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.speech.RecognitionListener
+import android.speech.RecognitionSupport
+import android.speech.RecognitionSupportCallback
+import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import java.util.concurrent.Executor
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The platform side of the seam: a thin adapter over a real [SpeechRecognizer].
@@ -74,6 +81,103 @@ internal class PlatformRecognizerHandle(
 
     override fun destroy() {
         onMain { delegate.destroy() }
+    }
+
+    /**
+     * `SpeechRecognizer.checkRecognitionSupport` (API 33), bridged from its callback into a suspend
+     * function and reduced to [LanguageAvailability].
+     *
+     * Bounded by [LANGUAGE_SUPPORT_TIMEOUT_MS] because this is a Binder round trip into an
+     * OEM-controlled process and a preflight that can hang forever would hang `start()` forever —
+     * exactly the failure D-10 exists to prevent. A timeout degrades to
+     * [LanguageAvailability.UNDETERMINED], i.e. "carry on", never to an error.
+     */
+    override suspend fun languageAvailability(language: String): LanguageAvailability {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        }
+
+        val support: RecognitionSupport? = withTimeoutOrNull(LANGUAGE_SUPPORT_TIMEOUT_MS) {
+            suspendCancellableCoroutine<RecognitionSupport?> { continuation ->
+                val callback = object : RecognitionSupportCallback {
+                    override fun onSupportResult(recognitionSupport: RecognitionSupport) {
+                        if (continuation.isActive) continuation.resume(recognitionSupport)
+                    }
+
+                    // A failed capability query is not a dictation failure — report "unknown" and
+                    // let the engine proceed. ErrorMapper makes the same call for
+                    // ERROR_CANNOT_CHECK_SUPPORT, which it swallows.
+                    override fun onError(error: Int) {
+                        if (continuation.isActive) continuation.resume(null)
+                    }
+                }
+                // checkRecognitionSupport is NOT one of the entry points that calls
+                // checkIsCalledFromMainThread() [VERIFIED: SpeechRecognizerImpl.java:428-430], but
+                // it is routed through the same hop as every other delegate call so a reader does
+                // not have to remember which of six methods is the exception.
+                onMain {
+                    delegate.checkRecognitionSupport(intent, DIRECT_EXECUTOR, callback)
+                }
+            }
+        }
+
+        return classify(language, support ?: return LanguageAvailability.UNDETERMINED)
+    }
+
+    private companion object {
+
+        /**
+         * Ceiling on the language preflight round trip.
+         *
+         * **Trade-off:** long enough that a cold recognition service still answers, short enough
+         * that a wedged one costs the user two seconds rather than a session. TUNABLE, NOT
+         * CONTRACTUAL.
+         */
+        const val LANGUAGE_SUPPORT_TIMEOUT_MS: Long = 2_000L
+
+        /** Run the callback on whichever thread the service delivers it — we only resume a coroutine. */
+        val DIRECT_EXECUTOR: Executor = Executor { it.run() }
+
+        fun classify(requested: String, support: RecognitionSupport): LanguageAvailability = when {
+            matches(requested, support.installedOnDeviceLanguages) ->
+                LanguageAvailability.INSTALLED
+
+            matches(requested, support.pendingOnDeviceLanguages) ->
+                LanguageAvailability.DOWNLOAD_PENDING
+
+            matches(requested, support.supportedOnDeviceLanguages) ->
+                LanguageAvailability.SUPPORTED_NOT_INSTALLED
+
+            // The service answered but listed nothing on-device at all. That is a service that does
+            // not know, not a service saying "no" — treat it as undetermined so an OEM with an
+            // unpopulated support surface can still dictate.
+            support.installedOnDeviceLanguages.isEmpty() &&
+                support.supportedOnDeviceLanguages.isEmpty() -> LanguageAvailability.UNDETERMINED
+
+            else -> LanguageAvailability.NOT_SUPPORTED
+        }
+
+        /**
+         * Language-tag matching, tolerant in both directions.
+         *
+         * `SttConfig.language` defaults to `"en"` (D-13) while the tester reports exactly one
+         * installed language, `"en-US"`. A strict equality test would therefore report
+         * `no-offline-model` for the library's own default configuration on the only device this
+         * phase runs on — a preflight that fails the happy path. So a request matches a candidate
+         * when either is a subtag-boundary prefix of the other.
+         */
+        fun matches(requested: String, candidates: List<String>?): Boolean {
+            val want = normalize(requested)
+            if (want.isEmpty()) return false
+            return candidates.orEmpty().any { candidate ->
+                val have = normalize(candidate)
+                have == want || have.startsWith("$want-") || want.startsWith("$have-")
+            }
+        }
+
+        fun normalize(tag: String): String = tag.trim().lowercase().replace('_', '-')
     }
 }
 

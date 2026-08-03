@@ -54,6 +54,57 @@ internal interface RecognizerHandle {
 
     /** Releases the underlying platform object. Not reusable afterwards. */
     fun destroy()
+
+    /**
+     * Answers the language preflight: is [language]'s on-device model installed, merely supported,
+     * already downloading, or not supported at all?
+     *
+     * **Why this is on the seam rather than a collaborator of its own.** The engine's preflight runs
+     * `permission → construct the handle → language`, so by the time this question is asked a
+     * recognizer already exists. A separate checker would have to build a *second*
+     * `SpeechRecognizer` purely to ask it — two constructions and two main-thread hops for one
+     * boolean-ish answer.
+     *
+     * **Why it returns a library enum rather than the platform's `RecognitionSupport`.** That is a
+     * deliberate exception to this interface's mirror-the-platform rule, and the only one.
+     * `RecognitionSupport` cannot be constructed by a test on either the mockable `android.jar` or
+     * under Robolectric, so a 1:1 mirror here would make the whole `no-offline-model` row of D-18's
+     * preflight table structurally unprovable — and on this phase's tester it is *already*
+     * unprovable from the device, because `en-US` is installed there
+     * (`05-PROBE-REPORT.json` → `part1.languageSupport.installedOnDeviceLanguages`). Mapping in the
+     * adapter is what lets the branch be exercised at all.
+     *
+     * The default is [LanguageAvailability.UNDETERMINED], and the engine treats that as "proceed".
+     * A failed capability query must never stop a session that is otherwise working — the same
+     * judgement `ErrorMapper` applies to `ERROR_CANNOT_CHECK_SUPPORT`, which it swallows.
+     */
+    suspend fun languageAvailability(language: String): LanguageAvailability =
+        LanguageAvailability.UNDETERMINED
+}
+
+/**
+ * What the recognition service says about one language's on-device model.
+ *
+ * The four determinate values are D-18's non-`onError` language rows; [UNDETERMINED] is the fifth
+ * outcome the platform genuinely has — the query itself can fail or time out — and it deliberately
+ * maps to "carry on" rather than to an error.
+ */
+internal enum class LanguageAvailability {
+
+    /** In `getInstalledOnDeviceLanguages()`. Dictation can start. */
+    INSTALLED,
+
+    /** In `getSupportedOnDeviceLanguages()` only — the model has to be downloaded first. */
+    SUPPORTED_NOT_INSTALLED,
+
+    /** In `getPendingOnDeviceLanguages()` — a download is already scheduled. */
+    DOWNLOAD_PENDING,
+
+    /** In none of the on-device lists. No download will help. */
+    NOT_SUPPORTED,
+
+    /** The query failed, timed out, or the service returned nothing usable. Proceed anyway. */
+    UNDETERMINED,
 }
 
 /**

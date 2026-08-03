@@ -8,9 +8,11 @@ import io.github.ygaray.sttengine.internal.RecognizerHandleFactory
 import io.github.ygaray.sttengine.internal.PermissionChecker
 import io.github.ygaray.sttengine.internal.SttEngineImpl
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestCoroutineScheduler
+import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 
 /**
@@ -40,6 +42,10 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
  * 36 below Java 21 and this module is Java 17 end to end, and because 35 is the tester's own
  * `SDK_INT`.
  */
+// `runTest`, `backgroundScope`, `advanceUntilIdle` and `UnconfinedTestDispatcher` are all still
+// marked experimental in coroutines 1.11 despite being the documented way to test coroutine code.
+// Opting in here keeps the module's build warning-free.
+@OptIn(ExperimentalCoroutinesApi::class)
 internal class EngineHarness(
     scheduler: TestCoroutineScheduler,
     permissionGranted: Boolean = true,
@@ -58,7 +64,7 @@ internal class EngineHarness(
         private set
 
     /** Eager, virtual-time dispatcher — see the class KDoc. */
-    val dispatcher: UnconfinedTestDispatcher = UnconfinedTestDispatcher(scheduler)
+    val dispatcher: TestDispatcher = UnconfinedTestDispatcher(scheduler)
 
     private val handle: RecognizerHandle = PreflightHandle(fake, languageAvailability)
 

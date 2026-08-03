@@ -83,6 +83,17 @@ internal sealed interface PreflightFailure {
 
     /** In `getPendingOnDeviceLanguages()` — a download is already scheduled. */
     class LanguageDownloadPending(val language: String) : PreflightFailure
+
+    /**
+     * In none of the on-device language lists at all.
+     *
+     * The pre-session twin of `ERROR_LANGUAGE_NOT_SUPPORTED(12)`, and it maps to the same code for
+     * the same reason: unlike [LanguageNotInstalled] there is no download that would fix it, so
+     * "give up" really is the correct host action. Kept here rather than constructed at the engine's
+     * call site so that every preflight failure without exception comes out of one table — a second
+     * place that mints preflight errors is a second place that can drift from D-18.
+     */
+    class LanguageNotSupported(val language: String) : PreflightFailure
 }
 
 /**
@@ -315,6 +326,13 @@ internal object ErrorMapper {
                     SttErrorCode.NO_OFFLINE_MODEL,
                     "the on-device model for \"${failure.language}\" is already scheduled for " +
                         "download; retry once it completes",
+                )
+
+            is PreflightFailure.LanguageNotSupported ->
+                SttError(
+                    SttErrorCode.UNSUPPORTED_LANGUAGE,
+                    "\"${failure.language}\" is not supported by this device's on-device " +
+                        "recognition service; no model download will make it available",
                 )
         }
 
