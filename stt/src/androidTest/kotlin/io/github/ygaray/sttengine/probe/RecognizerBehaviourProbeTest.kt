@@ -55,6 +55,11 @@ import java.util.concurrent.atomic.AtomicReference
  *  6. `partialQuality` — partial count, cumulative-vs-replacing, last-partial→final distance.
  *  7. `beepObserved` — human-reported; written null here, resolved in the verdict.
  *
+ * Plus `finalResultDelivery`, which is **not** in the plan's table: the first run on this device
+ * showed rung-(a) sessions producing rich partials and then a blank `onResults`, and that claim is
+ * far too consequential for the engine's whole final-commit design to leave resting on one
+ * incidental observation. See [measureFinalResultDelivery].
+ *
  * ### Main-thread contract
  *
  * Every `SpeechRecognizer` construction and every `setRecognitionListener` / `startListening` /
@@ -125,6 +130,7 @@ class RecognizerBehaviourProbeTest {
             part2.put("speakerLoopback", loopback)
             part2.put("partialQuality", partialQuality)
 
+            part2.put("finalResultDelivery", measure { measureFinalResultDelivery(file) })
             part2.put("beepObserved", beepObserved())
         } finally {
             // Restore the volume we raised. D-06 forbids the *library* from touching device audio;
@@ -149,9 +155,47 @@ class RecognizerBehaviourProbeTest {
      * firing ⇒ the extra was silently ignored.
      */
     private fun measureSegmentedSession(stimulus: File): JSONObject {
+        // The primary run is exactly the plan's specification, so the discriminator is answered on
+        // the specified terms. The follow-up varies ONLY the silence value, because the primary run
+        // showed the session ending seconds after it began — and "rung (b) is real but the session
+        // died early" and "rung (b) is real and usable" are different verdicts for plan 09.
+        val primary = segmentedRun(
+            stimulus,
+            completeSilenceMs = COMPLETE_SILENCE_MS,
+            possiblySilenceMs = POSSIBLY_COMPLETE_SILENCE_MS,
+            playBeforeListening = false,
+            budgetMs = SEGMENTED_PLAY_MS,
+            label = "segmentedSession",
+        )
+        val longSilence = measure {
+            segmentedRun(
+                stimulus,
+                completeSilenceMs = LONG_COMPLETE_SILENCE_MS,
+                possiblySilenceMs = LONG_POSSIBLY_SILENCE_MS,
+                // Start the audio first so the recognizer is not handed a lead-in of dead air that
+                // could itself trip the session's silence bound.
+                playBeforeListening = true,
+                budgetMs = SEGMENTED_LONG_PLAY_MS,
+                label = "segmentedSession-longSilence",
+            )
+        }
+        return primary.put("longSilenceRun", longSilence)
+    }
+
+    private fun segmentedRun(
+        stimulus: File,
+        completeSilenceMs: Int,
+        possiblySilenceMs: Int,
+        playBeforeListening: Boolean,
+        budgetMs: Long,
+        label: String,
+    ): JSONObject {
         val result = JSONObject()
-        val recorder = ProbeRecorder("segmentedSession")
-        val intent = baseIntent().putExtra(
+            .put("completeSilenceMs", completeSilenceMs)
+            .put("possiblyCompleteSilenceMs", possiblySilenceMs)
+            .put("playbackStartedBeforeListening", playBeforeListening)
+        val recorder = ProbeRecorder(label)
+        val intent = baseIntent(completeSilenceMs, possiblySilenceMs).putExtra(
             RecognizerIntent.EXTRA_SEGMENTED_SESSION,
             // The javadoc requires the referenced key to also be populated in the same intent —
             // baseIntent() sets it.
@@ -163,10 +207,16 @@ class RecognizerBehaviourProbeTest {
         var player: MediaPlayer? = null
         try {
             recognizer = createRecognizer()
-            startListening(recognizer, recorder, intent)
-            player = startPlayback(stimulus)
+            if (playBeforeListening) {
+                player = startPlayback(stimulus)
+                Thread.sleep(PLAYBACK_LEAD_IN_MS)
+                startListening(recognizer, recorder, intent)
+            } else {
+                startListening(recognizer, recorder, intent)
+                player = startPlayback(stimulus)
+            }
 
-            val endedEarly = recorder.terminal.await(SEGMENTED_PLAY_MS, TimeUnit.MILLISECONDS)
+            val endedEarly = recorder.terminal.await(budgetMs, TimeUnit.MILLISECONDS)
             result.put("endedBeforeStopListening", endedEarly)
             if (!endedEarly) {
                 stopListening(recognizer)
@@ -270,7 +320,8 @@ class RecognizerBehaviourProbeTest {
                     )
                     .put("errorCodes", JSONArray(recorder.errors))
                     .put("partialCount", recorder.partials.size)
-                    .put("text", recorder.recognizedText()),
+                    .put("finalText", recorder.recognizedText())
+                    .put("lastNonBlankPartial", recorder.lastNonBlankPartial() ?: JSONObject.NULL),
             )
         }
 
@@ -593,6 +644,15 @@ class RecognizerBehaviourProbeTest {
             session.maxRmsDb.takeIf { it != Float.NEGATIVE_INFINITY }
         }.maxOrNull()
 
+        // The acoustically recoverable text, scored separately from the finals-based text.
+        // Both numbers are needed and they answer different questions: `score` says whether the
+        // documented final path yields anything (on this device it does not), while
+        // `recoverableScore` says whether the SPEAKER→MIC path carries intelligible speech at all.
+        // Conflating them would let a platform defect in the final path masquerade as "acoustic
+        // loopback does not work", and would wrongly eliminate AND-02's fallback stimulus.
+        val recoverableParts = sessions.mapNotNull { it.lastNonBlankPartial() }
+        val recoverableText = recoverableParts.joinToString(" ").trim()
+
         return JSONObject()
             .put("playedMs", LOOPBACK_BUDGET_MS)
             .put("sessionCount", sessions.size)
@@ -600,6 +660,9 @@ class RecognizerBehaviourProbeTest {
             .put("producedText", text.isNotBlank())
             .put("maxRmsDbAcrossSessions", maxRms?.toDouble() ?: JSONObject.NULL)
             .put("score", ProbeText.score(ProbeStimulus.TRANSCRIPT, text))
+            .put("sessionsContributingRecoverableText", recoverableParts.size)
+            .put("recoverableText", recoverableText)
+            .put("recoverableScore", ProbeText.score(ProbeStimulus.TRANSCRIPT, recoverableText))
             .put("sessions", JSONArray(sessions.map { it.toJson(includeEvents = false) }))
             .put("partialQuality", partialQuality(sessions))
     }
@@ -640,10 +703,27 @@ class RecognizerBehaviourProbeTest {
         }
 
         val transitions = cumulativeTransitions + replacingTransitions
+        val sessionsWithFinal = sessions.count { session -> session.finals.any { it.isNotBlank() } }
         return JSONObject()
             .put("source", "speakerLoopback sessions")
             .put("totalPartials", totalPartials)
             .put("sessionCount", sessions.size)
+            .put("sessionsWithNonBlankFinal", sessionsWithFinal)
+            .put(
+                "sessionsEndingOnBlankPartial",
+                sessions.count { it.endedWithBlankPartial() },
+            )
+            .put(
+                "lastPartialToFinalNote",
+                if (sessionsWithFinal == 0) {
+                    "NOT MEASURABLE on this device: every rung-(a) session delivered a BLANK " +
+                        "onResults, so there is no final to measure a distance to. This is not a " +
+                        "missing measurement — it is the finalResultDelivery finding, and it is " +
+                        "the reason the sample list below is empty."
+                } else {
+                    "measured over the $sessionsWithFinal session(s) that produced a non-blank final"
+                },
+            )
             .put("cumulativeTransitions", cumulativeTransitions)
             .put("replacingTransitions", replacingTransitions)
             .put(
@@ -664,6 +744,83 @@ class RecognizerBehaviourProbeTest {
                         "these are word counts, not milliseconds)",
                 ),
             )
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // finalResultDelivery — does rung (a)'s `onResults` actually carry text on this device?
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Not in the plan's measurement table, added because the first run made it load-bearing
+     * (deviation Rule 2).
+     *
+     * Every rung-(a) session in the deaf-window and loopback measurements produced rich, accurate
+     * partials and then an **empty** `onResults`. If that is real, it invalidates the most basic
+     * assumption of the whole engine — that `onResults` is where a final comes from (D-02: the
+     * final *replaces* the last partial) — and rung (a) is the ladder's terminal floor, so the
+     * failure would have no fallback. Shipping v1c on the assumption that `onResults` carries text,
+     * when on the only device that matters it does not, is precisely the silent corruption this
+     * probe exists to prevent.
+     *
+     * Two runs isolate the cause, because they are the two ways a session can end:
+     *  - `naturalSilenceEnd` — the recognizer endpoints on its own silence timer.
+     *  - `explicitStopListening` — we call `stopListening()` while speech is still in flight.
+     *
+     * Both dump the raw `onResults` bundle key-by-key, so "empty" is distinguished from "absent"
+     * from "under a different key" rather than being an artifact of how this probe reads it.
+     */
+    private fun measureFinalResultDelivery(stimulus: File): JSONObject {
+        val natural = measure { finalDeliveryRun(stimulus, explicitStopAfterMs = null) }
+        val explicit = measure {
+            finalDeliveryRun(stimulus, explicitStopAfterMs = EXPLICIT_STOP_AFTER_MS)
+        }
+        return JSONObject()
+            .put("naturalSilenceEnd", natural)
+            .put("explicitStopListening", explicit)
+            .put(
+                "question",
+                "Does onResults carry text in a plain rung-(a) session on this device, and does " +
+                    "the answer depend on whether the session ended by silence timeout or by an " +
+                    "explicit stopListening()?",
+            )
+    }
+
+    private fun finalDeliveryRun(stimulus: File, explicitStopAfterMs: Long?): JSONObject {
+        val label = if (explicitStopAfterMs == null) "final-natural" else "final-explicitStop"
+        val recorder = ProbeRecorder(label)
+        var recognizer: SpeechRecognizer? = null
+        var player: MediaPlayer? = null
+        try {
+            recognizer = createRecognizer()
+            // Playback first, then a lead-in wait, so the session opens onto live speech rather
+            // than onto the stimulus's own leading silence.
+            player = startPlayback(stimulus)
+            Thread.sleep(PLAYBACK_LEAD_IN_MS)
+            startListening(recognizer, recorder, baseIntent())
+            if (explicitStopAfterMs != null) {
+                Thread.sleep(explicitStopAfterMs)
+                stopListening(recognizer)
+            }
+            recorder.terminal.await(FINAL_DELIVERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } finally {
+            releasePlayer(player)
+            releaseRecognizer(recognizer)
+        }
+
+        val lastPartial = recorder.partials.lastOrNull { it.isNotBlank() }
+        val finalText = recorder.finals.lastOrNull()
+        return JSONObject()
+            .put("explicitStopAfterMs", explicitStopAfterMs ?: JSONObject.NULL)
+            .put("terminalKind", recorder.terminalKind ?: JSONObject.NULL)
+            .put("partialCount", recorder.partials.size)
+            .put("lastPartial", lastPartial ?: JSONObject.NULL)
+            .put("finalText", finalText ?: JSONObject.NULL)
+            .put("finalIsBlank", finalText.isNullOrBlank())
+            .put("anyNonBlankFinal", recorder.finals.any { it.isNotBlank() })
+            .put("resultsBundles", JSONArray(recorder.resultsBundles))
+            .put("partialBundles", JSONArray(recorder.partialBundles))
+            .put("errorCodes", JSONArray(recorder.errors))
+            .put("session", recorder.toJson(includeEvents = false))
     }
 
     // ------------------------------------------------------------------------------------------
@@ -727,7 +884,10 @@ class RecognizerBehaviourProbeTest {
         }
     }
 
-    private fun baseIntent(): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+    private fun baseIntent(
+        completeSilenceMs: Int = COMPLETE_SILENCE_MS,
+        possiblySilenceMs: Int = POSSIBLY_COMPLETE_SILENCE_MS,
+    ): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         putExtra(RecognizerIntent.EXTRA_LANGUAGE, EN_US)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
@@ -735,11 +895,11 @@ class RecognizerBehaviourProbeTest {
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         putExtra(
             RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
-            COMPLETE_SILENCE_MS,
+            completeSilenceMs,
         )
         putExtra(
             RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
-            POSSIBLY_COMPLETE_SILENCE_MS,
+            possiblySilenceMs,
         )
     }
 
@@ -868,6 +1028,16 @@ class RecognizerBehaviourProbeTest {
 
         const val SEGMENTED_PLAY_MS = 45_000L
         const val TERMINAL_TIMEOUT_MS = 15_000L
+
+        // The follow-up segmented run: same rung (b), only the silence bound differs.
+        const val LONG_COMPLETE_SILENCE_MS = 8_000
+        const val LONG_POSSIBLY_SILENCE_MS = 5_000
+        const val SEGMENTED_LONG_PLAY_MS = 55_000L
+
+        /** Skips the stimulus's 500 ms lead-in plus MediaPlayer prepare/start latency. */
+        const val PLAYBACK_LEAD_IN_MS = 1_800L
+        const val EXPLICIT_STOP_AFTER_MS = 6_000L
+        const val FINAL_DELIVERY_TIMEOUT_MS = 25_000L
 
         /** ≥10 samples is the plan's floor; 14 cycles yields 13, with room for a failed cycle. */
         const val DEAF_WINDOW_CYCLES = 14

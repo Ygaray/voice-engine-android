@@ -46,6 +46,18 @@ internal class ProbeRecorder(val label: String) {
     var rmsCount: Int = 0
     var maxRmsDb: Float = Float.NEGATIVE_INFINITY
 
+    /**
+     * Raw `onResults` / `onPartialResults` bundles, dumped key-by-key.
+     *
+     * Exists because "the final was empty" is a claim about *our extraction* until the bundle is
+     * shown: an absent `RESULTS_RECOGNITION`, a present-but-empty list, and a list whose first
+     * element is `""` are three different device behaviours that a single `firstOrNull().orEmpty()`
+     * flattens into the same empty string. The rung verdict is not allowed to rest on that
+     * ambiguity.
+     */
+    val resultsBundles: MutableList<JSONObject> = mutableListOf()
+    val partialBundles: MutableList<JSONObject> = mutableListOf()
+
     /** Counts down on the FIRST terminal callback (`onResults`/`onError`/`onEndOfSegmentedSession`). */
     val terminal: CountDownLatch = CountDownLatch(1)
 
@@ -83,6 +95,7 @@ internal class ProbeRecorder(val label: String) {
             onResultsCount++
             val text = firstResult(results)
             finals += text
+            if (resultsBundles.size < MAX_BUNDLE_DUMPS) resultsBundles += dumpBundle(results)
             log("results", text)
             markTerminal("onResults")
         }
@@ -90,6 +103,8 @@ internal class ProbeRecorder(val label: String) {
         override fun onPartialResults(partialResults: Bundle?) {
             val text = firstResult(partialResults)
             partials += text
+            // Only the first few: partials arrive by the hundreds and the dumps are verbose.
+            if (partialBundles.size < MAX_BUNDLE_DUMPS) partialBundles += dumpBundle(partialResults)
             log("partial", text)
         }
 
@@ -130,12 +145,61 @@ internal class ProbeRecorder(val label: String) {
             ?.firstOrNull()
             .orEmpty()
 
+    /** Every key/value in a callback bundle, rendered as JSON, with per-key failure isolation. */
+    private fun dumpBundle(bundle: Bundle?): JSONObject {
+        val dump = JSONObject()
+        if (bundle == null) return dump.put("bundle", JSONObject.NULL)
+        val keys = bundle.keySet()
+        dump.put("keys", JSONArray(keys.toList()))
+        val resultsList = bundle.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+        dump.put(
+            "RESULTS_RECOGNITION_state",
+            when {
+                resultsList == null -> "absent-or-not-a-string-arraylist"
+                resultsList.isEmpty() -> "present-but-empty-list"
+                resultsList.all { it.isNullOrBlank() } -> "present-with-${resultsList.size}-blank-entries"
+                else -> "present-with-${resultsList.size}-entries"
+            },
+        )
+        keys.forEach { key ->
+            val rendered = try {
+                @Suppress("DEPRECATION")
+                when (val value = bundle.get(key)) {
+                    null -> JSONObject.NULL
+                    is ArrayList<*> -> JSONArray(value.map { it?.toString() ?: "null" })
+                    is FloatArray -> JSONArray(value.map { it.toDouble() })
+                    is IntArray -> JSONArray(value.toList())
+                    is Array<*> -> JSONArray(value.map { it?.toString() ?: "null" })
+                    else -> value.toString()
+                }
+            } catch (t: Throwable) {
+                "unreadable: ${t.javaClass.simpleName}"
+            }
+            dump.put(key, rendered)
+        }
+        return dump
+    }
+
     /** Wall-clock gaps between consecutive `onSegmentResults`, in ms. */
     fun segmentGapsMs(): List<Long> =
         segmentAtMs.zipWithNext { a, b -> b - a }
 
     /** The concatenated recognized text — segment results in segmented mode, finals otherwise. */
     fun recognizedText(): String = finals.filter { it.isNotBlank() }.joinToString(" ")
+
+    /**
+     * The last partial that actually carried text.
+     *
+     * Not simply `partials.last()`: this device emits a **blank** partial immediately before ending
+     * a session, so the newest partial is routinely the empty string. Where the final is also blank
+     * (see the `finalResultDelivery` measurement) this is the only place the session's text
+     * survives at all, which makes it the recoverable-text primitive rather than a convenience.
+     */
+    fun lastNonBlankPartial(): String? = partials.lastOrNull { it.isNotBlank() }
+
+    /** Whether this session ended on a blank partial — the pattern described above. */
+    fun endedWithBlankPartial(): Boolean =
+        partials.isNotEmpty() && partials.last().isBlank()
 
     fun toJson(includeEvents: Boolean = true): JSONObject = JSONObject().apply {
         put("label", label)
@@ -160,18 +224,31 @@ internal class ProbeRecorder(val label: String) {
         put("partials", capped(partials))
         put("segmentTexts", capped(segmentTexts))
         put("recognizedText", recognizedText())
+        put("lastNonBlankPartial", lastNonBlankPartial() ?: JSONObject.NULL)
+        put("endedWithBlankPartial", endedWithBlankPartial())
         if (includeEvents) put("events", JSONArray(events.takeLast(MAX_EVENTS)))
         if (events.size > MAX_EVENTS) put("eventsTruncatedFrom", events.size)
     }
 
-    private fun capped(values: List<String>): JSONArray =
-        JSONArray(values.takeLast(MAX_TEXTS)).apply {
-            if (values.size > MAX_TEXTS) put("…(${values.size - MAX_TEXTS} earlier entries omitted)")
+    /**
+     * Keeps the LAST [MAX_TEXTS] entries, with the truncation notice **first**.
+     *
+     * The notice has to lead: these lists are tails, so the omitted entries are the earlier ones,
+     * and a trailing notice makes `partials[-1]` the notice rather than the newest partial — which
+     * silently breaks exactly the "what was the last thing recognized" question any reader of this
+     * report will ask of it.
+     */
+    private fun capped(values: List<String>): JSONArray = JSONArray().apply {
+        if (values.size > MAX_TEXTS) {
+            put("…(${values.size - MAX_TEXTS} earlier entries omitted)")
         }
+        values.takeLast(MAX_TEXTS).forEach { put(it) }
+    }
 
     private companion object {
         const val MAX_TEXTS = 30
         const val MAX_EVENTS = 200
+        const val MAX_BUNDLE_DUMPS = 3
     }
 }
 
