@@ -181,6 +181,20 @@ internal class SttEngineImpl(
     private var segmentResultCount = 0
     private var endOfSegmentedSessionDelivered = false
 
+    /**
+     * Runtime evidence that a rung does not work on this device, accumulated across sessions.
+     *
+     * Set when — and only when — that rung's own degradation trigger fires, which by
+     * [RungLadder.shouldDegrade]'s design means the rung was *proven* not to do its job rather than
+     * merely having seen an error. Read once per [start] and never mid-session.
+     *
+     * One way, deliberately: nothing ever clears these within an engine instance. A device that
+     * silently ignored the segmented extra will ignore it again, and re-probing costs a deaf window
+     * every time. Fresh evidence needs a fresh engine.
+     */
+    private var segmentedRungWithdrawn = false
+    private var rawAudioRungWithdrawn = false
+
     /** How many sessions this engine has restarted. Read by plan 07's diagnostic row and plan 08's log. */
     var restartCount: Int = 0
         private set
@@ -258,10 +272,18 @@ internal class SttEngineImpl(
             LanguageAvailability.INSTALLED, LanguageAvailability.UNDETERMINED -> Unit
         }
 
-        // Both capabilities false: this plan ships the ladder's terminal rung only. Plan 09 turns the
-        // other two on if and only if the probe verdict says so, and it does that by changing these
-        // two parameters — nothing in the session loop below has to know.
-        candidates = RungLadder.candidates(supportsSegmented, supportsRawAudio)
+        // The capability is a PARAMETER resolved here, once per start(), and never a compile-time
+        // constant — see `05-RUNG-DECISION.md`. It is the constructor's seed (the probe's answer)
+        // MINUS anything this engine has since watched fail on this device: a rung whose degradation
+        // trigger fired proved at runtime that it does not do its job here, and re-offering it at the
+        // next start() would buy another silent no-op and another deaf window for the same answer.
+        //
+        // Resolved ONLY here. Mid-session the ladder walks DOWN through `candidates` and never
+        // re-reads these flags, because a session is not the place to change what the device can do.
+        candidates = RungLadder.candidates(
+            supportsSegmented = supportsSegmented && !segmentedRungWithdrawn,
+            supportsRawAudio = supportsRawAudio && !rawAudioRungWithdrawn,
+        )
         currentRung = candidates.first()
 
         startSession()
@@ -384,9 +406,10 @@ internal class SttEngineImpl(
      * Feed the finished session to the two things that judge it: the restart policy's runaway-loop
      * guard, and the rung ladder's degradation trigger.
      *
-     * The ladder is wired even though this plan ships the terminal rung only, where
-     * `shouldDegrade` is unconditionally false. It costs one call and it means plan 09 enables the
-     * upper rungs by flipping two constructor flags rather than by adding a code path.
+     * Both segmented rungs are live (`05-RUNG-DECISION.md`), so the trigger has real work to do. It
+     * degrades **within one session** — the next session after the evidence runs a rung lower — and
+     * it additionally *withdraws* the rung so the next [start] does not offer it again. Degradation
+     * is one way: nothing here can return a higher rung than the one it was handed.
      */
     private fun recordOutcome(cause: TerminatingCause, errorCode: Int?) {
         restartPolicy.recordSessionOutcome(
@@ -404,7 +427,19 @@ internal class SttEngineImpl(
             errorCode = errorCode,
         )
         if (RungLadder.shouldDegrade(currentRung, outcome)) {
+            withdrawRung(currentRung)
             currentRung = RungLadder.next(currentRung, candidates)
+        }
+    }
+
+    /** Records that [rung] proved itself a no-op here, so the next [start] stops offering it. */
+    private fun withdrawRung(rung: Rung) {
+        when (rung) {
+            Rung.SilenceSegmented -> segmentedRungWithdrawn = true
+            Rung.RawAudioSegmented -> rawAudioRungWithdrawn = true
+            // The floor is never withdrawn — shouldDegrade is unconditionally false for it and
+            // there is nothing below it to fall to.
+            Rung.RestartingSingleSession -> Unit
         }
     }
 
