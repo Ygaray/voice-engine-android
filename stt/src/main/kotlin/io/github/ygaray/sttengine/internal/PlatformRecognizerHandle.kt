@@ -126,7 +126,16 @@ internal class PlatformRecognizerHandle(
         return classify(language, support ?: return LanguageAvailability.UNDETERMINED)
     }
 
-    private companion object {
+    /**
+     * `internal` rather than `private` so [matches] is directly testable.
+     *
+     * That is not a convenience. The library's default config asks for `"en"` while the phase's
+     * tester reports exactly one installed language, `"en-US"` — so this matcher is what decides
+     * whether the happy path passes preflight on the only device this phase runs on, and getting it
+     * wrong would make a working device report `no-offline-model`. The whole class is `internal`, so
+     * nothing here reaches the frozen public surface.
+     */
+    internal companion object {
 
         /**
          * Ceiling on the language preflight round trip.
