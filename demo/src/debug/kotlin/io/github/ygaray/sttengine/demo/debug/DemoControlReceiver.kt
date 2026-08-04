@@ -47,7 +47,18 @@ import org.json.JSONObject
  * adb -s $S shell am broadcast -n … -a io.github.ygaray.sttengine.demo.debug.STOP
  * ```
  *
- * **The five strings below are a cross-plan interface.** Plan 08's harness and plan 10's device run
+ * For a deterministic, file-fed AND-02 run, push a 16 kHz mono 16-bit WAV into the app's own
+ * external files directory (no storage permission needed, unlike shared storage) and name it on
+ * START. `SESSION_LOG true` is mandatory with it — see [EXTRA_AUDIO_SOURCE]:
+ *
+ * ```bash
+ * adb -s $S push stimulus.wav /sdcard/Android/data/io.github.ygaray.sttengine.demo/files/and02-stimulus.wav
+ * adb -s $S shell am broadcast -n … -a io.github.ygaray.sttengine.demo.debug.START \
+ *   --ez io.github.ygaray.sttengine.demo.debug.extra.SESSION_LOG true \
+ *   --es io.github.ygaray.sttengine.demo.debug.extra.AUDIO_SOURCE /sdcard/Android/data/io.github.ygaray.sttengine.demo/files/and02-stimulus.wav
+ * ```
+ *
+ * **The six strings below are a cross-plan interface.** Plan 08's harness and plan 10's device run
  * are authored against them verbatim and plan 08's automated verify cross-greps its own strings
  * against this file. Renaming one here silently breaks both. `src/debug/AndroidManifest.xml` repeats
  * the three action names as literals because a manifest `<action android:name>` cannot reference a
@@ -72,13 +83,33 @@ class DemoControlReceiver : BroadcastReceiver() {
             ACTION_START -> {
                 val sessionLog = intent.getBooleanExtra(EXTRA_SESSION_LOG, false)
                 val language = intent.getStringExtra(EXTRA_LANGUAGE)?.takeIf { it.isNotBlank() }
-                Log.d(TAG, "START language=${language ?: "(default)"} sessionLog=$sessionLog")
-                viewModel.start(language = language, diagnosticLogging = sessionLog)
+                val audioSource = intent.getStringExtra(EXTRA_AUDIO_SOURCE)?.takeIf { it.isNotBlank() }
+                Log.d(
+                    TAG,
+                    "START language=${language ?: "(default)"} sessionLog=$sessionLog " +
+                        "audioSource=${audioSource ?: "(microphone)"}",
+                )
+
+                if (audioSource == null) {
+                    // The ordinary path, and the only one a release build could ever have had.
+                    FileAudioSourceControl.stopFileFed()
+                    viewModel.start(language = language, diagnosticLogging = sessionLog)
+                } else {
+                    // Deliberately NOT falling through to a microphone session when this refuses.
+                    // An acoustic run labelled file-fed is worse than no run: it is evidence-shaped.
+                    FileAudioSourceControl.startFileFed(
+                        viewModel = viewModel,
+                        path = audioSource,
+                        language = language,
+                        sessionLog = sessionLog,
+                    )
+                }
             }
 
             ACTION_STOP -> {
                 Log.d(TAG, "STOP")
                 viewModel.stop()
+                FileAudioSourceControl.stopFileFed()
             }
 
             ACTION_DUMP_DIAGNOSTICS -> dumpDiagnostics(context, viewModel)
@@ -115,6 +146,10 @@ class DemoControlReceiver : BroadcastReceiver() {
             put("diagnosticLogging", viewModel.diagnosticLogging.value)
             put("errorCode", viewModel.error.value?.code?.value ?: JSONObject.NULL)
             put("errorPlatformDetail", viewModel.error.value?.platformDetail ?: JSONObject.NULL)
+            // The file-feed facts. `fileFedConfirmed` and `fileFedOpens` are what turn "this run was
+            // file-fed" from a claim into a measurement, and the harness refuses to score a
+            // supposedly file-fed run without them. Counters only — still no transcript text.
+            FileAudioSourceControl.snapshot(this)
         }
 
         Log.d(TAG, "DUMP_DIAGNOSTICS $snapshot")
@@ -153,6 +188,21 @@ class DemoControlReceiver : BroadcastReceiver() {
 
         /** String extra on [ACTION_START]. A BCP-47 tag, e.g. `en-US`. Absent keeps the current one. */
         const val EXTRA_LANGUAGE = "io.github.ygaray.sttengine.demo.debug.extra.LANGUAGE"
+
+        /**
+         * String extra on [ACTION_START]. An **on-device path** to a 16 kHz mono 16-bit PCM WAVE
+         * file to feed rung (c) instead of the microphone. Absent means the microphone.
+         *
+         * A device path rather than a bundled asset on purpose: the harness `adb push`es whichever
+         * stimulus it wants, so changing the passage never means rebuilding the app, and no WAV is
+         * baked into the library or the demo.
+         *
+         * Two things this extra REQUIRES, both enforced by [FileAudioSourceControl] and neither
+         * bypassable: the file must validate, and [EXTRA_SESSION_LOG] must be true. A file-fed run
+         * whose active rung cannot be read back from the trace is unverifiable, and an unverifiable
+         * run that gets scored is worse than no run.
+         */
+        const val EXTRA_AUDIO_SOURCE = "io.github.ygaray.sttengine.demo.debug.extra.AUDIO_SOURCE"
 
         // ────────────────────────────────────────────────────────────────────────────────────────
 
