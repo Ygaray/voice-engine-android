@@ -7,6 +7,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -132,6 +135,11 @@ internal fun DictationScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                // Android 15+ enforces edge-to-edge for a targetSdk-35-or-newer app: the window
+                // spans the full screen and the system bars draw ON TOP unless the content insets
+                // itself. Without this the state banner sits under the clock and the Start button
+                // sits under the gesture bar — observed on the tester, not hypothetical.
+                .windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {

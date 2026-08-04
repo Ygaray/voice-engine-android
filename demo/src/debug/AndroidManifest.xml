@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    DEBUG SOURCE SET ONLY. Everything in this file merges into the debug variant and into nothing
+    else, which is the whole design: the exported control receiver below is STRUCTURALLY absent from
+    a release build rather than switched off in one. An exported receiver in a release build would
+    let any other app on the device start a microphone session (threat T-05-03), and a runtime flag
+    guarding that is one careless edit away from shipping.
+
+    `android:exported="true"` is required and correct here — an adb broadcast comes from outside the
+    app. The Android 14 RECEIVER_EXPORTED/RECEIVER_NOT_EXPORTED requirement applies to
+    runtime-registered receivers, not to manifest-declared ones like this.
+
+    ⚠ The three action strings below are DUPLICATED from DemoControlReceiver.kt's companion object.
+    A manifest <action android:name> cannot reference a Kotlin constant, so this is the one place
+    the two can drift apart. The Kotlin file is the source a later plan copies from; if you change a
+    name, change it in both. Plan 08's harness is authored against these exact strings and its
+    automated verify cross-greps them against this source tree.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+
+        <receiver
+            android:name=".debug.DemoControlReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.github.ygaray.sttengine.demo.debug.START" />
+                <action android:name="io.github.ygaray.sttengine.demo.debug.STOP" />
+                <action android:name="io.github.ygaray.sttengine.demo.debug.DUMP_DIAGNOSTICS" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>

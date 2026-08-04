@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -27,6 +28,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Opt in explicitly rather than inheriting the platform's forced edge-to-edge. Android 15+
+        // makes every targetSdk-35 window edge-to-edge whether the app asked or not; declaring it
+        // means the behaviour is the same on older releases too, so the layout is not being tuned
+        // against one OS version's default. DictationScreen consumes the insets.
+        enableEdgeToEdge()
         setContent {
             DemoTheme {
                 val context = LocalContext.current
