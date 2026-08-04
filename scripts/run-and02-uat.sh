@@ -73,6 +73,7 @@
 #   AND02_LANGUAGE=en-US     BCP-47 tag the session requests (default en-US)
 #   AND02_STIMULUS=auto      auto | file-fed | acoustic | human
 #   AND02_LANGUAGE_TIMEOUT_S=300   how long to wait for a language pack to land
+#   AND02_EVIDENCE_DIR=<dir> where the pulled trace lands (default: the phase directory)
 #
 # The serial is an environment variable because the tester's wireless-adb port ROTATES; a hardcoded
 # one goes stale and the next person edits the script instead of the invocation. The script refuses
@@ -112,9 +113,18 @@ DEMO_DEBUG_DIR="${ANDROID_DIR}/demo/src/debug"
 # `android/` is subtree-split into a mirror whose root is this directory, where `.planning/` does not
 # exist. A pulled trace carries recognized speech, so it belongs OUTSIDE the split prefix (T-05-04)
 # whenever there is an outside to put it in.
-EVIDENCE_DIR="${REPO_ROOT}/.planning/phases/05-android-library"
-if [ ! -d "${EVIDENCE_DIR}" ]; then
-  EVIDENCE_DIR="${ANDROID_DIR}/build/and02"
+#
+# AND02_EVIDENCE_DIR overrides the destination. It exists because a trace is the one output of this
+# script that a caller may need to place deliberately — an agent running in a git worktree must not
+# drop untracked files into the planning tree, and a smoke run should not leave artifacts among real
+# evidence. It changes only WHERE the trace lands: every gate, the analyzer and the exit status are
+# untouched, so it cannot be used to dodge a verdict.
+EVIDENCE_DIR="${AND02_EVIDENCE_DIR:-}"
+if [ -z "${EVIDENCE_DIR}" ]; then
+  EVIDENCE_DIR="${REPO_ROOT}/.planning/phases/05-android-library"
+  if [ ! -d "${EVIDENCE_DIR}" ]; then
+    EVIDENCE_DIR="${ANDROID_DIR}/build/and02"
+  fi
 fi
 
 WORK_DIR="$(mktemp -d)"
@@ -329,6 +339,20 @@ step_6_run() {
     abort "step-6/stimulus" "AND02_DURATION_S=${DURATION_S} is below ${MIN_DURATION_S}s. Assertion 1 needs 120000 ms measured from the first listening state, and the deaf windows eat into that; a shorter run cannot pass. There is no bypass flag"
 
   CHOSEN_STIMULUS="$(resolve_stimulus)"
+
+  # THE SCORED RUN STARTS FROM A FRESH PROCESS. Measured, not precautionary: step 3's language probe
+  # is a real session on a real engine, and the demo only rebuilds its engine when the language or
+  # the diagnostic flag CHANGES — which they do not between the probe and the run. So without this
+  # the scored run inherits the probe's engine, and with it the probe's segment counter and its
+  # timestamp origin. A file-fed run measured exactly that: 14 finals carrying segment ids 1..14
+  # instead of 0..13, failing assertion 3 fourteen times over for a reason that had nothing to do
+  # with the engine's behaviour under restarts.
+  #
+  # A fresh process is also what a real user session is, so this makes the run more representative
+  # rather than less.
+  say "step 6: force-stopping ${PKG} so the scored run starts from a fresh engine"
+  adb_dev shell am force-stop "${PKG}" >/dev/null 2>&1 || true
+  sleep 2
 
   # File-fed arms the audio source ON the START broadcast, so its setup has to happen BEFORE the
   # session exists — unlike acoustic playback, which is delivered into an already-running session.
