@@ -39,12 +39,19 @@
 #
 # ─── STIMULUS, AND ITS FALLBACK CHAIN (05-RUNG-VERDICT.md) ───────────────────────────────────────
 #
-#   1. FILE-FED via EXTRA_AUDIO_SOURCE — the probe's chosen path, measured at precision 0.994 /
-#      recall 0.994 over a 130 s scripted passage. It needs a demo-side switch that selects a file
-#      as the audio source. The library's rung (c) owns the app's MICROPHONE, not a file, and the
-#      demo exposes no such extra, so `auto` DETECTS this on disk rather than assuming it. Ask for it
-#      explicitly and the script aborts at the stimulus step naming exactly what is missing, rather
-#      than running silence and scoring the result.
+#   1. FILE-FED via the demo's AUDIO_SOURCE extra — the probe's chosen path, measured at precision
+#      0.994 / recall 0.994 over a 130 s scripted passage, and the only DETERMINISTIC one: the same
+#      bytes, in the same order, at the same wall-clock pace, every time. The stimulus is pushed into
+#      the demo's OWN external files directory (no storage permission, unlike the shared-storage
+#      dance the acoustic path needs) and named on the START broadcast. `auto` still DETECTS the
+#      extra on disk rather than assuming it — the disk wins.
+#
+#      A file-fed run is refused rather than downgraded if anything about it cannot be verified. The
+#      hazard is NOT the microphone; it is rung (c) never being selected: on rungs (b)/(a) the
+#      app-owned pipe is never opened and the session records the ROOM while every label says
+#      file-fed. So step 7 requires the trace to name `RawAudioSegmented` AND the demo's sidecar to
+#      report a non-zero open count. A run that cannot prove it was file-fed is not scored, because
+#      an acoustic run mislabelled file-fed is worse than no run at all — it is evidence-shaped.
 #   2. ACOUSTIC speaker-to-microphone loopback — measured usable at precision 0.968 / recall 0.559.
 #      The recall shortfall is the restart deaf window clipping utterance onsets, not an acoustic
 #      problem. Fragile to set up (plan 07 needed four attempts and a file-manager grant), so an
@@ -127,10 +134,27 @@ ACTION_STOP="io.github.ygaray.sttengine.demo.debug.STOP"
 ACTION_DUMP="io.github.ygaray.sttengine.demo.debug.DUMP_DIAGNOSTICS"
 EXTRA_SESSION_LOG="io.github.ygaray.sttengine.demo.debug.extra.SESSION_LOG"
 EXTRA_LANGUAGE="io.github.ygaray.sttengine.demo.debug.extra.LANGUAGE"
+EXTRA_AUDIO_SOURCE="io.github.ygaray.sttengine.demo.debug.extra.AUDIO_SOURCE"
 
 RECEIVER="${PKG}/${RECEIVER_CLASS}"
 REMOTE_FILES_DIR="/sdcard/Android/data/${PKG}/files"
 DEMO_APK="${ANDROID_DIR}/demo/build/outputs/apk/debug/demo-debug.apk"
+
+# The stimulus goes in the demo's OWN external files directory: adb can write there, the app can
+# read it with no permission at all, and it is not in MediaStore — so unlike the acoustic path there
+# is no file-manager onboarding and no all-files grant to negotiate.
+REMOTE_STIMULUS="${REMOTE_FILES_DIR}/and02-stimulus.wav"
+
+# 16 kHz mono 16-bit PCM is 32 000 bytes per second. Used only to size the hold; the DEVICE does the
+# real format validation and refuses anything that is not exactly this shape.
+WAV_BYTES_PER_SECOND=32000
+WAV_HEADER_BYTES=44
+
+# Slack past the end of the passage. The armed feed serves paced silence once the passage runs out
+# (ending the stream instead would restart the session, whose fresh source is also exhausted — a
+# restart storm in the final seconds of every run), so overshooting is cheap and undershooting
+# silently truncates the stimulus.
+FILE_FED_TAIL_S=8
 
 # ─── helpers ─────────────────────────────────────────────────────────────────────────────────────
 
@@ -154,11 +178,11 @@ step_0_verify_interface() {
 
   local name
   for name in "${RECEIVER_CLASS}" "${ACTION_START}" "${ACTION_STOP}" "${ACTION_DUMP}" \
-    "${EXTRA_SESSION_LOG}" "${EXTRA_LANGUAGE}"; do
+    "${EXTRA_SESSION_LOG}" "${EXTRA_LANGUAGE}" "${EXTRA_AUDIO_SOURCE}"; do
     grep -qrF -- "${name}" "${DEMO_DEBUG_DIR}" ||
       abort "step-0/actions" "\`${name}\` is not present in ${DEMO_DEBUG_DIR} — the demo renamed it; the DISK wins, so update this script from the receiver source, never the other way round"
   done
-  say "step 0: OK — six interface strings all present in the debug source set"
+  say "step 0: OK — seven interface strings all present in the debug source set"
 }
 
 # ─── STEP 1 — reconnect and confirm ──────────────────────────────────────────────────────────────
@@ -304,16 +328,30 @@ step_6_run() {
   [ "${DURATION_S}" -ge "${MIN_DURATION_S}" ] 2>/dev/null ||
     abort "step-6/stimulus" "AND02_DURATION_S=${DURATION_S} is below ${MIN_DURATION_S}s. Assertion 1 needs 120000 ms measured from the first listening state, and the deaf windows eat into that; a shorter run cannot pass. There is no bypass flag"
 
-  local chosen
-  chosen="$(resolve_stimulus)"
-  say "step 6: stimulus = ${chosen}, holding for ${DURATION_S}s"
+  CHOSEN_STIMULUS="$(resolve_stimulus)"
+
+  # File-fed arms the audio source ON the START broadcast, so its setup has to happen BEFORE the
+  # session exists — unlike acoustic playback, which is delivered into an already-running session.
+  if [ "${CHOSEN_STIMULUS}" = "file-fed" ]; then
+    prepare_file_fed
+  fi
+
+  say "step 6: stimulus = ${CHOSEN_STIMULUS}, holding for ${DURATION_S}s"
 
   clear_remote_logs
-  start_session || abort "step-6/stimulus" "could not start the session; is the screen unlocked?"
+  if [ "${CHOSEN_STIMULUS}" = "file-fed" ]; then
+    start_session "${REMOTE_STIMULUS}" ||
+      abort "step-6/stimulus" "could not start the file-fed session; is the screen unlocked?"
+  else
+    start_session || abort "step-6/stimulus" "could not start the session; is the screen unlocked?"
+  fi
 
-  case "${chosen}" in
+  case "${CHOSEN_STIMULUS}" in
     file-fed)
-      abort "step-6/stimulus" "file-fed was requested but the demo exposes no audio-source extra, so there is no way to feed a file through it. Running anyway would score silence. Use AND02_STIMULUS=acoustic or =human, or add the switch to the demo first"
+      # Nothing to deliver: the engine is reading the pushed WAV through rung (c)'s own pipe, paced
+      # to wall clock by the library's debug source set. Step 7 PROVES that actually happened rather
+      # than assuming it, because a run that silently fell to rung (b) would look identical here.
+      say "step 6: file-fed session armed with ${REMOTE_STIMULUS}"
       ;;
     acoustic) deliver_acoustic ;;
     human)
@@ -344,13 +382,52 @@ resolve_stimulus() {
   esac
 
   # The rung verdict's first choice needs a demo-side switch selecting a file as the audio source.
-  # Detect it on disk rather than assuming either answer; the disk wins.
-  if grep -qrE 'extra\.(AUDIO_SOURCE|STIMULUS_FILE|FEED_FILE)' "${DEMO_DEBUG_DIR}" 2>/dev/null; then
+  # Detect it on disk rather than assuming either answer; the disk wins. Both halves are required —
+  # the switch is useless without a passage to feed through it.
+  if grep -qrE 'extra\.(AUDIO_SOURCE|STIMULUS_FILE|FEED_FILE)' "${DEMO_DEBUG_DIR}" 2>/dev/null &&
+    [ -f "${STIMULUS_WAV}" ]; then
     echo "file-fed"
   elif [ -f "${STIMULUS_WAV}" ]; then
     echo "acoustic"
   else
     echo "human"
+  fi
+}
+
+# ─── file-fed setup ──────────────────────────────────────────────────────────────────────────────
+
+CHOSEN_STIMULUS=""
+PUSHED_STIMULUS=0
+
+prepare_file_fed() {
+  [ -f "${STIMULUS_WAV}" ] ||
+    abort "step-6/stimulus" "file-fed needs a passage but ${STIMULUS_WAV} does not exist. Use AND02_STIMULUS=acoustic or =human"
+
+  say "step 6: pushing ${STIMULUS_WAV} to ${REMOTE_STIMULUS}"
+  # The app's own external files directory exists once the app has run at least once; step 5's
+  # install plus step 3's probe session guarantee that by now.
+  adb_dev shell mkdir -p "${REMOTE_FILES_DIR}" >/dev/null 2>&1 || true
+  adb_dev push "${STIMULUS_WAV}" "${REMOTE_STIMULUS}" >/dev/null 2>&1 ||
+    abort "step-6/stimulus" "could not push ${STIMULUS_WAV} to ${REMOTE_STIMULUS}"
+  PUSHED_STIMULUS=1
+
+  # A push that silently landed short would feed a truncated passage and score the result.
+  local local_bytes remote_bytes
+  local_bytes="$(stat -c %s "${STIMULUS_WAV}")"
+  remote_bytes="$(adb_dev shell stat -c %s "${REMOTE_STIMULUS}" 2>/dev/null | tr -d '\r')"
+  [ "${local_bytes}" = "${remote_bytes}" ] ||
+    abort "step-6/stimulus" "the pushed stimulus is ${remote_bytes:-absent} bytes on the device but ${local_bytes} locally; a truncated passage would be scored as dropped text"
+
+  # The hold has to outlast the passage, because the passage IS the stimulus: stopping early does not
+  # produce a shorter run, it produces a DIFFERENT one. Derived from the file rather than trusted to
+  # a hardcoded default that drifts the moment somebody swaps the WAV.
+  local passage_s needed_s
+  passage_s=$(((local_bytes - WAV_HEADER_BYTES) / WAV_BYTES_PER_SECOND))
+  needed_s=$((passage_s + FILE_FED_TAIL_S))
+  say "step 6: the passage is ~${passage_s}s"
+  if [ "${DURATION_S}" -lt "${needed_s}" ]; then
+    say "step 6: extending the hold ${DURATION_S}s -> ${needed_s}s so the whole passage plays out"
+    DURATION_S="${needed_s}"
   fi
 }
 
@@ -397,6 +474,7 @@ deliver_acoustic() {
 # ─── STEP 7 — stop and collect, BEFORE anything that could wipe app data ─────────────────────────
 
 PULLED_LOG=""
+PULLED_DIAGNOSTICS=""
 
 step_7_collect() {
   say "step 7: stopping the session and pulling the trace"
@@ -419,9 +497,11 @@ step_7_collect() {
 
   # The demo's own sidecar, which is NOT in the engine's frozen schema and is not scored. Pulled
   # beside the trace because it names the resolved recognizer service, which is the first thing worth
-  # knowing when a verdict comes back red.
-  adb_dev pull "${REMOTE_FILES_DIR}/demo-diagnostics.jsonl" \
-    "${EVIDENCE_DIR}/and02-demo-diagnostics-$(date -u +%Y%m%dT%H%M%SZ).jsonl" >/dev/null 2>&1 || true
+  # knowing when a verdict comes back red — and because it carries the file-feed counters the gate
+  # below reads.
+  PULLED_DIAGNOSTICS="${EVIDENCE_DIR}/and02-demo-diagnostics-$(date -u +%Y%m%dT%H%M%SZ).jsonl"
+  adb_dev pull "${REMOTE_FILES_DIR}/demo-diagnostics.jsonl" "${PULLED_DIAGNOSTICS}" >/dev/null 2>&1 ||
+    PULLED_DIAGNOSTICS=""
 
   # Leave the device as it was found. Anything this script put on shared storage comes back off,
   # including its MediaStore row — a borrowed device is returned, not kept.
@@ -436,6 +516,62 @@ step_7_collect() {
     adb_dev shell rm -f "${REMOTE_WAV}" >/dev/null 2>&1 || true
     say "step 7: removed the pushed stimulus from the device"
   fi
+
+  if [ "${PUSHED_STIMULUS}" -eq 1 ]; then
+    adb_dev shell rm -f "${REMOTE_STIMULUS}" >/dev/null 2>&1 || true
+    say "step 7: removed ${REMOTE_STIMULUS} from the device"
+  fi
+}
+
+# ─── STEP 7b — a file-fed run must PROVE it was file-fed, or it is not scored ─────────────────────
+#
+# The whole reason to feed a file is determinism. If the ladder did not land on rung (c), the
+# app-owned pipe was never opened, the armed WAV was never read, and the session recorded whatever
+# the room was doing — while the filename, the console output and the eventual report all say
+# "file-fed". Scoring that is worse than not running at all: a wrong answer that looks like a
+# measurement gets believed and acted on.
+#
+# Two independent sources have to agree, which is why neither is trusted alone: the ENGINE's own
+# trace (what rung it actually ran) and the DEMO's sidecar (how many times the armed feed was really
+# opened, and how many bytes of it were served). There is no bypass flag.
+
+step_7b_prove_file_fed() {
+  [ "${CHOSEN_STIMULUS}" = "file-fed" ] || return 0
+
+  say "step 7b: proving the run was actually file-fed"
+
+  local rung_lines raw_lines
+  rung_lines="$(grep -c '"kind":"rung"' "${PULLED_LOG}" || true)"
+  raw_lines="$(grep '"kind":"rung"' "${PULLED_LOG}" | grep -c '"value":"RawAudioSegmented"' || true)"
+
+  [ "${rung_lines}" -gt 0 ] ||
+    abort "step-7b/file-fed" "the trace names no rung at all, so there is no evidence this run reached a session. ${PULLED_LOG}"
+
+  # EVERY session, not just the last: a mid-run degradation to rung (b) hands the microphone back to
+  # the recognition service, so the remainder of the passage was never heard and the transcript is a
+  # blend of two different stimuli.
+  [ "${raw_lines}" = "${rung_lines}" ] ||
+    abort "step-7b/file-fed" "only ${raw_lines} of ${rung_lines} sessions ran on RawAudioSegmented. The rest ran on a rung where the recognition service owns the microphone, so part of this run recorded the ROOM rather than the file. Re-run, or use AND02_STIMULUS=acoustic and accept its recall 0.559. Trace: ${PULLED_LOG}"
+
+  [ -n "${PULLED_DIAGNOSTICS}" ] && [ -f "${PULLED_DIAGNOSTICS}" ] ||
+    abort "step-7b/file-fed" "could not pull the demo diagnostics sidecar, so the file-feed open count is unknown and the file-fed claim is unverifiable"
+
+  local last confirmed opens reason
+  last="$(grep '"fileFedOpens"' "${PULLED_DIAGNOSTICS}" | tail -n 1)"
+  [ -n "${last}" ] ||
+    abort "step-7b/file-fed" "the sidecar carries no file-feed counters. Either the DUMP_DIAGNOSTICS broadcast never landed or the demo predates the audio-source extra: ${PULLED_DIAGNOSTICS}"
+
+  confirmed="$(echo "${last}" | sed -n 's/.*"fileFedConfirmed":\([a-z][a-z]*\).*/\1/p')"
+  opens="$(echo "${last}" | sed -n 's/.*"fileFedOpens":\([0-9][0-9]*\).*/\1/p')"
+  reason="$(echo "${last}" | sed -n 's/.*"fileFedAbortReason":"\([^"]*\)".*/\1/p')"
+
+  [ "${opens:-0}" -gt 0 ] 2>/dev/null ||
+    abort "step-7b/file-fed" "the armed WAV was opened ${opens:-0} times, so none of it reached the recognizer. ${reason:+Demo said: ${reason}}"
+
+  [ "${confirmed}" = "true" ] ||
+    abort "step-7b/file-fed" "the demo did not confirm the file-fed run. ${reason:+Reason: ${reason}} Sidecar: ${PULLED_DIAGNOSTICS}"
+
+  say "step 7b: OK — ${rung_lines}/${rung_lines} sessions on RawAudioSegmented, feed opened ${opens}x, demo confirmed"
 }
 
 # ─── STEP 8 — score ──────────────────────────────────────────────────────────────────────────────
@@ -477,13 +613,26 @@ GRADLE_INIT
 
 # ─── session control ─────────────────────────────────────────────────────────────────────────────
 
+# $1 (optional): an on-device WAV path to feed rung (c) instead of the microphone. Omitted by the
+# language probe on purpose — that is a short preflight session, and arming the passage for it would
+# burn the opening seconds of the stimulus before the scored run ever starts.
 start_session() {
+  local audio_source="${1:-}"
+
   # The receiver drives the live view model and cannot conjure one, so the screen has to be up first.
   adb_dev shell am start -n "${PKG}/.MainActivity" >/dev/null 2>&1
   sleep 3
-  adb_dev shell am broadcast -n "${RECEIVER}" -a "${ACTION_START}" \
-    --ez "${EXTRA_SESSION_LOG}" true \
-    --es "${EXTRA_LANGUAGE}" "${LANGUAGE}" >/dev/null
+
+  if [ -n "${audio_source}" ]; then
+    adb_dev shell am broadcast -n "${RECEIVER}" -a "${ACTION_START}" \
+      --ez "${EXTRA_SESSION_LOG}" true \
+      --es "${EXTRA_LANGUAGE}" "${LANGUAGE}" \
+      --es "${EXTRA_AUDIO_SOURCE}" "${audio_source}" >/dev/null
+  else
+    adb_dev shell am broadcast -n "${RECEIVER}" -a "${ACTION_START}" \
+      --ez "${EXTRA_SESSION_LOG}" true \
+      --es "${EXTRA_LANGUAGE}" "${LANGUAGE}" >/dev/null
+  fi
   sleep 2
 }
 
@@ -518,4 +667,5 @@ step_3_language
 step_4_power
 step_6_run
 step_7_collect
+step_7b_prove_file_fed
 step_8_score
