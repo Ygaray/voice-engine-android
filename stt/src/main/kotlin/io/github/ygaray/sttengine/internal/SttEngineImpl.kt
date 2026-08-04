@@ -712,7 +712,13 @@ internal class SttEngineImpl(
             segmentResultCount += 1
             val text = RecognizerBundles.firstNonBlankResult(segmentResults) ?: NO_PLATFORM_FINAL
             accumulator.onFinal(text)?.let(::emitFinal)
-            // A segmented session continues after a segment: advance the counter, do NOT restart.
+            // A segmented session continues after a segment: close the segment, do NOT restart.
+            //
+            // This is where the AND-02 id gap came from, and it is worth naming. When the session
+            // then ends, `scheduleRestart` announces a SECOND boundary with an empty buffer — so a
+            // counter that advanced on every boundary spent an id no final ever carried. The
+            // accumulator now spends an id only on a boundary that closes a committed segment, so
+            // announcing one here AND at the restart is safe rather than merely conventional.
             accumulator.onSegmentBoundary()
         }
 

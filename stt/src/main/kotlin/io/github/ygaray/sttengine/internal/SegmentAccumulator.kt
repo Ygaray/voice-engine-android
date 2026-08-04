@@ -85,7 +85,9 @@ internal object FinalTextPolicy {
  *    append** — appending a final onto its own last partial is the single most common way this class
  *    of library duplicates words, and both reference implementations replace.
  * 2. **Across segments**, each final is a genuinely new segment for the host to concatenate.
- *    [segmentId] therefore advances on a session or segment boundary **only**, never on a partial.
+ *    [segmentId] therefore advances on a session or segment boundary **only**, never on a partial —
+ *    and only on a boundary that closes a segment which actually committed, so the ids a host sees
+ *    run `0, 1, 2, …` with no gaps. [onSegmentBoundary] carries the measurement behind that.
  *
  * ## Ordering contract the engine must respect
  *
@@ -122,6 +124,9 @@ internal class SegmentAccumulator {
      * Library-owned, monotonic, **starts at 0** — mirroring `server/src/stt_server/segmenter.py`'s
      * `_next_segment_id = 0`, so the two backends number identically.
      *
+     * The id the currently open segment will commit under. It is spent by a **commit** and by
+     * nothing else: see [onSegmentBoundary] for why the sequence a host observes must have no gaps.
+     *
      * Opaque and per-session: it is **not** comparable across engines, backends or sessions, and a
      * host must not persist it or infer anything from the gap between two values.
      */
@@ -147,6 +152,10 @@ internal class SegmentAccumulator {
      * This is the *second* line of defence against duplication; the epoch fence is the first. It
      * covers the same-epoch race the fence cannot see: a teardown commit immediately followed by
      * the real (or blank) `onResults` for the very same session.
+     *
+     * It carries a second job since AND-02's gap defect: it is also the record of whether this
+     * segment id has been **spent**, which is what [onSegmentBoundary] reads to decide whether the
+     * boundary advances anything at all.
      */
     private var committed: Boolean = false
 
@@ -195,15 +204,47 @@ internal class SegmentAccumulator {
     fun commitLivePartialAsFinal(): FinalSegment? = commit(NO_PLATFORM_FINAL)
 
     /**
-     * A session or segment boundary was crossed: advance [segmentId] and re-open the segment for
-     * commit.
+     * A session or segment boundary was crossed: re-open the segment for commit, advancing
+     * [segmentId] **only if the segment being closed actually emitted a final**.
      *
      * Called on `onEndOfSegmentedSession`, after a committed final, and on a restart — **never** on
      * a partial. Does not clear [livePartial]: a commit already cleared it, and if one did not
      * (because the segment was already committed) those words still belong to the user and must
      * survive into the new segment.
+     *
+     * ## Why the advance is conditional — AND-02, measured
+     *
+     * An id is consumed by a COMMIT, never by a boundary. A boundary that committed nothing leaves
+     * the segment open under the same id, because nothing the host can ever observe was numbered
+     * with it.
+     *
+     * That is not a tidiness argument. `segmentId` is the only handle a host has on segment
+     * identity, and `SessionLogAnalyzer`'s assertion 3 reads the finals' id sequence as this
+     * project's **dropped-text detector**: `0, 1, 2, …` with no repeats and no gaps. An
+     * unconditional advance put holes in it, because the engine announces boundaries on three
+     * paths that routinely commit nothing:
+     *
+     * | Path | Why nothing is committed |
+     * |---|---|
+     * | `onSegmentResults` then `onEndOfSegmentedSession` (rungs b/c) | the segment result already committed and opened the next segment; the session then ends on the speaker's pause with an empty buffer, and the restart announces a **second** boundary |
+     * | a session that recognised nothing (`ERROR_NO_MATCH`, `ERROR_SPEECH_TIMEOUT`) | the user paused between sentences; the restart's flush has no live partial |
+     * | `stop()` with an empty buffer | nothing was said before the host stopped |
+     *
+     * MEASURED: a 138-second file-fed AND-02 run on the tester (SM-S908U, API 35) on rung (c)
+     * produced 14 verbatim-correct finals numbered `0, 1, 2, 3, 5, … 14` — id 4 never appeared on a
+     * final **or on a partial**, reproducing at the same stimulus boundary across two independent
+     * runs. The text was all there; the sequence said it was not, and a host cannot tell those two
+     * apart from a log.
+     *
+     * The conditional advance makes the guarantee structural rather than incidental: `commit`
+     * stamps a segment and sets [committed]; the first boundary afterwards spends that id and
+     * re-opens; any further boundary before the next commit is a no-op. The emitted sequence is
+     * therefore `0, 1, 2, …` by construction, whatever the lifecycle does above it.
      */
     fun onSegmentBoundary() {
+        // Nothing was emitted under this id, so there is nothing to close and no id to spend. The
+        // segment stays open — including any live partial that arrived, which will commit here.
+        if (!committed) return
         segmentId += 1
         committed = false
     }

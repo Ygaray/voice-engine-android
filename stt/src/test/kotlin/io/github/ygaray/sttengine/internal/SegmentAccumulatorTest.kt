@@ -1,5 +1,6 @@
 package io.github.ygaray.sttengine.internal
 
+import io.github.ygaray.sttengine.FinalSegment
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -224,6 +225,88 @@ class SegmentAccumulatorTest {
         val next = acc.onFinal("segment one")
         assertEquals("segment one", next!!.text)
         assertEquals(1, next.segmentId)
+    }
+
+    // --- AND-02's gap defect: an id is spent by a COMMIT, never by a boundary -------------------
+
+    @Test
+    fun `a boundary that committed nothing does not spend a segment id`() {
+        val acc = SegmentAccumulator()
+
+        // Three boundaries and not one commit: a session that recognised nothing, a stop() with an
+        // empty buffer, a segmented session ending on the speaker's pause.
+        acc.onSegmentBoundary()
+        acc.onSegmentBoundary()
+        acc.onSegmentBoundary()
+
+        assertEquals("nothing was emitted, so no id was consumed", 0, acc.segmentId)
+        assertEquals(
+            "the FIRST committed final of a session must be segment 0",
+            0,
+            acc.onFinal("the morning light")!!.segmentId,
+        )
+    }
+
+    @Test
+    fun `the measured AND-02 shape - a segment result then a session end - emits a gapless sequence`() {
+        // Reproduces the tester's rung-(c) boundary exactly: `onSegmentResults` commits AND opens
+        // the next segment, then `onEndOfSegmentedSession` flushes an empty buffer and the restart
+        // announces a SECOND boundary. Two boundaries, one commit — which is what put a hole at id
+        // 4 of a 138-second run whose text was verbatim-correct throughout.
+        val acc = SegmentAccumulator()
+        val emitted = mutableListOf<FinalSegment>()
+
+        repeat(3) { session ->
+            acc.onPartial("utterance $session")
+            acc.onFinal("utterance $session")?.let { emitted += it } // onSegmentResults
+            acc.onSegmentBoundary() //                                 …its own boundary
+            acc.commitLivePartialAsFinal()?.let { emitted += it } //    the restart's flush: nothing
+            acc.onSegmentBoundary() //                                  the restart's boundary
+        }
+
+        assertEquals(
+            "a hole in this sequence is indistinguishable from dropped speech to a host",
+            listOf(0, 1, 2),
+            emitted.map { it.segmentId },
+        )
+        assertEquals(
+            listOf("utterance 0", "utterance 1", "utterance 2"),
+            emitted.map { it.text },
+        )
+    }
+
+    @Test
+    fun `a boundary still closes a committed segment so no two finals share an id`() {
+        val acc = SegmentAccumulator()
+        val emitted = mutableListOf<FinalSegment>()
+
+        acc.onFinal("first")?.let { emitted += it }
+        acc.onSegmentBoundary()
+        acc.onFinal("second")?.let { emitted += it }
+        acc.onSegmentBoundary()
+        acc.onFinal("third")?.let { emitted += it }
+
+        assertEquals(
+            "not spending an id on an EMPTY segment must not stop a FULL one from being closed",
+            listOf(0, 1, 2),
+            emitted.map { it.segmentId },
+        )
+    }
+
+    @Test
+    fun `an uncommitted segment keeps its id and commits the partial that landed in it`() {
+        val acc = SegmentAccumulator()
+        acc.onFinal("first utterance")
+        acc.onSegmentBoundary()
+
+        // Speech arrives, then a boundary crosses before anything committed it — a restart provoked
+        // by an error rather than by a final. The words must survive AND keep the open id.
+        acc.onPartial("second utterance")
+        acc.onSegmentBoundary()
+
+        val second = acc.commitLivePartialAsFinal()
+        assertEquals("second utterance", second!!.text)
+        assertEquals(1, second.segmentId)
     }
 
     @Test
