@@ -1,0 +1,156 @@
+public final class io/github/ygaray/sttengine/EngineState : java/lang/Enum {
+	public static final field Connecting Lio/github/ygaray/sttengine/EngineState;
+	public static final field Error Lio/github/ygaray/sttengine/EngineState;
+	public static final field Idle Lio/github/ygaray/sttengine/EngineState;
+	public static final field Listening Lio/github/ygaray/sttengine/EngineState;
+	public static final field Reconnecting Lio/github/ygaray/sttengine/EngineState;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getWireName ()Ljava/lang/String;
+	public static fun valueOf (Ljava/lang/String;)Lio/github/ygaray/sttengine/EngineState;
+	public static fun values ()[Lio/github/ygaray/sttengine/EngineState;
+}
+
+public final class io/github/ygaray/sttengine/FinalSegment {
+	public fun <init> (Ljava/lang/String;I)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getSegmentId ()I
+	public final fun getText ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/ReconnectInfo {
+	public fun <init> (II)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAttempt ()I
+	public final fun getMax ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/SttConfig {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/String;)V
+	public synthetic fun <init> (Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getLanguage ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class io/github/ygaray/sttengine/SttEngine {
+	public abstract fun getErrors ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getEvents ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getFinals ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getLevel ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getPartial ()Lkotlinx/coroutines/flow/StateFlow;
+	public abstract fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+	public abstract fun start (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun stop (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class io/github/ygaray/sttengine/SttEngineFactoryKt {
+	public static final fun createSttEngine (Landroid/content/Context;Lio/github/ygaray/sttengine/SttConfig;Z)Lio/github/ygaray/sttengine/SttEngine;
+	public static synthetic fun createSttEngine$default (Landroid/content/Context;Lio/github/ygaray/sttengine/SttConfig;ZILjava/lang/Object;)Lio/github/ygaray/sttengine/SttEngine;
+}
+
+public final class io/github/ygaray/sttengine/SttError {
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getMessage ()Ljava/lang/String;
+	public final fun getPlatformDetail ()Ljava/lang/Integer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/SttErrorCode {
+	public static final field Companion Lio/github/ygaray/sttengine/SttErrorCode$Companion;
+	public static final synthetic fun box-impl (Ljava/lang/String;)Lio/github/ygaray/sttengine/SttErrorCode;
+	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
+	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public static fun hashCode-impl (Ljava/lang/String;)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (Ljava/lang/String;)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/SttErrorCode$Companion {
+	public final fun getANDROID_ONLY ()Ljava/util/Set;
+	public final fun getAUDIO_ERROR-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getBUSY-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getINTERNAL_ERROR-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getINVALID_CONFIG-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getMIC_DENIED-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getNO_OFFLINE_MODEL-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getPROTOCOL_VIOLATION-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getRECOGNIZER_UNAVAILABLE-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getRECONNECT_EXHAUSTED-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getSEND_BACKPRESSURE-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getSERVER_UNREACHABLE-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getSHARED ()Ljava/util/Set;
+	public final fun getUNSUPPORTED_LANGUAGE-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getUNSUPPORTED_SAMPLE_RATE-ZeSUmn0 ()Ljava/lang/String;
+	public final fun getVERSION_MISMATCH-ZeSUmn0 ()Ljava/lang/String;
+}
+
+public abstract interface class io/github/ygaray/sttengine/SttEvent {
+}
+
+public final class io/github/ygaray/sttengine/SttEvent$Error : io/github/ygaray/sttengine/SttEvent {
+	public fun <init> (Lio/github/ygaray/sttengine/SttError;)V
+	public final fun getError ()Lio/github/ygaray/sttengine/SttError;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/SttEvent$Final : io/github/ygaray/sttengine/SttEvent {
+	public fun <init> (Lio/github/ygaray/sttengine/FinalSegment;)V
+	public final fun getSegment ()Lio/github/ygaray/sttengine/FinalSegment;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/SttEvent$Level : io/github/ygaray/sttengine/SttEvent {
+	public fun <init> (F)V
+	public final fun getValue ()F
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/SttEvent$Partial : io/github/ygaray/sttengine/SttEvent {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun getText ()Ljava/lang/String;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/SttEvent$Reconnecting : io/github/ygaray/sttengine/SttEvent {
+	public fun <init> (Lio/github/ygaray/sttengine/ReconnectInfo;)V
+	public final fun getInfo ()Lio/github/ygaray/sttengine/ReconnectInfo;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/SttEvent$State : io/github/ygaray/sttengine/SttEvent {
+	public fun <init> (Lio/github/ygaray/sttengine/EngineState;)V
+	public final fun getState ()Lio/github/ygaray/sttengine/EngineState;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/SttEvent$Warning : io/github/ygaray/sttengine/SttEvent {
+	public fun <init> (Lio/github/ygaray/sttengine/SttWarning;)V
+	public final fun getWarning ()Lio/github/ygaray/sttengine/SttWarning;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/SttWarning {
+	public fun <init> (Ljava/lang/String;ZLjava/lang/String;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getActive ()Z
+	public final fun getCode ()Ljava/lang/String;
+	public final fun getMessage ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
