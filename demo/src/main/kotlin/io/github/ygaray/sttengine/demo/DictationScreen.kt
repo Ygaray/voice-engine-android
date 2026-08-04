@@ -139,6 +139,10 @@ internal fun DictationScreen(
 
             error?.let { ErrorBanner(error = it) }
 
+            // Always on screen, never behind a developer toggle: a device-specific failure that can
+            // only be diagnosed by first knowing to go looking is a failure that costs an afternoon.
+            DiagnosticsPanel(viewModel = viewModel)
+
             Transcript(
                 committed = committed,
                 partial = partial,

@@ -9,6 +9,8 @@ import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttEngine
 import io.github.ygaray.sttengine.SttError
 import io.github.ygaray.sttengine.createSttEngine
+import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
@@ -18,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 /**
  * Owns the engine and every piece of state the screen renders that the engine does not itself hold.
@@ -84,13 +87,55 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _lastSegmentId = MutableStateFlow<Int?>(null)
 
+    // --- diagnostics (D-28) -------------------------------------------------------------------------
+
+    private val _recognizerServices = MutableStateFlow<List<String>>(emptyList())
+
+    /** Every recognition service the package manager admits to. Empty means the manifest, not the device. */
+    val recognizerServices: StateFlow<List<String>> = _recognizerServices.asStateFlow()
+
+    private val _selectedRecognizer = MutableStateFlow<String?>(null)
+
+    /** The service the system will actually bind — a different question from what is installed. */
+    val selectedRecognizer: StateFlow<String?> = _selectedRecognizer.asStateFlow()
+
+    private val _restartCount = MutableStateFlow<Int?>(null)
+
+    /** Sessions restarted so far, or `null` while there is no diagnostic trace to read it from. */
+    val restartCount: StateFlow<Int?> = _restartCount.asStateFlow()
+
+    private val _activeRung = MutableStateFlow<String?>(null)
+
+    /** The ladder rung the current session is running on, from the same trace. */
+    val activeRung: StateFlow<String?> = _activeRung.asStateFlow()
+
+    private val _lastDeafWindowMs = MutableStateFlow<Long?>(null)
+
+    /** The most recent restart's deaf window in milliseconds — the audio the engine could not hear. */
+    val lastDeafWindowMs: StateFlow<Long?> = _lastDeafWindowMs.asStateFlow()
+
     private var decayJob: Job? = null
+    private var logTailJob: Job? = null
 
     init {
         builtWith = EngineSpec(language = SttConfig().language, diagnosticLogging = false)
         _engine = MutableStateFlow(build(builtWith))
         startLevelDecay()
+        refreshRecognizerInfo()
         live = this
+    }
+
+    /**
+     * Resolve the two device-level diagnostic answers once.
+     *
+     * Neither changes while the app is running — an installed service list and a selected recognizer
+     * only move when the user installs an app or changes a system setting, both of which restart or
+     * at least background this process.
+     */
+    private fun refreshRecognizerInfo() {
+        val context: Application = getApplication()
+        _recognizerServices.value = queryRecognizerServices(context)
+        _selectedRecognizer.value = querySelectedRecognizer(context)
     }
 
     // --- events in from the screen -------------------------------------------------------------------
@@ -171,12 +216,106 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun build(spec: EngineSpec): SttEngine {
         _diagnosticLogging.value = spec.diagnosticLogging
-        return createSttEngine(
+        val engine = createSttEngine(
             context = getApplication(),
             config = SttConfig(language = spec.language),
             diagnosticLogging = spec.diagnosticLogging,
         )
+        startLogTail(spec.diagnosticLogging)
+        return engine
     }
+
+    // --- the restart counter and the rung, read from the engine's own trace --------------------------
+
+    /**
+     * Follow the engine's JSONL session trace for the two diagnostics the public contract does not
+     * expose.
+     *
+     * **Why this rather than a public accessor.** The engine tracks the restart count and the active
+     * rung, and both are `internal` — visible only inside the library's own module, which this demo
+     * is not. Promoting them would have been one line. It was rejected: the public surface is frozen
+     * immediately after this plan, so anything promoted here becomes a permanent binary-compatibility
+     * commitment made on behalf of every future consumer, in exchange for two numbers on one debug
+     * screen. The trace is a diagnostic channel that already exists, already carries exactly these
+     * fields, and already has a schema an analyzer depends on.
+     *
+     * **What that costs, stated plainly.** The trace is off by default and must stay off — it records
+     * the user's dictated speech — so in an ordinary run these fields have no source and the panel
+     * says so rather than showing a zero. They populate on a diagnostic run, which only the
+     * debug-source-set control receiver can request.
+     *
+     * Only `restart`, `rung` and `ready` lines are read. The `partial` and `final` lines in the same
+     * file carry the transcript and are skipped without being touched — the demo has no business
+     * reading speech back off the disk when it already has it in memory from the contract.
+     */
+    private fun startLogTail(enabled: Boolean) {
+        logTailJob?.cancel()
+        logTailJob = null
+        _restartCount.value = null
+        _activeRung.value = null
+        _lastDeafWindowMs.value = null
+        if (!enabled) return
+
+        val directory = getApplication<Application>().getExternalFilesDir(null) ?: return
+        // Only files this engine instance could have produced. A trace left behind by an earlier run
+        // would otherwise report that earlier run's restart count as if it were live.
+        val notBeforeEpochMs = System.currentTimeMillis() - LOG_FILE_EPOCH_SLACK_MS
+
+        logTailJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                readTrace(directory, notBeforeEpochMs)?.let { snapshot ->
+                    _restartCount.value = snapshot.restarts
+                    _activeRung.value = snapshot.rung
+                    _lastDeafWindowMs.value = snapshot.deafWindowMs
+                }
+                delay(LOG_TAIL_POLL_MS)
+            }
+        }
+    }
+
+    private fun readTrace(directory: File, notBeforeEpochMs: Long): TraceSnapshot? {
+        val newest = runCatching {
+            directory.listFiles()
+                ?.filter { it.name.startsWith(LOG_PREFIX) && it.name.endsWith(LOG_SUFFIX) }
+                ?.filter { (epochOf(it.name) ?: 0L) >= notBeforeEpochMs }
+                ?.maxByOrNull { epochOf(it.name) ?: 0L }
+        }.getOrNull() ?: return null
+
+        var restarts = 0
+        var rung: String? = null
+        var deafWindowMs: Long? = null
+
+        val read = runCatching {
+            newest.forEachLine { line ->
+                if (line.isBlank()) return@forEachLine
+                val entry = runCatching { JSONObject(line) }.getOrNull() ?: return@forEachLine
+                when (entry.optString(FIELD_KIND)) {
+                    KIND_RESTART -> restarts += 1
+                    KIND_RUNG -> entry.optString(FIELD_VALUE)
+                        .takeIf { it.isNotEmpty() }
+                        ?.let { rung = it }
+                    KIND_READY -> entry.optLong(FIELD_DEAF_WINDOW, NO_DEAF_WINDOW)
+                        // -1 means "no restart preceded this ready", which is not a measurement.
+                        .takeIf { it != NO_DEAF_WINDOW }
+                        ?.let { deafWindowMs = it }
+                }
+            }
+        }
+        // A half-written line is normal — the engine flushes per line while this reads. Report
+        // nothing this tick rather than a wrong number; the next poll is 500 ms away.
+        if (read.isFailure) return null
+
+        return TraceSnapshot(restarts, rung, deafWindowMs)
+    }
+
+    private fun epochOf(fileName: String): Long? =
+        fileName.removePrefix(LOG_PREFIX).removeSuffix(LOG_SUFFIX).toLongOrNull()
+
+    private class TraceSnapshot(
+        val restarts: Int,
+        val rung: String?,
+        val deafWindowMs: Long?,
+    )
 
     /**
      * Decay the meter toward zero instead of snapping it there.
@@ -214,6 +353,7 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         decayJob?.cancel()
+        logTailJob?.cancel()
         // stop() releases the recognizer, and it must still run: viewModelScope is already cancelled
         // by the time this is called, so a short-lived scope is used and shut down immediately after.
         // Leaking a recognizer past the screen that owned it holds the microphone open.
@@ -261,5 +401,26 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
 
         /** Below this the bar is a hairline; snap it flat rather than render a sliver forever. */
         private const val LEVEL_DECAY_FLOOR = 0.01f
+
+        // The engine's trace file naming and the three line kinds this reads. These mirror the
+        // library's frozen schema; they are duplicated rather than shared because the constants that
+        // define them are internal to :stt, and a demo that could see them would not be a demo.
+        private const val LOG_PREFIX = "stt-session-"
+        private const val LOG_SUFFIX = ".jsonl"
+        private const val FIELD_KIND = "kind"
+        private const val FIELD_VALUE = "value"
+        private const val FIELD_DEAF_WINDOW = "deafWindowMs"
+        private const val KIND_RESTART = "restart"
+        private const val KIND_RUNG = "rung"
+        private const val KIND_READY = "ready"
+
+        /** The trace's sentinel for "no restart preceded this ready" — absence, not a zero. */
+        private const val NO_DEAF_WINDOW = -1L
+
+        /** Twice a second. The values move at restart cadence; polling faster would only cost. */
+        private const val LOG_TAIL_POLL_MS = 500L
+
+        /** Clock slack when matching a trace file to this engine instance. */
+        private const val LOG_FILE_EPOCH_SLACK_MS = 5_000L
     }
 }
