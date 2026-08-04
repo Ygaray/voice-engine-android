@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The reference host app's manifest. Deliberately minimal: one permission, one launcher activity,
+    nothing else. The debug source set adds the adb control receiver (src/debug/AndroidManifest.xml)
+    and it is STRUCTURALLY absent from this file, which is what keeps it out of a release build.
+
+    RECORD_AUDIO is redeclared here rather than leaned on. :stt's manifest already merges it in, but
+    a host reading this file as the worked example must see the permission it is responsible for —
+    D-11: the LIBRARY checks the grant, the HOST requests it.
+
+    The <queries> element for RecognitionService is NOT repeated here. It merges in from :stt's
+    manifest, and that inheritance is the point of putting it there (Obstacle 3 / Pitfall 5): every
+    consumer gets package visibility for the recognizer without knowing it needed to ask.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SttDemo">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

@@ -24,6 +24,9 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "stt-engine-android"
-// Only the publishable library module for now. Plan 07 adds `include(":demo")` — the demo is the
-// reference host app and is NEVER named in jitpack.yml (D-23).
+// The publishable library module.
 include(":stt")
+// The reference host app (D-27/D-28). It is NEVER named in jitpack.yml and carries no
+// `maven-publish`, so it is outside the published module set (D-23) — the mirror ships the library
+// and the worked example of how to consume it, never the example as an artifact.
+include(":demo")

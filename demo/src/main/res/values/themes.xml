@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    A platform DayNight theme with no action bar. The whole UI is Compose, so this theme's only job
+    is the window chrome; colours and typography come from MaterialTheme in DictationScreen.kt.
+
+    Parented on @android:style/... rather than a Material Components theme on purpose: that would
+    require the com.google.android.material dependency, which a Compose-only app has no other use
+    for, and an unused dependency in the reference app is a thing consumers copy by mistake.
+-->
+<resources>
+    <style name="Theme.SttDemo" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <!-- There is no @android:style/Theme.DeviceDefault.DayNight.NoActionBar — the platform
+             ships NoActionBar variants for Theme.DeviceDefault and Theme.DeviceDefault.Light but
+             not for the DayNight one. Suppressing the bar with these two items is the portable way
+             to get the same result without giving up automatic day/night. -->
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>
