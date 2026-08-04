@@ -71,6 +71,76 @@ class RungDegradationTest {
             )
         }
 
+    // --- the debug rung ceiling, which is a THIRD term in the same resolution ----------------------
+    //
+    // The structural half of this seam's proof — that it cannot exist in a release build and cannot
+    // be written from outside `src/debug/` — is `ReleaseRungCeilingSeamTest`. These three live here
+    // because they need a driven engine, and that suite cannot use the Robolectric runner without
+    // breaking the variant detection its release half depends on.
+
+    @Test
+    fun `an unset ceiling leaves the ladder exactly as it was`() = runTest {
+        DebugRungCeilingHolder.ceiling = null
+        val h = EngineHarness(testScheduler, supportsSegmented = true, supportsRawAudio = true)
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        assertEquals(
+            "an un-capped engine must start on the device's best rung",
+            Rung.RawAudioSegmented,
+            h.engine.activeRung,
+        )
+    }
+
+    /**
+     * The cap the AND-02 evidence run depends on: rung (a), where the restart loop lives.
+     *
+     * The seam being *inert* is what every assertion in `ReleaseRungCeilingSeamTest` defends. This is
+     * the one that proves it is not inert when it is supposed to work — a guard around a mechanism
+     * that never functioned would be a comfortable way to prove nothing.
+     */
+    @Test
+    fun `a ceiling of RestartingSingleSession forces the floor`() = runTest {
+        try {
+            DebugRungCeilingHolder.ceiling = Rung.RestartingSingleSession
+            val h = EngineHarness(testScheduler, supportsSegmented = true, supportsRawAudio = true)
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            assertEquals(
+                "a ceiling of RestartingSingleSession must put the engine on the floor even " +
+                    "though both segmented capabilities are seeded true",
+                Rung.RestartingSingleSession,
+                h.engine.activeRung,
+            )
+            assertFalse(
+                "a floored session must carry no segmented extra",
+                h.fake.startedIntents[0].hasExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION),
+            )
+        } finally {
+            DebugRungCeilingHolder.ceiling = null
+        }
+    }
+
+    /** A ceiling is a ceiling, not a switch: capping at rung (b) leaves rung (b) reachable. */
+    @Test
+    fun `a ceiling of SilenceSegmented removes only rung c`() = runTest {
+        try {
+            DebugRungCeilingHolder.ceiling = Rung.SilenceSegmented
+            val h = EngineHarness(testScheduler, supportsSegmented = true, supportsRawAudio = true)
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            assertEquals(
+                "a ceiling of SilenceSegmented must remove rung (c) and leave rung (b) selected",
+                Rung.SilenceSegmented,
+                h.engine.activeRung,
+            )
+        } finally {
+            DebugRungCeilingHolder.ceiling = null
+        }
+    }
+
     // --- scenario 1: the rung does its job and is kept ---------------------------------------------
 
     @Test

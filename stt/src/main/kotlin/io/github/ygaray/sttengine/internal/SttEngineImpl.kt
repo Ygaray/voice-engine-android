@@ -288,9 +288,18 @@ internal class SttEngineImpl(
         //
         // Resolved ONLY here. Mid-session the ladder walks DOWN through `candidates` and never
         // re-reads these flags, because a session is not the place to change what the device can do.
+        //
+        // The third term is the debug rung ceiling — `null` in every shipped build and unassignable
+        // there, so this reads exactly as it did before the seam existed. It exists because rung (c)
+        // is ABSORBING on a device that supports it (its session ends only when the audio source
+        // ends, and an app-owned source never does), which makes AND-02's forced-restart evidence
+        // unreachable without a way to ask for a lower rung. See `DebugRungCeilingHolder`.
+        val ceiling = DebugRungCeilingHolder.ceiling
         candidates = RungLadder.candidates(
-            supportsSegmented = supportsSegmented && !segmentedRungWithdrawn,
-            supportsRawAudio = supportsRawAudio && !rawAudioRungWithdrawn,
+            supportsSegmented = supportsSegmented && !segmentedRungWithdrawn &&
+                ceiling != Rung.RestartingSingleSession,
+            supportsRawAudio = supportsRawAudio && !rawAudioRungWithdrawn &&
+                (ceiling == null || ceiling == Rung.RawAudioSegmented),
         )
         currentRung = candidates.first()
 

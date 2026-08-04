@@ -74,6 +74,31 @@
 #   AND02_STIMULUS=auto      auto | file-fed | acoustic | human
 #   AND02_LANGUAGE_TIMEOUT_S=300   how long to wait for a language pack to land
 #   AND02_EVIDENCE_DIR=<dir> where the pulled trace lands (default: the phase directory)
+#   AND02_RUNG_CEILING=<rung>  cap the capability ladder: RawAudioSegmented | SilenceSegmented |
+#                              RestartingSingleSession. Unset = the device's own answer.
+#
+# ─── WHY A RUNG CEILING EXISTS, AND WHY IT DOES NOT WEAKEN THE VERDICT ───────────────────────────
+#
+# Assertion 2 wants at least three restarts, and on this device a normal run produces NONE. That is
+# not a harness failure — it is a measured property of the shipped ladder. Rung (c) sets
+# EXTRA_SEGMENTED_SESSION to EXTRA_AUDIO_SOURCE, so the session ends when the APP-OWNED SOURCE is
+# exhausted, and an app-owned source (a microphone, or the paced file feed) never exhausts. Nothing
+# degrades off it either: both of rung (c)'s triggers are exempt for a session the host stopped.
+# Measured here: a 140 s file-fed run and a 75 s quiet-microphone run, zero restarts each, no errors,
+# no degradation. Rung (c) is ABSORBING on a device that supports it.
+#
+# So AND-02's two halves cannot be measured by one run, and the ceiling is what makes the second one
+# possible rather than what makes it pass:
+#
+#   * FILE-FED on rung (c) — deterministic, perfect recall, ZERO restarts. Carries the text-integrity
+#     claim. Assertion 2 fails on it, and that failure is a statement about the STIMULUS.
+#   * CEILING=RestartingSingleSession on rung (a) — the classic restart loop, one restart per final,
+#     microphone-only (rung (a) does not accept an app-owned source, so it cannot be file-fed).
+#     Carries the restart-boundary claim.
+#
+# The ceiling changes WHICH RUNG runs. It does not touch the analyzer, the assertions or the exit
+# status, and step 7c refuses to score a capped run whose trace does not name the requested rung on
+# EVERY session — a cap is a request, the trace is the fact.
 #
 # The serial is an environment variable because the tester's wireless-adb port ROTATES; a hardcoded
 # one goes stale and the next person edits the script instead of the invocation. The script refuses
@@ -97,6 +122,7 @@ DURATION_S="${AND02_DURATION_S}"
 LANGUAGE="${AND02_LANGUAGE:-en-US}"
 STIMULUS="${AND02_STIMULUS:-auto}"
 LANGUAGE_TIMEOUT_S="${AND02_LANGUAGE_TIMEOUT_S:-300}"
+RUNG_CEILING="${AND02_RUNG_CEILING:-}"
 
 MIN_DURATION_S=130
 PROBE_HOLD_S=8
@@ -145,6 +171,7 @@ ACTION_DUMP="io.github.ygaray.sttengine.demo.debug.DUMP_DIAGNOSTICS"
 EXTRA_SESSION_LOG="io.github.ygaray.sttengine.demo.debug.extra.SESSION_LOG"
 EXTRA_LANGUAGE="io.github.ygaray.sttengine.demo.debug.extra.LANGUAGE"
 EXTRA_AUDIO_SOURCE="io.github.ygaray.sttengine.demo.debug.extra.AUDIO_SOURCE"
+EXTRA_RUNG_CEILING="io.github.ygaray.sttengine.demo.debug.extra.RUNG_CEILING"
 
 RECEIVER="${PKG}/${RECEIVER_CLASS}"
 REMOTE_FILES_DIR="/sdcard/Android/data/${PKG}/files"
@@ -188,11 +215,16 @@ step_0_verify_interface() {
 
   local name
   for name in "${RECEIVER_CLASS}" "${ACTION_START}" "${ACTION_STOP}" "${ACTION_DUMP}" \
-    "${EXTRA_SESSION_LOG}" "${EXTRA_LANGUAGE}" "${EXTRA_AUDIO_SOURCE}"; do
+    "${EXTRA_SESSION_LOG}" "${EXTRA_LANGUAGE}" "${EXTRA_AUDIO_SOURCE}" "${EXTRA_RUNG_CEILING}"; do
     grep -qrF -- "${name}" "${DEMO_DEBUG_DIR}" ||
       abort "step-0/actions" "\`${name}\` is not present in ${DEMO_DEBUG_DIR} — the demo renamed it; the DISK wins, so update this script from the receiver source, never the other way round"
   done
-  say "step 0: OK — seven interface strings all present in the debug source set"
+  say "step 0: OK — eight interface strings all present in the debug source set"
+
+  case "${RUNG_CEILING}" in
+    "" | RawAudioSegmented | SilenceSegmented | RestartingSingleSession) ;;
+    *) abort "step-0/actions" "AND02_RUNG_CEILING=${RUNG_CEILING} is not a rung; expected RawAudioSegmented, SilenceSegmented or RestartingSingleSession" ;;
+  esac
 }
 
 # ─── STEP 1 — reconnect and confirm ──────────────────────────────────────────────────────────────
@@ -362,12 +394,15 @@ step_6_run() {
 
   say "step 6: stimulus = ${CHOSEN_STIMULUS}, holding for ${DURATION_S}s"
 
+  [ -n "${RUNG_CEILING}" ] && say "step 6: requesting rung ceiling ${RUNG_CEILING}"
+
   clear_remote_logs
   if [ "${CHOSEN_STIMULUS}" = "file-fed" ]; then
-    start_session "${REMOTE_STIMULUS}" ||
+    start_session "${REMOTE_STIMULUS}" "${RUNG_CEILING}" ||
       abort "step-6/stimulus" "could not start the file-fed session; is the screen unlocked?"
   else
-    start_session || abort "step-6/stimulus" "could not start the session; is the screen unlocked?"
+    start_session "" "${RUNG_CEILING}" ||
+      abort "step-6/stimulus" "could not start the session; is the screen unlocked?"
   fi
 
   case "${CHOSEN_STIMULUS}" in
@@ -466,10 +501,13 @@ deliver_acoustic() {
 
   adb_dev shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
     -d "file://${REMOTE_WAV}" >/dev/null 2>&1 || true
-  adb_dev shell media volume --stream 3 --set 15 >/dev/null 2>&1 || true
+  # `media volume` is not present on every OEM build (it is absent on the Samsung tester); the
+  # media_session shell command is, and does the same job. Try both, insist on neither.
+  adb_dev shell cmd media_session volume --stream 3 --set 15 >/dev/null 2>&1 ||
+    adb_dev shell media volume --stream 3 --set 15 >/dev/null 2>&1 || true
   sleep 2
 
-  local id uri
+  local id uri component
   id="$(adb_dev shell content query --uri content://media/external/audio/media \
     --projection _id:_data 2>/dev/null |
     tr -d '\r' | grep -F "and02-stimulus.wav" |
@@ -477,8 +515,21 @@ deliver_acoustic() {
 
   if [ -n "${id}" ]; then
     uri="content://media/external/audio/media/${id}"
-    adb_dev shell am start -a android.intent.action.VIEW -d "${uri}" -t audio/wav >/dev/null 2>&1 || true
-    sleep 3
+    # An IMPLICIT VIEW lands on the system resolver dialog whenever more than one handler exists or
+    # none is the user default — measured on the tester, where it put `ResolverActivity` on top and
+    # played nothing. So resolve the handler and address it with `-n`. A chooser waiting for a tap is
+    # indistinguishable, from here, from a run held in silence.
+    component="$(adb_dev shell cmd package query-activities --brief \
+      -a android.intent.action.VIEW -t audio/wav 2>/dev/null |
+      tr -d '\r' | sed -n 's|^ *\([A-Za-z0-9_.]*/[A-Za-z0-9_.]*\)$|\1|p' | head -n 1)"
+
+    if [ -n "${component}" ]; then
+      adb_dev shell am start -n "${component}" -a android.intent.action.VIEW \
+        -d "${uri}" -t audio/wav >/dev/null 2>&1 || true
+    else
+      adb_dev shell am start -a android.intent.action.VIEW -d "${uri}" -t audio/wav >/dev/null 2>&1 || true
+    fi
+    sleep 5
   fi
 
   if adb_dev shell dumpsys audio 2>/dev/null | grep -qi "state:started"; then
@@ -598,6 +649,48 @@ step_7b_prove_file_fed() {
   say "step 7b: OK — ${rung_lines}/${rung_lines} sessions on RawAudioSegmented, feed opened ${opens}x, demo confirmed"
 }
 
+# ─── STEP 7c — a capped run must PROVE it ran on the rung it asked for ────────────────────────────
+#
+# Exactly step 7b's argument, applied to the other seam. A ceiling is a REQUEST sent over a broadcast
+# to a receiver that may have refused it, may predate the extra, or may have been handed a name it
+# did not recognise. If the cap did not land, the run happened on the device's usual rung — and a run
+# labelled "rung (a), 13 restarts" that actually ran on rung (c) with zero restarts is not merely
+# wrong, it is evidence-shaped.
+#
+# The ENGINE's own trace is the authority: it writes a `rung` line per session. Every one of them has
+# to name the requested rung, not just the last — a mid-run change means the transcript is a blend of
+# two different behaviours. There is no bypass flag.
+
+step_7c_prove_rung_ceiling() {
+  [ -n "${RUNG_CEILING}" ] || return 0
+
+  say "step 7c: proving the run honoured the ${RUNG_CEILING} ceiling"
+
+  local rung_lines matching observed
+  rung_lines="$(grep -c '"kind":"rung"' "${PULLED_LOG}" || true)"
+  matching="$(grep '"kind":"rung"' "${PULLED_LOG}" | grep -c "\"value\":\"${RUNG_CEILING}\"" || true)"
+
+  [ "${rung_lines}" -gt 0 ] ||
+    abort "step-7c/ceiling" "the trace names no rung at all, so there is no evidence this run reached a session. ${PULLED_LOG}"
+
+  if [ "${matching}" != "${rung_lines}" ]; then
+    observed="$(grep '"kind":"rung"' "${PULLED_LOG}" | sed -n 's/.*"value":"\([^"]*\)".*/\1/p' | sort -u | tr '\n' ' ')"
+    abort "step-7c/ceiling" "only ${matching} of ${rung_lines} sessions ran on ${RUNG_CEILING} (observed: ${observed}). The cap did not land, so this run measured a different rung than the one it is labelled with. Trace: ${PULLED_LOG}"
+  fi
+
+  # The demo's sidecar echoes what it was ASKED for, which separates "the cap was ignored" from
+  # "the cap was never delivered" when the two numbers above disagree.
+  if [ -n "${PULLED_DIAGNOSTICS}" ] && [ -f "${PULLED_DIAGNOSTICS}" ]; then
+    local asked
+    asked="$(grep '"rungCeiling"' "${PULLED_DIAGNOSTICS}" | tail -n 1 | sed -n 's/.*"rungCeiling":"\([^"]*\)".*/\1/p')"
+    [ "${asked}" = "${RUNG_CEILING}" ] ||
+      abort "step-7c/ceiling" "the demo reports the ceiling as \"${asked:-none}\" but this run asked for ${RUNG_CEILING}; the extra did not reach the receiver. ${PULLED_DIAGNOSTICS}"
+    say "step 7c: the demo confirms it was asked for ${asked}"
+  fi
+
+  say "step 7c: OK — ${matching}/${rung_lines} sessions on ${RUNG_CEILING}"
+}
+
 # ─── STEP 8 — score ──────────────────────────────────────────────────────────────────────────────
 
 step_8_score() {
@@ -647,16 +740,15 @@ start_session() {
   adb_dev shell am start -n "${PKG}/.MainActivity" >/dev/null 2>&1
   sleep 3
 
-  if [ -n "${audio_source}" ]; then
-    adb_dev shell am broadcast -n "${RECEIVER}" -a "${ACTION_START}" \
-      --ez "${EXTRA_SESSION_LOG}" true \
-      --es "${EXTRA_LANGUAGE}" "${LANGUAGE}" \
-      --es "${EXTRA_AUDIO_SOURCE}" "${audio_source}" >/dev/null
-  else
-    adb_dev shell am broadcast -n "${RECEIVER}" -a "${ACTION_START}" \
-      --ez "${EXTRA_SESSION_LOG}" true \
-      --es "${EXTRA_LANGUAGE}" "${LANGUAGE}" >/dev/null
-  fi
+  # The ceiling rides on the SCORED start only. The language probe passes "" for it deliberately:
+  # capping that preflight would tell us whether the language works on rung (a) rather than on the
+  # rung the run is about.
+  local ceiling="${2:-}"
+  local -a extras=(--ez "${EXTRA_SESSION_LOG}" true --es "${EXTRA_LANGUAGE}" "${LANGUAGE}")
+  [ -n "${audio_source}" ] && extras+=(--es "${EXTRA_AUDIO_SOURCE}" "${audio_source}")
+  [ -n "${ceiling}" ] && extras+=(--es "${EXTRA_RUNG_CEILING}" "${ceiling}")
+
+  adb_dev shell am broadcast -n "${RECEIVER}" -a "${ACTION_START}" "${extras[@]}" >/dev/null
   sleep 2
 }
 
@@ -692,4 +784,5 @@ step_4_power
 step_6_run
 step_7_collect
 step_7b_prove_file_fed
+step_7c_prove_rung_ceiling
 step_8_score

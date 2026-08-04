@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import io.github.ygaray.sttengine.debug.DebugRungCeiling
 import io.github.ygaray.sttengine.demo.DictationViewModel
 import java.io.File
 import org.json.JSONObject
@@ -84,11 +85,27 @@ class DemoControlReceiver : BroadcastReceiver() {
                 val sessionLog = intent.getBooleanExtra(EXTRA_SESSION_LOG, false)
                 val language = intent.getStringExtra(EXTRA_LANGUAGE)?.takeIf { it.isNotBlank() }
                 val audioSource = intent.getStringExtra(EXTRA_AUDIO_SOURCE)?.takeIf { it.isNotBlank() }
+                val rungCeiling = intent.getStringExtra(EXTRA_RUNG_CEILING)?.takeIf { it.isNotBlank() }
                 Log.d(
                     TAG,
                     "START language=${language ?: "(default)"} sessionLog=$sessionLog " +
-                        "audioSource=${audioSource ?: "(microphone)"}",
+                        "audioSource=${audioSource ?: "(microphone)"} " +
+                        "rungCeiling=${rungCeiling ?: "(none)"}",
                 )
+
+                // Applied BEFORE the session starts, because the ladder is resolved once per start()
+                // and never re-read mid-session. A bad name throws here rather than producing a
+                // silently unrestricted two-minute run reported as a capped one.
+                if (rungCeiling == null) {
+                    DebugRungCeiling.clear()
+                } else {
+                    val applied = runCatching { DebugRungCeiling.restrictTo(rungCeiling) }
+                    if (applied.isFailure) {
+                        Log.d(TAG, "START refused: ${applied.exceptionOrNull()?.message}")
+                        return
+                    }
+                    Log.d(TAG, "rung ceiling applied: ${applied.getOrNull()}")
+                }
 
                 if (audioSource == null) {
                     // The ordinary path, and the only one a release build could ever have had.
@@ -146,6 +163,9 @@ class DemoControlReceiver : BroadcastReceiver() {
             put("diagnosticLogging", viewModel.diagnosticLogging.value)
             put("errorCode", viewModel.error.value?.code?.value ?: JSONObject.NULL)
             put("errorPlatformDetail", viewModel.error.value?.platformDetail ?: JSONObject.NULL)
+            // What was ASKED for. `activeRung` above is what actually happened; a report that
+            // quotes one without the other cannot tell a working cap from an ignored one.
+            put("rungCeiling", DebugRungCeiling.ceiling ?: JSONObject.NULL)
             // The file-feed facts. `fileFedConfirmed` and `fileFedOpens` are what turn "this run was
             // file-fed" from a claim into a measurement, and the harness refuses to score a
             // supposedly file-fed run without them. Counters only — still no transcript text.
@@ -203,6 +223,30 @@ class DemoControlReceiver : BroadcastReceiver() {
          * run that gets scored is worse than no run.
          */
         const val EXTRA_AUDIO_SOURCE = "io.github.ygaray.sttengine.demo.debug.extra.AUDIO_SOURCE"
+
+        /**
+         * String extra on [ACTION_START]. Caps how high the library's capability ladder may climb —
+         * one of `RawAudioSegmented`, `SilenceSegmented`, `RestartingSingleSession`. Absent means the
+         * device's own answer, which is what every release build always does.
+         *
+         * **Why AND-02 needs this.** Rung (c) ends a recognition session when the app-owned audio
+         * source is exhausted, and an app-owned source — a microphone, or the paced file feed — never
+         * exhausts. Measured on the tester: a 140 s file-fed run and a 75 s quiet-microphone run each
+         * recorded **zero** restart events, and neither degraded, because a session the host stopped
+         * is never evidence against a rung. So the forced-restart behaviour the requirement is about
+         * is unreachable from a normal run on a device where rung (c) works. `RestartingSingleSession`
+         * is where the restart loop lives.
+         *
+         * **Mutually exclusive with [EXTRA_AUDIO_SOURCE] in practice**, and deliberately not enforced
+         * here: rung (a) does not accept an app-owned audio source, so a capped-to-floor run cannot
+         * be file-fed. [FileAudioSourceControl]'s rung gate catches the combination and aborts loudly
+         * rather than scoring a run whose stimulus never reached the recognizer.
+         *
+         * A cap is a **request**. The `rung` lines the engine writes into its own trace are the fact,
+         * and the AND-02 harness scores a capped run only when every one of them names the rung that
+         * was asked for.
+         */
+        const val EXTRA_RUNG_CEILING = "io.github.ygaray.sttengine.demo.debug.extra.RUNG_CEILING"
 
         // ────────────────────────────────────────────────────────────────────────────────────────
 
