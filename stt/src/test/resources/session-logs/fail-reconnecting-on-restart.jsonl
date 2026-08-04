@@ -1,0 +1,55 @@
+{"t":3,"kind":"state","value":"connecting"}
+{"t":118,"kind":"rung","value":"RawAudioSegmented"}
+{"t":296,"kind":"ready","epoch":0,"deafWindowMs":-1}
+{"t":297,"kind":"state","value":"listening"}
+{"t":2140,"kind":"partial","segmentId":0,"text":"The morning"}
+{"t":3320,"kind":"partial","segmentId":0,"text":"The morning light came"}
+{"t":4880,"kind":"partial","segmentId":0,"text":"The morning light came through the kitchen window"}
+{"t":6210,"kind":"final","segmentId":0,"text":"The morning light came through the kitchen window."}
+{"t":8450,"kind":"partial","segmentId":1,"text":"She poured"}
+{"t":10120,"kind":"partial","segmentId":1,"text":"She poured a second cup"}
+{"t":12760,"kind":"partial","segmentId":1,"text":"She poured a second cup of coffee before the meeting"}
+{"t":14090,"kind":"final","segmentId":1,"text":"She poured a second cup of coffee before the meeting."}
+{"t":15880,"kind":"restart","epoch":0,"reason":"SegmentedSessionEnded","delayMs":200,"advanceRung":false}
+{"t":16044,"kind":"ready","epoch":1,"deafWindowMs":164}
+{"t":18010,"kind":"partial","segmentId":2,"text":"Rain was"}
+{"t":19640,"kind":"partial","segmentId":2,"text":"Rain was expected before noon"}
+{"t":21980,"kind":"partial","segmentId":2,"text":"Rain was expected before noon and the sky agreed"}
+{"t":23300,"kind":"final","segmentId":2,"text":"Rain was expected before noon, and the sky agreed."}
+{"t":25470,"kind":"partial","segmentId":3,"text":"The train"}
+{"t":27130,"kind":"partial","segmentId":3,"text":"The train to the coast"}
+{"t":29610,"kind":"partial","segmentId":3,"text":"The train to the coast leaves from platform nine"}
+{"t":30940,"kind":"final","segmentId":3,"text":"The train to the coast leaves from platform nine."}
+{"t":32719,"kind":"state","value":"reconnecting"}
+{"t":32720,"kind":"restart","epoch":1,"reason":"SegmentedSessionEnded","delayMs":200,"advanceRung":false}
+{"t":32918,"kind":"ready","epoch":2,"deafWindowMs":198}
+{"t":32919,"kind":"state","value":"listening"}
+{"t":35010,"kind":"partial","segmentId":4,"text":"He wrote"}
+{"t":36720,"kind":"partial","segmentId":4,"text":"He wrote the address"}
+{"t":39240,"kind":"partial","segmentId":4,"text":"He wrote the address on the back of an envelope"}
+{"t":40590,"kind":"final","segmentId":4,"text":"He wrote the address on the back of an envelope."}
+{"t":42880,"kind":"partial","segmentId":5,"text":"A cafe\u0301 on"}
+{"t":44510,"kind":"partial","segmentId":5,"text":"A cafe\u0301 on the corner had opened"}
+{"t":47060,"kind":"partial","segmentId":5,"text":"A cafe\u0301 on the corner had opened early that day"}
+{"t":48390,"kind":"final","segmentId":5,"text":"A caf\u00e9 on the corner had opened early that day."}
+{"t":50210,"kind":"restart","epoch":2,"reason":"SegmentedSessionEnded","delayMs":200,"advanceRung":false}
+{"t":50469,"kind":"ready","epoch":3,"deafWindowMs":259}
+{"t":52480,"kind":"partial","segmentId":6,"text":"The dog"}
+{"t":54130,"kind":"partial","segmentId":6,"text":"The dog slept under the table"}
+{"t":56690,"kind":"partial","segmentId":6,"text":"The dog slept under the table until someone knocked"}
+{"t":58020,"kind":"final","segmentId":6,"text":"The dog slept under the table until someone knocked."}
+{"t":60310,"kind":"partial","segmentId":7,"text":"Notes from"}
+{"t":62040,"kind":"partial","segmentId":7,"text":"Notes from the call went"}
+{"t":64580,"kind":"partial","segmentId":7,"text":"Notes from the call went straight into the journal"}
+{"t":65910,"kind":"final","segmentId":7,"text":"Notes from the call went straight into the journal."}
+{"t":67740,"kind":"restart","epoch":3,"reason":"SegmentedSessionEnded","delayMs":200,"advanceRung":false}
+{"t":67950,"kind":"ready","epoch":4,"deafWindowMs":210}
+{"t":70120,"kind":"partial","segmentId":8,"text":"Winter arrived"}
+{"t":74830,"kind":"partial","segmentId":8,"text":"Winter arrived quietly and the river"}
+{"t":79470,"kind":"partial","segmentId":8,"text":"Winter arrived quietly and the river froze at the edges"}
+{"t":81900,"kind":"final","segmentId":8,"text":"Winter arrived quietly, and the river froze at the edges."}
+{"t":88640,"kind":"partial","segmentId":9,"text":"Everything on"}
+{"t":98210,"kind":"partial","segmentId":9,"text":"Everything on the list was finished"}
+{"t":112730,"kind":"partial","segmentId":9,"text":"Everything on the list was finished before the light went"}
+{"t":118650,"kind":"final","segmentId":9,"text":"Everything on the list was finished before the light went."}
+{"t":130742,"kind":"state","value":"idle"}
