@@ -166,12 +166,20 @@ internal class AudioRecordPcmSource private constructor(
  *
  * @param sampleRateHz must match what the intent declares — [RecognizerIntents] owns that constant
  *   so the recorder and the intent cannot drift apart.
- * @param sourceFactory injected so the discipline above is testable on the host.
+ * @param sourceFactory injected so the discipline above is testable on the host. Its **default**
+ *   consults [DebugAudioSourceHolder] before falling back to the microphone, which is what lets a
+ *   debug build feed rung (c) a fixed WAV for a deterministic AND-02 evidence run. That cell is
+ *   `null` in every release compilation and nothing there can assign it, so the default is
+ *   [AudioRecordPcmSource] in a shipped build exactly as it was before the seam existed. Reading it
+ *   in the default argument — rather than inside [open] — is deliberate: every existing caller that
+ *   passes a factory explicitly (which is all of `AudioSourcePipeTest`) never touches the cell at
+ *   all, so the seam cannot perturb a single existing test.
  * @param pipeFactory injected for the same reason.
  */
 internal class AudioSourcePipe(
     private val sampleRateHz: Int = RecognizerIntents.AUDIO_SOURCE_SAMPLE_RATE_HZ,
-    private val sourceFactory: PcmSourceFactory = AudioRecordPcmSource,
+    private val sourceFactory: PcmSourceFactory =
+        DebugAudioSourceHolder.factory ?: AudioRecordPcmSource,
     private val pipeFactory: () -> Array<ParcelFileDescriptor> = { ParcelFileDescriptor.createPipe() },
 ) {
 
