@@ -55,11 +55,20 @@ public fun createSttEngine(
         handleFactory = PlatformRecognizerHandleFactory,
         permissions = ContextPermissionChecker(applicationContext),
         log = SessionLog.forContext(applicationContext, enabled = diagnosticLogging),
-        // The ladder's terminal rung only. The segmented rungs both measured SHIP on the phase's
-        // tester and plan 09 turns them on from the probe verdict by flipping these two flags —
-        // nothing in the session loop changes.
-        supportsSegmented = false,
-        supportsRawAudio = false,
+        // Both segmented rungs are ON, and this is the ONE place that decision is expressed.
+        //
+        // It is a measurement, not a preference: `05-RUNG-DECISION.md` records the probe's answer for
+        // each — rung (b) delivered 13 `onSegmentResults` plus `onEndOfSegmentedSession` with
+        // `onResults` never firing, and rung (c)'s pipe-fed session produced 6 segment finals at
+        // precision 1.000 with the upstream data-loss signature failing to reproduce.
+        //
+        // These are SEEDS, not verdicts. The engine treats each as an offer that runtime evidence can
+        // withdraw: a rung whose degradation trigger fires is dropped for the rest of that engine's
+        // life, and the classic restart rung underneath is mandatory, unconditional and unaffected by
+        // either flag. So a device that does not behave like the tester falls back within one session
+        // rather than dictating into a silently ignored extra.
+        supportsSegmented = true,
+        supportsRawAudio = true,
         // D-09: the library owns its dispatcher. `.immediate` so a recognizer callback already on
         // the main looper drives the next call without costing an extra frame inside the restart gap
         // that AND-02 requires to be invisible.

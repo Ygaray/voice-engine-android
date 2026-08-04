@@ -94,6 +94,7 @@ internal class SttEngineImpl(
     private val log: SessionLog = SessionLog(),
     private val supportsSegmented: Boolean = false,
     private val supportsRawAudio: Boolean = false,
+    private val audioPipeFactory: () -> AudioSourcePipe = { AudioSourcePipe() },
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
     private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000L },
     private val restartPolicy: RestartPolicy = RestartPolicy(),
@@ -165,6 +166,13 @@ internal class SttEngineImpl(
     private val accumulator = SegmentAccumulator()
 
     private var handle: RecognizerHandle? = null
+
+    /**
+     * The app-owned microphone, live only while the session is running on rung (c). `null` on every
+     * other rung, because on those the recognition service owns the microphone and this library must
+     * not also hold it.
+     */
+    private var audioPipe: AudioSourcePipe? = null
     private var restartJob: Job? = null
     private var candidates: List<Rung> = listOf(Rung.RestartingSingleSession)
     private var currentRung: Rung = Rung.RestartingSingleSession
@@ -180,6 +188,20 @@ internal class SttEngineImpl(
     private var sawBeginningOfSpeech = false
     private var segmentResultCount = 0
     private var endOfSegmentedSessionDelivered = false
+
+    /**
+     * Runtime evidence that a rung does not work on this device, accumulated across sessions.
+     *
+     * Set when — and only when — that rung's own degradation trigger fires, which by
+     * [RungLadder.shouldDegrade]'s design means the rung was *proven* not to do its job rather than
+     * merely having seen an error. Read once per [start] and never mid-session.
+     *
+     * One way, deliberately: nothing ever clears these within an engine instance. A device that
+     * silently ignored the segmented extra will ignore it again, and re-probing costs a deaf window
+     * every time. Fresh evidence needs a fresh engine.
+     */
+    private var segmentedRungWithdrawn = false
+    private var rawAudioRungWithdrawn = false
 
     /** How many sessions this engine has restarted. Read by plan 07's diagnostic row and plan 08's log. */
     var restartCount: Int = 0
@@ -258,10 +280,18 @@ internal class SttEngineImpl(
             LanguageAvailability.INSTALLED, LanguageAvailability.UNDETERMINED -> Unit
         }
 
-        // Both capabilities false: this plan ships the ladder's terminal rung only. Plan 09 turns the
-        // other two on if and only if the probe verdict says so, and it does that by changing these
-        // two parameters — nothing in the session loop below has to know.
-        candidates = RungLadder.candidates(supportsSegmented, supportsRawAudio)
+        // The capability is a PARAMETER resolved here, once per start(), and never a compile-time
+        // constant — see `05-RUNG-DECISION.md`. It is the constructor's seed (the probe's answer)
+        // MINUS anything this engine has since watched fail on this device: a rung whose degradation
+        // trigger fired proved at runtime that it does not do its job here, and re-offering it at the
+        // next start() would buy another silent no-op and another deaf window for the same answer.
+        //
+        // Resolved ONLY here. Mid-session the ladder walks DOWN through `candidates` and never
+        // re-reads these flags, because a session is not the place to change what the device can do.
+        candidates = RungLadder.candidates(
+            supportsSegmented = supportsSegmented && !segmentedRungWithdrawn,
+            supportsRawAudio = supportsRawAudio && !rawAudioRungWithdrawn,
+        )
         currentRung = candidates.first()
 
         startSession()
@@ -300,8 +330,14 @@ internal class SttEngineImpl(
         segmentResultCount = 0
         endOfSegmentedSessionDelivered = false
 
+        // Rung (c) owns the microphone itself, so the pipe has to exist before the intent does —
+        // a rung-(c) intent with no descriptor is a hard failure by construction. This can degrade
+        // the rung, so it must run BEFORE the rung is logged.
+        val pipe = openAudioPipeForRung()
+
         log.rung(currentRung)
-        val intent = RecognizerIntents.forRung(currentRung, config, appContext)
+        val intent =
+            RecognizerIntents.forRung(currentRung, config, appContext, audioSource = pipe?.readDescriptor)
         withContext(mainDispatcher) {
             active.setListener(listenerFor(boundEpoch))
             active.startListening(intent)
@@ -310,11 +346,35 @@ internal class SttEngineImpl(
     }
 
     /**
+     * Open the app-owned pipe when the current rung needs one.
+     *
+     * A microphone we cannot open is **evidence the rung does not work here**, not a reason to fail
+     * the session: the whole point of the ladder is that there is always something below. So this
+     * degrades and returns `null`, and the caller builds the lower rung's intent instead — within
+     * the same `startSession`, with no extra deaf window and nothing for the host to see.
+     */
+    private fun openAudioPipeForRung(): AudioSourcePipe? {
+        if (currentRung != Rung.RawAudioSegmented) return null
+        val pipe = audioPipeFactory()
+        return try {
+            pipe.open()
+            audioPipe = pipe
+            pipe
+        } catch (unopenable: Exception) {
+            pipe.close()
+            audioPipe = null
+            withdrawRung(Rung.RawAudioSegmented)
+            currentRung = RungLadder.next(Rung.RawAudioSegmented, candidates)
+            null
+        }
+    }
+
+    /**
      * The restart sequence. **The order is the whole point.**
      *
      * ```
      * 1. commit the live partial      ← BEFORE teardown: teardown is WHAT CAUSES the missing final
-     * 2. tear the session down
+     * 2. tear the session down        ← closes the app-owned pipe FIRST, then the recognizer
      * 3. advance the epoch            ← AFTER teardown: fences the dying session's late callbacks
      * 4. open the next segment
      * 5. wait out the policy's delay, re-check we are still meant to be running, start the next session
@@ -384,9 +444,10 @@ internal class SttEngineImpl(
      * Feed the finished session to the two things that judge it: the restart policy's runaway-loop
      * guard, and the rung ladder's degradation trigger.
      *
-     * The ladder is wired even though this plan ships the terminal rung only, where
-     * `shouldDegrade` is unconditionally false. It costs one call and it means plan 09 enables the
-     * upper rungs by flipping two constructor flags rather than by adding a code path.
+     * Both segmented rungs are live (`05-RUNG-DECISION.md`), so the trigger has real work to do. It
+     * degrades **within one session** — the next session after the evidence runs a rung lower — and
+     * it additionally *withdraws* the rung so the next [start] does not offer it again. Degradation
+     * is one way: nothing here can return a higher rung than the one it was handed.
      */
     private fun recordOutcome(cause: TerminatingCause, errorCode: Int?) {
         restartPolicy.recordSessionOutcome(
@@ -395,20 +456,88 @@ internal class SttEngineImpl(
             sessionDurationMs = monotonicMs() - sessionStartedAtMs,
             recognizerBusy = errorCode == RAW_ERROR_RECOGNIZER_BUSY,
         )
-        val outcome = SessionOutcome(
-            cause = cause,
-            endOfSegmentedSessionDelivered = endOfSegmentedSessionDelivered,
-            segmentResultCount = segmentResultCount,
-            // Rung (c) is not enabled in this plan, so this engine owns no pipe to still be open.
-            appOwnedPipeOpen = false,
-            errorCode = errorCode,
-        )
-        if (RungLadder.shouldDegrade(currentRung, outcome)) {
+        if (RungLadder.shouldDegrade(currentRung, outcomeSoFar(cause, errorCode))) {
+            withdrawRung(currentRung)
             currentRung = RungLadder.next(currentRung, candidates)
         }
     }
 
+    /**
+     * What the live session has done so far, as the pure holder the ladder judges.
+     *
+     * One builder, two callers — [recordOutcome] after the session is over and [rungAbsorbs] while
+     * the terminating callback is still on the stack — so the two can never disagree about what the
+     * evidence was. `appOwnedPipeOpen` is read here rather than stored, and both callers run BEFORE
+     * teardown closes the pipe: that timing is what separates the upstream data-loss signature (a
+     * code 5 while our write end is still open) from a code 5 provoked by our own teardown, which
+     * the probe measured arriving after six successful segment finals on the rung scoring precision
+     * 1.000.
+     */
+    private fun outcomeSoFar(cause: TerminatingCause, errorCode: Int?): SessionOutcome =
+        SessionOutcome(
+            cause = cause,
+            endOfSegmentedSessionDelivered = endOfSegmentedSessionDelivered,
+            segmentResultCount = segmentResultCount,
+            appOwnedPipeOpen = audioPipe?.isOpen == true,
+            errorCode = errorCode,
+        )
+
+    /**
+     * Whether an otherwise-fatal [error] indicts the RUNG rather than the engine.
+     *
+     * Rung (c)'s headline hazard — `ERROR_CLIENT(5)` arriving while our own pipe is still open — maps
+     * to a fatal disposition in the error table, and correctly so: on any other rung an unprovoked
+     * client error is not something the engine caused or can fix. But on a rung that has somewhere
+     * to fall, that same code is the *documented* signature of the app-owned audio source
+     * misbehaving, and killing the whole engine over it would throw away a working dictation session
+     * to punish an optional rung. Without this the ladder's code-5 trigger could never fire at all,
+     * because `fail()` does not run the restart path that judges the session.
+     *
+     * Narrow by construction, and the narrowness is load bearing. The ladder's **other** rung-(c)
+     * trigger — a session that produced no segment results — deliberately does NOT get to swallow a
+     * fatal error, because a genuinely fatal condition (a revoked permission, a recognizer that
+     * vanished) also produces a session with no segments. Judging on that would walk the ladder
+     * silently downwards while never telling the host why dictation stopped working, which is
+     * strictly worse than the error it was trying to avoid. That condition keeps its proper job on
+     * the ordinary restart path, in [recordOutcome], where the session really did just end quietly.
+     *
+     * So: only rung (c), only its one documented hazard, only while our own write end is still open,
+     * and only when there is genuinely a lower rung to fall to. The floor can never reach it.
+     */
+    private fun rungAbsorbs(error: Int): Boolean {
+        if (currentRung != Rung.RawAudioSegmented) return false
+        if (error != RAW_ERROR_CLIENT || audioPipe?.isOpen != true) return false
+        // Confirmed against the ladder rather than decided here, so the signature has exactly one
+        // definition in the codebase and this cannot drift away from it.
+        return RungLadder.shouldDegrade(currentRung, outcomeSoFar(TerminatingCause.ERROR, error)) &&
+            RungLadder.next(currentRung, candidates) != currentRung
+    }
+
+    /** Records that [rung] proved itself a no-op here, so the next [start] stops offering it. */
+    private fun withdrawRung(rung: Rung) {
+        when (rung) {
+            Rung.SilenceSegmented -> segmentedRungWithdrawn = true
+            Rung.RawAudioSegmented -> rawAudioRungWithdrawn = true
+            // The floor is never withdrawn — shouldDegrade is unconditionally false for it and
+            // there is nothing below it to fall to.
+            Rung.RestartingSingleSession -> Unit
+        }
+    }
+
     private suspend fun teardownSession(destroyHandle: Boolean) {
+        // The pipe closes FIRST — before the return below, so a null handle cannot leak it, and
+        // before anything is asked of the recognizer.
+        //
+        // Both callers commit the live partial before they get here, which makes the full order
+        // COMMIT -> CLOSE THE PIPE -> ADVANCE THE EPOCH. That order is the mitigation for the
+        // upstream data-loss signature: the words already spoken are committed before the write end
+        // closes, so even on a device where a close mid-read kills the open segment, nothing the
+        // user said is lost. Closing the write end is also the ENDING THIS RUNG PREFERS — a clean
+        // end of stream, which the probe measured this device finalising gracefully on, rather than
+        // asking the recognizer to stop while it is still reading.
+        audioPipe?.close()
+        audioPipe = null
+
         val active = handle ?: return
         // Our own teardown provokes ERROR_CLIENT(5). The epoch fence already rejects it (it reaches
         // the retired listener), and this flag is the second line of defence for the same-epoch case.
@@ -438,6 +567,12 @@ internal class SttEngineImpl(
         running = false
         restartJob?.cancel()
         restartJob = null
+
+        // Before the epoch advances, and synchronously rather than inside the launch below: an
+        // engine that has failed terminally must not still be holding the microphone, and a
+        // terminal failure is exactly the path a leak would survive unnoticed on.
+        audioPipe?.close()
+        audioPipe = null
 
         val dying = handle
         handle = null
@@ -626,7 +761,15 @@ internal class SttEngineImpl(
                     )
                 }
 
-                is Disposition.Fatal -> fail(disposition.error)
+                // A fatal error on a rung that has somewhere to fall is a RUNG failure before it is
+                // an ENGINE failure — but only when the ladder itself says this evidence indicts
+                // this rung. See rungAbsorbs.
+                is Disposition.Fatal ->
+                    if (rungAbsorbs(error)) {
+                        scheduleRestart(RestartReason.AfterError, TerminatingCause.ERROR, error)
+                    } else {
+                        fail(disposition.error)
+                    }
             }
         }
 
@@ -647,5 +790,8 @@ internal class SttEngineImpl(
 
         /** `ERROR_RECOGNIZER_BUSY`, as a raw Binder-delivered integer. */
         const val RAW_ERROR_RECOGNIZER_BUSY = 8
+
+        /** `ERROR_CLIENT`. Rung (c)'s documented hazard when it arrives while our pipe is open. */
+        const val RAW_ERROR_CLIENT = 5
     }
 }

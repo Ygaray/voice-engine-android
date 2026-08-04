@@ -1,7 +1,9 @@
 package io.github.ygaray.sttengine
 
 import androidx.test.core.app.ApplicationProvider
+import io.github.ygaray.sttengine.internal.AudioSourcePipe
 import io.github.ygaray.sttengine.internal.FakeRecognizerHandle
+import io.github.ygaray.sttengine.internal.PcmSource
 import io.github.ygaray.sttengine.internal.LanguageAvailability
 import io.github.ygaray.sttengine.internal.RecognizerHandle
 import io.github.ygaray.sttengine.internal.RecognizerHandleFactory
@@ -56,6 +58,7 @@ internal class EngineHarness(
     log: SessionLog = SessionLog(),
     supportsSegmented: Boolean = false,
     supportsRawAudio: Boolean = false,
+    private val audioPipeOpenFails: Boolean = false,
 ) {
 
     /** The seam the engine actually talks to. Fire callbacks into it to drive the engine. */
@@ -67,6 +70,17 @@ internal class EngineHarness(
 
     /** Eager, virtual-time dispatcher — see the class KDoc. */
     val dispatcher: TestDispatcher = UnconfinedTestDispatcher(scheduler)
+
+    /**
+     * Every app-owned audio pipe the engine opened, oldest first. Empty on any rung but (c).
+     *
+     * The pipes are real [AudioSourcePipe]s over a real `ParcelFileDescriptor` pipe — only the PCM
+     * source is faked, because a unit test must never open the host's microphone and because an
+     * `AudioRecord` is not something Robolectric can honestly stand in for. That keeps the pipe's
+     * own resource discipline (which is rung (c)'s entire risk) exercised by these tests rather than
+     * stubbed past.
+     */
+    val audioPipes: MutableList<AudioSourcePipe> = mutableListOf()
 
     private val handle: RecognizerHandle = PreflightHandle(fake, languageAvailability)
 
@@ -84,6 +98,16 @@ internal class EngineHarness(
         log = log,
         supportsSegmented = supportsSegmented,
         supportsRawAudio = supportsRawAudio,
+        audioPipeFactory = {
+            AudioSourcePipe(
+                sourceFactory = {
+                    if (audioPipeOpenFails) {
+                        error("the microphone is held by another app")
+                    }
+                    SilentPcmSource()
+                },
+            ).also { audioPipes += it }
+        },
         mainDispatcher = dispatcher,
     )
 
@@ -126,6 +150,31 @@ internal class EngineHarness(
         val started = launch(dispatcher) { engine.start() }
         fake.reachListening(withSpeech = withSpeech)
         started.join()
+    }
+}
+
+/**
+ * A [PcmSource] that is immediately at end of stream.
+ *
+ * The engine's tests are about the *ladder* and the *lifecycle*, not about audio content, and the
+ * recognizer here is a fake that never reads the pipe anyway. Ending at once means the pump thread
+ * exits on its first read instead of writing megabytes into a Robolectric-backed pipe for the
+ * duration of a suite.
+ */
+internal class SilentPcmSource : PcmSource {
+    var stopCount: Int = 0
+        private set
+    var releaseCount: Int = 0
+        private set
+
+    override fun read(buffer: ByteArray): Int = -1
+
+    override fun stop() {
+        stopCount += 1
+    }
+
+    override fun release() {
+        releaseCount += 1
     }
 }
 
