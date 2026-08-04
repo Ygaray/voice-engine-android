@@ -2,6 +2,7 @@ package io.github.ygaray.sttengine.internal
 
 import android.speech.RecognizerIntent
 import io.github.ygaray.sttengine.EngineHarness
+import io.github.ygaray.sttengine.EngineState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -214,6 +215,165 @@ class RungDegradationTest {
         )
     }
 
+    // --- rung (c): the app-owned microphone ----------------------------------------------------------
+
+    @Test
+    fun `rung c leads the ladder and its intent carries the audio source extras`() = runTest {
+        val h = rawAudioHarness()
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        assertEquals(Rung.RawAudioSegmented, h.engine.activeRung)
+        assertEquals("exactly one pipe per session", 1, h.audioPipes.size)
+        assertTrue("the session's own pipe must be live", h.audioPipes[0].isOpen)
+
+        val intent = h.fake.startedIntents[0]
+        assertTrue(intent.hasExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE))
+        assertEquals(
+            "the recorder and the intent must not drift apart on sample rate",
+            RecognizerIntents.AUDIO_SOURCE_SAMPLE_RATE_HZ,
+            intent.getIntExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, -1),
+        )
+    }
+
+    @Test
+    fun `an unprovoked code 5 while our pipe is open degrades the rung instead of failing`() =
+        runTest {
+            val h = rawAudioHarness()
+            h.collectInto(backgroundScope)
+            h.reachListening()
+            assertTrue(h.audioPipes[0].isOpen)
+
+            // The upstream data-loss signature. In the error table an unprovoked ERROR_CLIENT is
+            // FATAL, and on any other rung that is right — but here it is the documented way the
+            // app-owned audio source misbehaves, and killing the engine would throw away a working
+            // dictation session to punish an optional rung.
+            h.fake.fireError(ERROR_CLIENT)
+            advanceUntilIdle()
+
+            assertEquals(Rung.SilenceSegmented, h.engine.activeRung)
+            assertTrue("the host must not see a terminal failure", h.errors.isEmpty())
+            assertTrue(
+                "and must not see an error state either",
+                h.states.none { it == EngineState.Error },
+            )
+            assertFalse(
+                "the session after the evidence must not ask for raw audio",
+                h.fake.startedIntents[1].hasExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE),
+            )
+        }
+
+    @Test
+    fun `a rung c session that produced no segment results degrades`() = runTest {
+        val h = rawAudioHarness()
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        // The pipe fed and the session ended, but nothing ever came back. A rung that never segments
+        // is a no-op wearing a costume — it carries rung (c)'s whole cost for rung (b)'s behaviour.
+        h.fake.fireEndOfSegmentedSession()
+        advanceUntilIdle()
+
+        assertEquals(Rung.SilenceSegmented, h.engine.activeRung)
+    }
+
+    @Test
+    fun `a code 5 arriving after the host stopped is not evidence against rung c`() = runTest {
+        val h = rawAudioHarness()
+        h.collectInto(backgroundScope)
+        h.reachListening()
+        val dyingListener = h.listenerFor(0)
+
+        h.fake.fireSegmentResults("the morning light")
+        runCurrent()
+        h.engine.stop()
+        advanceUntilIdle()
+
+        // Exactly the shape the probe measured: code 5 arriving at OUR OWN teardown, after segment
+        // finals had already landed, on the rung that scored precision 1.000 on the device.
+        // Degrading here would abandon the best rung available because of something we did.
+        h.fake.fireError(ERROR_CLIENT, target = dyingListener)
+        advanceUntilIdle()
+
+        h.reachListening()
+        assertEquals(
+            "our own teardown is not a failure of the rung",
+            Rung.RawAudioSegmented,
+            h.engine.activeRung,
+        )
+        assertTrue(h.errors.isEmpty())
+    }
+
+    @Test
+    fun `a pipe that cannot be opened degrades inside the same start rather than failing`() =
+        runTest {
+            val h = rawAudioHarness(pipeOpenFails = true)
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            // A microphone we cannot open is evidence the rung does not work here, and the whole
+            // point of a ladder is that there is always something below. The host sees a normal
+            // session start — no error, no extra deaf window, one startListening.
+            assertEquals(Rung.SilenceSegmented, h.engine.activeRung)
+            assertEquals(1, h.fake.startCount)
+            assertTrue(h.errors.isEmpty())
+            assertFalse(h.fake.startedIntents[0].hasExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE))
+            assertTrue(h.fake.startedIntents[0].hasExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION))
+        }
+
+    @Test
+    fun `every restart closes the previous pipe and opens exactly one new one`() = runTest {
+        val h = rawAudioHarness()
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        // Keep the rung: segment results plus the segmented-end callback is the shape that proves it
+        // works, so the ladder does not degrade and the next session is rung (c) again.
+        h.fake.fireSegmentResults("the morning light")
+        h.fake.fireEndOfSegmentedSession()
+        advanceUntilIdle()
+
+        assertEquals(Rung.RawAudioSegmented, h.engine.activeRung)
+        assertEquals("one pipe per session, no more", 2, h.audioPipes.size)
+        assertFalse(
+            "a pipe left open across a restart is a leaked descriptor per session",
+            h.audioPipes[0].isOpen,
+        )
+        assertTrue(h.audioPipes[1].isOpen)
+    }
+
+    @Test
+    fun `stop releases the microphone`() = runTest {
+        val h = rawAudioHarness()
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        h.engine.stop()
+        advanceUntilIdle()
+
+        assertFalse(
+            "an idle engine must not still be holding the microphone",
+            h.audioPipes[0].isOpen,
+        )
+    }
+
+    @Test
+    fun `a terminal failure releases the microphone`() = runTest {
+        val h = rawAudioHarness()
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        // ERROR_INSUFFICIENT_PERMISSIONS: fatal on every rung, and nothing the ladder can absorb.
+        h.fake.fireError(ERROR_INSUFFICIENT_PERMISSIONS)
+        advanceUntilIdle()
+
+        assertEquals(1, h.errors.size)
+        assertFalse(
+            "the terminal path is exactly where a leak would survive unnoticed",
+            h.audioPipes[0].isOpen,
+        )
+    }
+
     // --- the floor is never degraded away from ------------------------------------------------------
 
     @Test
@@ -233,5 +393,29 @@ class RungDegradationTest {
             Rung.RestartingSingleSession,
             h.engine.activeRung,
         )
+    }
+
+    // --- fixtures -------------------------------------------------------------------------------
+
+    /**
+     * A harness with the full ladder `[RawAudioSegmented, SilenceSegmented, RestartingSingleSession]`
+     * — the shape `createSttEngine` builds on this phase's tester.
+     */
+    @Suppress("TestFunctionName")
+    private fun kotlinx.coroutines.test.TestScope.rawAudioHarness(
+        pipeOpenFails: Boolean = false,
+    ) = EngineHarness(
+        testScheduler,
+        supportsSegmented = true,
+        supportsRawAudio = true,
+        audioPipeOpenFails = pipeOpenFails,
+    )
+
+    private companion object {
+        /** `ERROR_CLIENT`, as a raw Binder-delivered integer. */
+        const val ERROR_CLIENT = 5
+
+        /** `ERROR_INSUFFICIENT_PERMISSIONS`, fatal on every rung. */
+        const val ERROR_INSUFFICIENT_PERMISSIONS = 9
     }
 }

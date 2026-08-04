@@ -68,10 +68,7 @@ public fun createSttEngine(
         // either flag. So a device that does not behave like the tester falls back within one session
         // rather than dictating into a silently ignored extra.
         supportsSegmented = true,
-        // Rung (c) also measured SHIP, but it needs the app-owned pipe to exist before it can be
-        // offered — an intent for it without a descriptor is a hard failure by construction. Turned
-        // on in the same plan, one task later, so every commit in between still runs.
-        supportsRawAudio = false,
+        supportsRawAudio = true,
         // D-09: the library owns its dispatcher. `.immediate` so a recognizer callback already on
         // the main looper drives the next call without costing an extra frame inside the restart gap
         // that AND-02 requires to be invisible.
