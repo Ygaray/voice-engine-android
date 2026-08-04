@@ -28,7 +28,7 @@ import org.robolectric.annotation.Config
  *
  * | Fixture | The one change | Fails |
  * |---|---|---|
- * | `fail-duplicated-tail` | final 4 grows a tail repeating final 5's first four tokens | 4 |
+ * | `fail-duplicated-tail` | final 4 grows a tail repeating final 5's first five tokens | 4 |
  * | `fail-dropped-partial` | segment 7's last partial before a restart names text no final carries | 5 |
  * | `fail-segmentid-gap` | segments 5..9 renumbered 6..10 | 3 |
  * | `fail-reconnecting-on-restart` | a `reconnecting` state around an ordinary restart | 8 |
@@ -83,7 +83,10 @@ class SessionLogAnalyzerTest {
 
         assertFailsExactly(report, AssertionId.NoDuplicatedTail)
         val detail = report.detailOf(AssertionId.NoDuplicatedTail)
-        assertTrue(detail, detail.contains("4-token"))
+        // The fixture's duplicated tail is exactly "a café on the corner" — five tokens, the top of
+        // the k range. Asserting the k rather than merely "it failed" is what makes the fixture a
+        // proof of the comparison window and not just of the assertion's existence.
+        assertTrue(detail, detail.contains("5-token"))
         assertTrue(detail, detail.contains("caf"))
     }
 
