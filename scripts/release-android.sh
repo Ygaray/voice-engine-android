@@ -67,6 +67,10 @@
 #            instead of once: no `.planning/`, no `server/`, no `local.properties`, no tailnet
 #            hostname, no development-machine path. Cheap, and the alternative is a permanent
 #            public disclosure (threats T-05-06, T-05-07).
+#            It runs on the PRISTINE clone — between GATE 3's clone and GATE 3's build — and is
+#            scoped to TRACKED paths and TRACKED content only. See the block itself for why: a
+#            filesystem walk of the post-build tree produces false positives on AGP's own build
+#            outputs, and tracked content is what `git push` actually sends.
 #
 # NO GATE MAY BE SKIPPED. There is no bypass flag, on purpose — the failures these catch are
 # exactly the ones that are unrecoverable once the tag exists. The optional `preflight` argument is
@@ -187,6 +191,56 @@ git clone -q --branch "${SPLIT_BRANCH}" --no-local "${REPO_ROOT}" "${MIRROR}" \
   || abort "GATE 3 failed — jitpack.yml is absent from the split tree; JitPack would not know how \
 to build the mirror"
 
+# --- GATE 3b: leak check on the split tree, before anything is pushed --------------------------
+#
+# ORDERING IS LOAD-BEARING, and was corrected after a real false positive. This runs on the
+# PRISTINE clone — after the clone, before GATE 3's dry-run build writes anything into it. The
+# first version of this gate ran after the build and scanned the FILESYSTEM, so it aborted on
+# `stt/build/intermediates/.../merger.xml` and AGP's two manifest-merger reports, which embed the
+# absolute source path of the machine that produced them. Those files are gitignored build outputs
+# that `git push` never sends, so that was a false alarm — but it established the right rule:
+#
+#     THE LEAK SURFACE IS TRACKED CONTENT, BECAUSE TRACKED CONTENT IS WHAT GETS PUSHED.
+#
+# So every check below is scoped to tracked paths (`git ls-files`) or tracked content
+# (`git grep`), never to a filesystem walk. Running before the build is then a free bonus: a leak
+# aborts the release in seconds instead of after a full Android build.
+echo "release-android: GATE 3b — leak check on the pristine split tree …"
+
+# Directory checks run against TRACKED PATHS, not file contents. A content grep for these names
+# would match this very script (which necessarily names what it forbids) and abort on a clean tree
+# — the same false-positive shape that already bit a grep gate in this phase once.
+leaked_paths="$(git -C "${MIRROR}" ls-files | grep -E '^(\.planning/|server/)' || true)"
+[ -z "${leaked_paths}" ] || abort "GATE 3b failed — the split tree carries private mono-repo \
+paths, which would become world-readable:
+${leaked_paths}"
+
+leaked_localprops="$(git -C "${MIRROR}" ls-files | grep -E '(^|/)local\.properties$' || true)"
+[ -z "${leaked_localprops}" ] || abort "GATE 3b failed — local.properties is tracked in the split \
+tree (threat T-05-06). It leaks an absolute SDK path from a development machine and JitPack sets \
+ANDROID_HOME itself, so it is never needed:
+${leaked_localprops}"
+
+# Assembled as a regex, never written as a literal: writing the private hostname here would BE the
+# leak, and would also make this check match itself. The generic shape catches any tailnet host,
+# not merely the one this project happens to use.
+TAILNET_RE='[a-z0-9-]+\.[a-z0-9-]+\.ts[.]net'
+leaked_tailnet="$(git -C "${MIRROR}" grep -InE "${TAILNET_RE}" -- . || true)"
+[ -z "${leaked_tailnet}" ] || abort "GATE 3b failed — a private tailnet hostname appears in the \
+split tree:
+${leaked_tailnet}"
+
+# Development-machine paths: `android/CLAUDE.md` §5 puts this invariant on the four published
+# documents; there is no reason the rest of the mirror should be held to a lower standard.
+DEVPATH_RE='(/home/|/Users/)[A-Za-z0-9._-]+/'
+leaked_devpath="$(git -C "${MIRROR}" grep -InE "${DEVPATH_RE}" -- . || true)"
+[ -z "${leaked_devpath}" ] || abort "GATE 3b failed — an absolute development-machine path appears \
+in the split tree:
+${leaked_devpath}"
+
+echo "release-android: GATE 3b — clean: no .planning/, no server/, no local.properties, no tailnet \
+hostname, no development-machine path."
+
 # Extract the install commands from the MIRROR's own jitpack.yml so this gate can never drift from
 # the file JitPack actually reads. Only lines whose first non-space character is a list dash are
 # taken, so an indented comment inside the block is never mistaken for a command.
@@ -236,43 +290,6 @@ android { publishing { singleVariant(\"release\") { withSourcesJar() } } }"
 
 echo "release-android: GATE 3 — published from the split tree:"
 ls -1 "${M2_COORD_DIR}"
-
-# --- GATE 3b: leak check on the split tree, before anything is pushed --------------------------
-echo "release-android: GATE 3b — leak check on the split tree …"
-
-# Directory checks run against TRACKED PATHS, not file contents. A content grep for these names
-# would match this very script (which necessarily names what it forbids) and abort on a clean tree
-# — the same false-positive shape that already bit a grep gate in this phase once.
-leaked_paths="$(git -C "${MIRROR}" ls-files | grep -E '^(\.planning/|server/)' || true)"
-[ -z "${leaked_paths}" ] || abort "GATE 3b failed — the split tree carries private mono-repo \
-paths, which would become world-readable:
-${leaked_paths}"
-
-leaked_localprops="$(git -C "${MIRROR}" ls-files | grep -E '(^|/)local\.properties$' || true)"
-[ -z "${leaked_localprops}" ] || abort "GATE 3b failed — local.properties is tracked in the split \
-tree (threat T-05-06). It leaks an absolute SDK path from a development machine and JitPack sets \
-ANDROID_HOME itself, so it is never needed:
-${leaked_localprops}"
-
-# Assembled as a regex, never written as a literal: writing the private hostname here would BE the
-# leak, and would also make this check match itself. The generic shape catches any tailnet host,
-# not merely the one this project happens to use.
-TAILNET_RE='[a-z0-9-]+\.[a-z0-9-]+\.ts[.]net'
-leaked_tailnet="$(grep -rInE "${TAILNET_RE}" "${MIRROR}" --exclude-dir=.git || true)"
-[ -z "${leaked_tailnet}" ] || abort "GATE 3b failed — a private tailnet hostname appears in the \
-split tree:
-${leaked_tailnet}"
-
-# Development-machine paths: `android/CLAUDE.md` §5 puts this invariant on the published documents;
-# there is no reason the rest of the mirror should be held to a lower standard.
-DEVPATH_RE='(/home/|/Users/)[A-Za-z0-9._-]+/'
-leaked_devpath="$(grep -rInE "${DEVPATH_RE}" "${MIRROR}" --exclude-dir=.git || true)"
-[ -z "${leaked_devpath}" ] || abort "GATE 3b failed — an absolute development-machine path appears \
-in the split tree:
-${leaked_devpath}"
-
-echo "release-android: GATE 3b — clean: no .planning/, no server/, no local.properties, no tailnet \
-hostname, no development-machine path."
 
 # --- PREFLIGHT STOPS HERE ----------------------------------------------------------------------
 if [ "${MODE}" = "preflight" ]; then
