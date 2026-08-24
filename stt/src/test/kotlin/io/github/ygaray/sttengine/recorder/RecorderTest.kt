@@ -276,10 +276,6 @@ class RecorderTest {
             amplitudeQueue.addAll(values.toList())
         }
 
-        override fun start() {
-            // No-op in the fake — the real session's platform start() happens inside open().
-        }
-
         override fun pause() {
             pauseCalls++
         }

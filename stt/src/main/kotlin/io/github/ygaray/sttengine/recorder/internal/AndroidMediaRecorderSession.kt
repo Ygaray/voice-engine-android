@@ -12,9 +12,6 @@ import java.io.File
  */
 internal interface RecorderSession {
 
-    /** Begin capturing. May throw — see [AndroidMediaRecorderSession]'s companion factory. */
-    fun start()
-
     /** Suspend capture, writing to the same underlying file. Not idempotence-guarded here — the
      *  caller ([RecorderImpl]) owns the out-of-order guard against the current [io.github.ygaray.sttengine.recorder.RecorderState]. */
     fun pause()
@@ -49,8 +46,6 @@ internal class AndroidMediaRecorderSession private constructor(
 
     /** The idempotence guard [RecorderSession.release] requires, mirroring `AudioRecordPcmSource`. */
     private var released = false
-
-    override fun start() = recorder.start()
 
     override fun pause() = recorder.pause()
 
