@@ -12,6 +12,13 @@ import kotlinx.coroutines.flow.StateFlow
  * The full interface is declared here in one pass (Task 1) even though [pause]/[resume] and the
  * amplitude signal on [level] only gain real behavior in Tasks 2-3 — this keeps `apiDump` a
  * single, deliberate freeze of the whole surface rather than three incremental widenings.
+ *
+ * **Call [start]/[pause]/[resume]/[stop] from a background dispatcher.** Each is a `suspend fun`
+ * that calls straight through to blocking native `android.media.MediaRecorder` operations
+ * (`prepare()`/`start()`/`stop()`/`release()`), which can take tens to low-hundreds of milliseconds
+ * on real devices. None of them internally confines to `Dispatchers.IO` — calling them from
+ * `Dispatchers.Main` (e.g. the default `viewModelScope.launch { ... }`) risks blocking the main
+ * thread long enough to ANR.
  */
 public interface Recorder {
 
