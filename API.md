@@ -194,6 +194,15 @@ outside the session that produced it — the server-backed client restarts its n
 and this backend owns its own counter. Treat it as an ordering key inside one session and nothing
 more.
 
+**Known seam (Phase 9): a mid-session server→native handoff resets the counter.** When a session
+starts on the server backend and later drops to the on-device fallback (SEL-04), the synthetic final
+`BackendSelector` commits for the in-flight partial is numbered `0`, and the native engine's own
+`SegmentAccumulator` then starts numbering its own finals from `0` again — on the SAME
+`start()`/`stop()` session, from a host's perspective. A host relying on `segmentId` for ordering or
+de-duplication within one session can therefore observe `0` (or any other small value) twice across
+a handoff. This is a real, documented gap, not an oversight: treat `segmentId` as reset, not
+continuous, across a backend handoff.
+
 ### `ReconnectInfo(attempt: Int, max: Int)`
 
 Carried by the `Reconnecting` event. `attempt` is **1-based**, so a host renders "attempt {n} of
