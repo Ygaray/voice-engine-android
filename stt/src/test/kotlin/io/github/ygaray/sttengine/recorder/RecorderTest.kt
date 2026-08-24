@@ -31,6 +31,10 @@ import org.robolectric.annotation.Config
  * | start then stop returns a fully populated RecordedFile | `stop()` returns a partial/empty result |
  * | delete removes the file at the returned uri, idempotent on repeat | `delete()` misses the exact path, or throws on a repeat/nonexistent target (REC-03) |
  * | a second start while Recording pushes ALREADY_RECORDING | A concurrent `start()` silently opens two sessions (edge-probe REC-01 concurrency) |
+ * | pause then resume calls the same session's pause/resume exactly once each | Pause/resume opens a second session instead of suspending the one it has (REC-07) |
+ * | durationMs excludes the wall-clock time spent paused | Paused wall-clock time is charged to the recording (REC-07) |
+ * | resume while idle / pause while already paused both push INVALID_STATE | An out-of-order call corrupts session/timing state instead of erroring (edge-probe REC-07 concurrency) |
+ * | delete on the live recording's own uri is rejected | `delete()` races a still-open session's file (edge-probe REC-03 concurrency) |
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -106,6 +110,87 @@ class RecorderTest {
                 factory.openCallCount,
             )
         }
+
+    // --- Task 2: pause/resume + concurrency/idempotency guards (REC-07) -------------------------
+
+    @Test
+    fun `pause then resume calls the same session's pause and resume exactly once each`() = runTest {
+        val factory = FakeRecorderSessionFactory()
+        val recorder = RecorderImpl(context, factory)
+
+        recorder.start()
+        recorder.pause()
+        recorder.resume()
+        recorder.stop()
+
+        val session = factory.openedSessions.single()
+        assertEquals(1, session.pauseCalls)
+        assertEquals(1, session.resumeCalls)
+        assertEquals("no additional session may be opened by pause/resume", 1, factory.openCallCount)
+    }
+
+    @Test
+    fun `durationMs excludes the wall-clock time spent paused`() = runTest {
+        val factory = FakeRecorderSessionFactory()
+        val recorder = RecorderImpl(context, factory)
+
+        recorder.start()
+        Thread.sleep(20)
+        recorder.pause()
+        Thread.sleep(200)
+        recorder.resume()
+        Thread.sleep(20)
+        val recorded = recorder.stop()
+
+        assertTrue(
+            "durationMs (${recorded.durationMs}) must be measurably less than the ~240ms raw " +
+                "wall-clock elapsed, since ~200ms of that was spent Paused",
+            recorded.durationMs < 150,
+        )
+    }
+
+    @Test
+    fun `resume while idle and pause while already paused both push INVALID_STATE`() = runTest {
+        val idleFactory = FakeRecorderSessionFactory()
+        val idleRecorder = RecorderImpl(context, idleFactory)
+
+        idleRecorder.resume()
+        val idleError = idleRecorder.errors.first()
+        assertEquals(RecorderErrorCode.INVALID_STATE, idleError.code)
+
+        val recordingFactory = FakeRecorderSessionFactory()
+        val recorder = RecorderImpl(context, recordingFactory)
+        recorder.start()
+        recorder.pause()
+
+        recorder.pause() // already Paused — out of order
+
+        val pausedError = recorder.errors.first()
+        assertEquals(RecorderErrorCode.INVALID_STATE, pausedError.code)
+
+        val session = recordingFactory.openedSessions.single()
+        assertEquals("the out-of-order pause() must not touch the session again", 1, session.pauseCalls)
+    }
+
+    @Test
+    fun `delete on the live recording's own uri is rejected and does not delete the file`() = runTest {
+        val factory = FakeRecorderSessionFactory()
+        val recorder = RecorderImpl(context, factory)
+
+        recorder.start()
+        val liveUri = requireNotNull(recorder.currentUriForTest())
+        val file = File(liveUri)
+        file.parentFile?.mkdirs()
+        file.writeText("still being written")
+
+        recorder.delete(liveUri)
+
+        val error = recorder.errors.first()
+        assertEquals(RecorderErrorCode.INVALID_STATE, error.code)
+        assertTrue("delete() must not remove a file a session is still writing to", file.exists())
+
+        recorder.stop()
+    }
 
     // --- fakes ------------------------------------------------------------------------------------
 

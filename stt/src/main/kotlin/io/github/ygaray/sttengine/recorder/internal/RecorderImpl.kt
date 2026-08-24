@@ -49,6 +49,7 @@ internal class RecorderImpl(
     private var outputFile: File? = null
     private var startedAtMs: Long = 0L
     private var pausedAccumMs: Long = 0L
+    private var pausedAtMs: Long = 0L
 
     override suspend fun start() {
         if (mutableState.value == RecorderState.Recording || mutableState.value == RecorderState.Paused) {
@@ -67,11 +68,29 @@ internal class RecorderImpl(
     }
 
     override suspend fun pause() {
-        // Real behavior (out-of-order guard, session pause, timing accumulation) lands in Task 2.
+        if (mutableState.value != RecorderState.Recording) {
+            mutableErrors.emit(
+                RecorderError(RecorderErrorCode.INVALID_STATE, "pause() requires an active Recording session"),
+            )
+            return
+        }
+
+        pausedAtMs = System.currentTimeMillis()
+        session?.pause()
+        mutableState.value = RecorderState.Paused
     }
 
     override suspend fun resume() {
-        // Real behavior (out-of-order guard, session resume, timing accumulation) lands in Task 2.
+        if (mutableState.value != RecorderState.Paused) {
+            mutableErrors.emit(
+                RecorderError(RecorderErrorCode.INVALID_STATE, "resume() requires a Paused session"),
+            )
+            return
+        }
+
+        pausedAccumMs += (System.currentTimeMillis() - pausedAtMs)
+        session?.resume()
+        mutableState.value = RecorderState.Recording
     }
 
     override suspend fun stop(): RecordedFile {
@@ -96,7 +115,21 @@ internal class RecorderImpl(
     }
 
     override suspend fun delete(uri: String) {
+        val liveFile = outputFile
+        if (session != null && liveFile != null && liveFile.absolutePath == uri) {
+            mutableErrors.emit(
+                RecorderError(
+                    RecorderErrorCode.INVALID_STATE,
+                    "cannot delete a file that is still being recorded",
+                ),
+            )
+            return
+        }
+
         val file = File(uri)
         if (file.exists()) file.delete()
     }
+
+    /** Test-only accessor for the currently-open recording's uri, before [stop] finalizes it. */
+    internal fun currentUriForTest(): String? = outputFile?.absolutePath
 }
