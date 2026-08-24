@@ -185,6 +185,33 @@ class BackendSelectorTest {
     }
 
     @Test
+    fun `state is Connecting during the try-server window, before Ready arrives`() = runTest {
+        val fakeWs = FakeWebSocketFactory()
+        val fakeHandle = FakeRecognizerHandle()
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val selector = BackendSelector(
+            appContext = context(),
+            config = SttConfig(serverUrl = "wss://example.ts.net:8444/"),
+            handleFactory = RecognizerHandleFactory {
+                PreflightHandle(fakeHandle, LanguageAvailability.INSTALLED)
+            },
+            permissions = PermissionChecker { true },
+            webSocketFactory = fakeWs,
+            mainDispatcher = dispatcher,
+        )
+
+        val started = launch(dispatcher) { selector.start() }
+        // Before Ready ever arrives — CR-04: the try-server connect attempt is genuinely in flight.
+        assertEquals(EngineState.Connecting, selector.state.value)
+
+        fakeWs.fireOpen()
+        fakeWs.fireMessage("""{"type":"ready"}""")
+        started.join()
+
+        assertEquals(EngineState.Listening, selector.state.value)
+    }
+
+    @Test
     fun `prefer=Server with a try-server failure surfaces exactly one typed error and never touches native`() =
         runTest {
             val fakeWs = FakeWebSocketFactory()

@@ -141,6 +141,10 @@ internal class BackendSelector(
     override suspend fun start() {
         val serverUrl = config.serverUrl
         if (serverUrl != null && config.prefer != BackendPreference.OnDevice) {
+            // CR-04: mirrors SttEngineImpl.start()'s own first line — a host rendering a
+            // "connecting…" affordance off `state == Connecting` must see it during the try-server
+            // window too, not just on the native-only path.
+            setState(EngineState.Connecting)
             val serverBackend = serverBackendFactory(serverUrl)
             val connected = withTimeoutOrNull(tryServerTimeoutMs) { serverBackend.connect() }
             if (connected == true) {
