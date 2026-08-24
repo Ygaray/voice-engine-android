@@ -268,7 +268,9 @@ class BackendSelectorTest {
                     serverUrl = url,
                     language = "en",
                     mainDispatcher = dispatcher,
-                    backpressureGate = ServerBackpressureGate(ServerBackpressureGateOptions(soft = 10L)),
+                    backpressureGate = ServerBackpressureGate(
+                        ServerBackpressureGateOptions(soft = 10L, low = 0L),
+                    ),
                 ).also { serverBackend = it }
             },
         )

@@ -37,7 +37,15 @@ internal class ServerBackpressureGateOptions(
     val hardDebounceMs: Long = 3_000L,
     /** Minimum ms between warning signals while shedding. Default 1000 (~1/sec). */
     val warnThrottleMs: Long = 1_000L,
-)
+) {
+    init {
+        // WR-03: `low < soft < hard` is load-bearing for evaluate()'s branching — a misconfiguration
+        // here (e.g. hard <= soft) would silently produce a gate that can never reach Fatal via the
+        // intended debounce path, with no error to diagnose why. Fail loudly at construction instead.
+        require(low < soft) { "low ($low) must be < soft ($soft)" }
+        require(soft < hard) { "soft ($soft) must be < hard ($hard)" }
+    }
+}
 
 /** The action [ServerBackend] must take for the current outbound tick. */
 internal sealed interface BackpressureAction {

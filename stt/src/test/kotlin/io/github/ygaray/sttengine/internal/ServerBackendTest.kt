@@ -59,7 +59,7 @@ class ServerBackendTest {
 
     @Test
     fun `ServerBackpressureGate evaluate() at or below the soft threshold returns Send`() {
-        val gate = ServerBackpressureGate(ServerBackpressureGateOptions(soft = 1_000L))
+        val gate = ServerBackpressureGate(ServerBackpressureGateOptions(soft = 1_000L, low = 0L))
 
         assertEquals(BackpressureAction.Send, gate.evaluate(bufferedAmount = 0L, now = 0L))
         assertEquals(BackpressureAction.Send, gate.evaluate(bufferedAmount = 1_000L, now = 1L))
@@ -68,7 +68,7 @@ class ServerBackendTest {
     @Test
     fun `ServerBackpressureGate sustained above the hard threshold past hardDebounceMs returns Fatal`() {
         val gate = ServerBackpressureGate(
-            ServerBackpressureGateOptions(soft = 100L, hard = 200L, hardDebounceMs = 1_000L),
+            ServerBackpressureGateOptions(soft = 100L, low = 0L, hard = 200L, hardDebounceMs = 1_000L),
         )
 
         // First breach: starts the debounce clock, does not yet escalate.
@@ -88,7 +88,7 @@ class ServerBackendTest {
     @Test
     fun `a brief spike above hard that recovers below it never escalates`() {
         val gate = ServerBackpressureGate(
-            ServerBackpressureGateOptions(soft = 100L, hard = 200L, hardDebounceMs = 1_000L),
+            ServerBackpressureGateOptions(soft = 100L, low = 0L, hard = 200L, hardDebounceMs = 1_000L),
         )
 
         gate.evaluate(bufferedAmount = 300L, now = 0L) // breach starts
@@ -110,6 +110,28 @@ class ServerBackendTest {
         assertTrue(gate.warning)
         assertEquals(BackpressureAction.ClearWarning, gate.evaluate(bufferedAmount = 10L, now = 2L))
         assertFalse(gate.warning)
+    }
+
+    // --- WR-03: ServerBackpressureGateOptions must validate low < soft < hard -----------------------
+
+    @Test
+    fun `ServerBackpressureGateOptions rejects hard less than or equal to soft`() {
+        try {
+            ServerBackpressureGateOptions(soft = 100L, low = 0L, hard = 100L)
+            org.junit.Assert.fail("expected an IllegalArgumentException for hard <= soft")
+        } catch (expected: IllegalArgumentException) {
+            // expected
+        }
+    }
+
+    @Test
+    fun `ServerBackpressureGateOptions rejects low greater than or equal to soft`() {
+        try {
+            ServerBackpressureGateOptions(soft = 100L, low = 100L)
+            org.junit.Assert.fail("expected an IllegalArgumentException for low >= soft")
+        } catch (expected: IllegalArgumentException) {
+            // expected
+        }
     }
 
     // --- ServerBackend-level coverage ---------------------------------------------------------------
