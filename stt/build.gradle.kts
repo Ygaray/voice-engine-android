@@ -162,6 +162,12 @@ dependencies {
     // GrantPermissionRule — the probe runs unattended, so it grants RECORD_AUDIO itself rather than
     // relying on a host Activity (D-11) that an instrumented run does not have.
     androidTestImplementation(libs.androidx.test.rules)
+    // Phase 9 Plan 03 (D-03/D-05): ServerHandoffProbeTest drives a real BackendSelector/
+    // ServerBackend, which references OkHttp types in its internal (but androidTest-visible)
+    // WebSocketFactory seam. `implementation(libs.okhttp)` above is main-only scope and does not
+    // propagate to androidTest — this is the SAME pinned version, just also exposed to the test
+    // compile classpath. Test-only; never touches the public SttEngine surface.
+    androidTestImplementation(libs.okhttp)
 }
 
 // JitPack android-example publishing form. `from(components["release"])` MUST be inside
