@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    :recorder library manifest. Under AGP 8 the namespace comes from build.gradle.kts, so no
+    package attribute is needed here. There is no <application> element — this library contributes
+    no components, only a permission declaration.
+
+    RECORD_AUDIO is declared here so it merges into every consumer. D-11: the library only CHECKS
+    the permission (Context.checkSelfPermission); the HOST app requests it, because a library has
+    no Activity to request from — the same contract asymmetry :stt documents.
+
+    DELIBERATELY WITHOUT :stt's <queries> entry for android.speech.RecognitionService. Recorder
+    never touches recognition, so it has no need to query for a recognizer package. This is a
+    genuine, if partial, strengthening over the single-AAR era (08-RESEARCH.md's Pitfall 5 /
+    Assumption A4 flagged that manifest merging is unconditional and R8-independent): a
+    :recorder-ONLY consumer's merged manifest now genuinely never gains the recognition <queries>
+    entry. A consumer that ALSO depends on :stt still gets it from :stt's own manifest — expected,
+    unrelated to this guarantee.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+</manifest>

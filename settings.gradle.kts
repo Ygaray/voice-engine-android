@@ -26,6 +26,11 @@ dependencyResolutionManagement {
 rootProject.name = "stt-engine-android"
 // The publishable library module.
 include(":stt")
+// The SECOND publishable library module (plan 08-05, REC-05 rework). Extracted out of :stt so the
+// Recorder's dependency graph structurally never names :stt — a compile-time module-boundary
+// guarantee, stronger than the R8-mapping-grep proof :verify-recorder-only offered alone. Named in
+// android/jitpack.yml alongside :stt (D-23, Pitfall 8: a mismatch here is unrecoverable after a tag).
+include(":recorder")
 // The reference host app (D-27/D-28). It is NEVER named in jitpack.yml and carries no
 // `maven-publish`, so it is outside the published module set (D-23) — the mirror ships the library
 // and the worked example of how to consume it, never the example as an artifact.
