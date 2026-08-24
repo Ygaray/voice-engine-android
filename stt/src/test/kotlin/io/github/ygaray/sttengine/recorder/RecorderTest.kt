@@ -1,0 +1,170 @@
+package io.github.ygaray.sttengine.recorder
+
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import io.github.ygaray.sttengine.recorder.internal.RecorderImpl
+import io.github.ygaray.sttengine.recorder.internal.RecorderSession
+import io.github.ygaray.sttengine.recorder.internal.RecorderSessionFactory
+import java.io.File
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+/**
+ * The standalone Android Recorder primitive (REC-01/02/03/04/06/07), constructed DIRECTLY with an
+ * injected [FakeRecorderSessionFactory] — mirroring `AudioSourcePipeTest`'s convention of testing
+ * the internal class rather than through the public [createRecorder] factory.
+ *
+ * ## What each test rules out (grows across Tasks 1-3)
+ *
+ * | Test | The failure it makes impossible |
+ * |---|---|
+ * | createRecorder constructs without throwing | The public factory wiring is broken |
+ * | start then stop returns a fully populated RecordedFile | `stop()` returns a partial/empty result |
+ * | delete removes the file at the returned uri, idempotent on repeat | `delete()` misses the exact path, or throws on a repeat/nonexistent target (REC-03) |
+ * | a second start while Recording pushes ALREADY_RECORDING | A concurrent `start()` silently opens two sessions (edge-probe REC-01 concurrency) |
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
+class RecorderTest {
+
+    private lateinit var context: Context
+
+    @Before
+    fun setUp() {
+        context = ApplicationProvider.getApplicationContext()
+    }
+
+    // --- Task 1: end-to-end round trip + full public API ----------------------------------------
+
+    @Test
+    fun `createRecorder constructs a real recorder without throwing`() {
+        assertNotNull(createRecorder(context))
+    }
+
+    @Test
+    fun `start then stop returns a fully populated RecordedFile`() = runTest {
+        val factory = FakeRecorderSessionFactory()
+        val recorder = RecorderImpl(context, factory)
+
+        recorder.start()
+        val recorded = recorder.stop()
+
+        assertTrue("uri must be populated", recorded.uri.isNotBlank())
+        assertTrue("durationMs must be non-negative", recorded.durationMs >= 0)
+        assertEquals("audio/mp4", recorded.format)
+        assertTrue("createdAt must be populated", recorded.createdAt.isNotBlank())
+        assertEquals("exactly one session must have been opened", 1, factory.openCallCount)
+    }
+
+    @Test
+    fun `delete removes the file at the returned uri and is idempotent on a second call`() = runTest {
+        val factory = FakeRecorderSessionFactory()
+        val recorder = RecorderImpl(context, factory)
+
+        recorder.start()
+        val recorded = recorder.stop()
+
+        // The fake session never writes real bytes, so simulate what a real MediaRecorder would
+        // have produced at the exact internally-generated path before exercising delete().
+        val file = File(recorded.uri)
+        file.parentFile?.mkdirs()
+        file.writeText("fake m4a bytes")
+        assertTrue("expected the fixture file to exist before delete()", file.exists())
+
+        recorder.delete(recorded.uri)
+        assertFalse("delete() must remove the file at the exact recorded uri", file.exists())
+
+        // Idempotent: a second delete() on an already-deleted uri must not throw.
+        recorder.delete(recorded.uri)
+    }
+
+    @Test
+    fun `a second start while already recording pushes ALREADY_RECORDING and does not open a second session`() =
+        runTest {
+            val factory = FakeRecorderSessionFactory()
+            val recorder = RecorderImpl(context, factory)
+
+            recorder.start()
+            assertEquals(1, factory.openCallCount)
+
+            recorder.start()
+
+            val error = recorder.errors.first()
+            assertEquals(RecorderErrorCode.ALREADY_RECORDING, error.code)
+            assertEquals(
+                "a second start() while Recording must not open a second session",
+                1,
+                factory.openCallCount,
+            )
+        }
+
+    // --- fakes ------------------------------------------------------------------------------------
+
+    /**
+     * A counting [RecorderSession] fake. Never touches real audio hardware or disk — resource
+     * discipline and behavior are asserted via the counters/queue below, mirroring
+     * `AudioSourcePipeTest`'s `CountingPcmSource` convention.
+     */
+    private open class FakeRecorderSession : RecorderSession {
+        var pauseCalls = 0
+            private set
+        var resumeCalls = 0
+            private set
+        var stopCalls = 0
+            private set
+        var releaseCalls = 0
+            private set
+        private val amplitudeQueue: ArrayDeque<Int> = ArrayDeque()
+
+        fun queueAmplitudes(vararg values: Int) {
+            amplitudeQueue.addAll(values.toList())
+        }
+
+        override fun start() {
+            // No-op in the fake — the real session's platform start() happens inside open().
+        }
+
+        override fun pause() {
+            pauseCalls++
+        }
+
+        override fun resume() {
+            resumeCalls++
+        }
+
+        override fun stop() {
+            stopCalls++
+        }
+
+        override fun release() {
+            releaseCalls++
+        }
+
+        override fun maxAmplitude(): Int = amplitudeQueue.removeFirstOrNull() ?: 0
+    }
+
+    /** Opens a fresh [FakeRecorderSession] per call by default; [opener] can throw to simulate REC-02. */
+    private class FakeRecorderSessionFactory(
+        private val opener: () -> RecorderSession = { FakeRecorderSession() },
+    ) : RecorderSessionFactory {
+        var openCallCount = 0
+            private set
+        val openedSessions = mutableListOf<FakeRecorderSession>()
+
+        override fun open(context: Context, outputFile: File): RecorderSession {
+            openCallCount++
+            val session = opener()
+            if (session is FakeRecorderSession) openedSessions.add(session)
+            return session
+        }
+    }
+}

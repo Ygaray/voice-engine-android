@@ -154,3 +154,71 @@ public final class io/github/ygaray/sttengine/SttWarning {
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class io/github/ygaray/sttengine/recorder/RecordedFile {
+	public fun <init> (Ljava/lang/String;JLjava/lang/String;Ljava/lang/String;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCreatedAt ()Ljava/lang/String;
+	public final fun getDurationMs ()J
+	public final fun getFormat ()Ljava/lang/String;
+	public final fun getUri ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class io/github/ygaray/sttengine/recorder/Recorder {
+	public abstract fun delete (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun getErrors ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getLevel ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+	public abstract fun pause (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun resume (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun start (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun stop (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class io/github/ygaray/sttengine/recorder/RecorderError {
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode-Gw9Qm6U ()Ljava/lang/String;
+	public final fun getMessage ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/recorder/RecorderErrorCode {
+	public static final field Companion Lio/github/ygaray/sttengine/recorder/RecorderErrorCode$Companion;
+	public static final synthetic fun box-impl (Ljava/lang/String;)Lio/github/ygaray/sttengine/recorder/RecorderErrorCode;
+	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
+	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public static fun hashCode-impl (Ljava/lang/String;)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (Ljava/lang/String;)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/recorder/RecorderErrorCode$Companion {
+	public final fun getALREADY_RECORDING-Gw9Qm6U ()Ljava/lang/String;
+	public final fun getINVALID_STATE-Gw9Qm6U ()Ljava/lang/String;
+	public final fun getMIC_DENIED-Gw9Qm6U ()Ljava/lang/String;
+	public final fun getNO_STORAGE-Gw9Qm6U ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/recorder/RecorderFactoryKt {
+	public static final fun createRecorder (Landroid/content/Context;)Lio/github/ygaray/sttengine/recorder/Recorder;
+}
+
+public final class io/github/ygaray/sttengine/recorder/RecorderState : java/lang/Enum {
+	public static final field Error Lio/github/ygaray/sttengine/recorder/RecorderState;
+	public static final field Idle Lio/github/ygaray/sttengine/recorder/RecorderState;
+	public static final field Paused Lio/github/ygaray/sttengine/recorder/RecorderState;
+	public static final field Recording Lio/github/ygaray/sttengine/recorder/RecorderState;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getWireName ()Ljava/lang/String;
+	public static fun valueOf (Ljava/lang/String;)Lio/github/ygaray/sttengine/recorder/RecorderState;
+	public static fun values ()[Lio/github/ygaray/sttengine/recorder/RecorderState;
+}
+
