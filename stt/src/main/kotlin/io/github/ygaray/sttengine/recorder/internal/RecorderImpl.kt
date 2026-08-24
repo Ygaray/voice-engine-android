@@ -174,7 +174,14 @@ internal class RecorderImpl(
         }
 
         val file = File(uri)
-        if (file.exists()) file.delete()
+        if (file.exists() && !file.delete()) {
+            // File.delete() returns false (never throws) on ordinary filesystem failures
+            // (permission denied, locked by another process) — surface it rather than silently
+            // reporting success for a delete that did not actually happen (WR-03).
+            mutableErrors.emit(
+                RecorderError(RecorderErrorCode.NO_STORAGE, "failed to delete $uri"),
+            )
+        }
     }
 
     /** Test-only accessor for the currently-open recording's uri, before [stop] finalizes it. */
