@@ -6,7 +6,11 @@ import io.github.ygaray.sttengine.recorder.internal.RecorderImpl
 import io.github.ygaray.sttengine.recorder.internal.RecorderSession
 import io.github.ygaray.sttengine.recorder.internal.RecorderSessionFactory
 import java.io.File
+import java.io.IOException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -35,6 +39,9 @@ import org.robolectric.annotation.Config
  * | durationMs excludes the wall-clock time spent paused | Paused wall-clock time is charged to the recording (REC-07) |
  * | resume while idle / pause while already paused both push INVALID_STATE | An out-of-order call corrupts session/timing state instead of erroring (edge-probe REC-07 concurrency) |
  * | delete on the live recording's own uri is rejected | `delete()` races a still-open session's file (edge-probe REC-03 concurrency) |
+ * | the level flow ticks only while Recording, normalized from maxAmplitude | The meter free-runs before `start()`/while `Idle`, or leaks ticks while `Paused` (REC-06) |
+ * | a RuntimeException from open maps to MIC_DENIED | A mic-denial crashes instead of surfacing a typed error (REC-02) |
+ * | an IOException from open maps to NO_STORAGE | A disk-full/permission failure crashes instead of surfacing a typed error (REC-02) |
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -190,6 +197,61 @@ class RecorderTest {
         assertTrue("delete() must not remove a file a session is still writing to", file.exists())
 
         recorder.stop()
+    }
+
+    // --- Task 3: amplitude polling + typed error mapping (REC-02, REC-06) -----------------------
+
+    @Test
+    fun `the level flow ticks only while recording, normalized from maxAmplitude`() = runBlocking {
+        val session = FakeRecorderSession()
+        session.queueAmplitudes(16383, 32767, 3276, 32767, 16383, 3276, 32767, 16383)
+        val factory = FakeRecorderSessionFactory { session }
+        val recorder = RecorderImpl(context, factory)
+
+        val ticks = mutableListOf<Float>()
+        val collectJob = launch { recorder.level.collect { ticks.add(it) } }
+
+        assertTrue("no ticks before start()", ticks.isEmpty())
+
+        recorder.start()
+        delay(400) // real time — several ~150ms poll cycles
+
+        recorder.pause()
+        val countWhilePaused = ticks.size
+        delay(400)
+        assertEquals("no new ticks while Paused", countWhilePaused, ticks.size)
+
+        recorder.stop()
+        collectJob.cancel()
+
+        assertTrue("expected at least one normalized tick while Recording", ticks.isNotEmpty())
+        for (tick in ticks) {
+            assertTrue("tick $tick must be in [0,1]", tick in 0f..1f)
+        }
+    }
+
+    @Test
+    fun `a RuntimeException from open maps to MIC_DENIED and pushes Error state`() = runTest {
+        val factory = FakeRecorderSessionFactory { throw RuntimeException("mic busy") }
+        val recorder = RecorderImpl(context, factory)
+
+        recorder.start()
+
+        val error = recorder.errors.first()
+        assertEquals(RecorderErrorCode.MIC_DENIED, error.code)
+        assertEquals(RecorderState.Error, recorder.state.value)
+    }
+
+    @Test
+    fun `an IOException from open maps to NO_STORAGE and pushes Error state`() = runTest {
+        val factory = FakeRecorderSessionFactory { throw IOException("disk full") }
+        val recorder = RecorderImpl(context, factory)
+
+        recorder.start()
+
+        val error = recorder.errors.first()
+        assertEquals(RecorderErrorCode.NO_STORAGE, error.code)
+        assertEquals(RecorderState.Error, recorder.state.value)
     }
 
     // --- fakes ------------------------------------------------------------------------------------
