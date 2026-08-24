@@ -412,9 +412,14 @@ internal class ServerBackend(
                     // A capture failure here is routed through the SAME fail() funnel as any other
                     // terminal failure, never a bare uncaught exception (CLAUDE.md's loud-typed-
                     // failure discipline).
+                    // WR-02: narrowed to Exception — AudioRecordPcmSource.open() only ever throws
+                    // IllegalStateException/IllegalArgumentException (both Exception subtypes); a
+                    // bare Throwable catch would also swallow OutOfMemoryError/StackOverflowError and
+                    // silently downgrade a serious VM-level condition to an ordinary mic-denied
+                    // failure.
                     val opened = try {
                         pcmSourceFactory.open(SAMPLE_RATE)
-                    } catch (unavailable: Throwable) {
+                    } catch (unavailable: Exception) {
                         null
                     }
                     if (opened == null) {
