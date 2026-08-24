@@ -26,7 +26,15 @@ internal const val PROTOCOL_VERSION: Int = 1
 /** 16 kHz mono is the fixed pipeline rate (mirrors `protocol.ts:21`). */
 internal const val SAMPLE_RATE: Int = 16_000
 
-/** One 16 kHz output frame == one Silero VAD chunk (mirrors `protocol.ts:24`). */
+/**
+ * One 16 kHz output frame == one Silero VAD chunk (mirrors `protocol.ts:24`).
+ *
+ * IN-01: intentionally reserved, not yet referenced by any production call site. The continuous
+ * audio-pump loop that will chunk captured PCM into frames of this size before handing them to
+ * [ServerBackend.sendPcmFrame] is deferred to Plan 09-03 (see [ServerBackend]'s own KDoc) — this
+ * constant already matches the wire contract so that work lands as a pure wiring change, not a
+ * second protocol decision.
+ */
 internal const val FRAME_SAMPLES: Int = 512
 
 /**
@@ -34,6 +42,11 @@ internal const val FRAME_SAMPLES: Int = 512
  * to the loopback server. This is the ONLY WS-safe path (mirrors `protocol.ts:26-32`): it is NEVER
  * the pretty `:443/SttEngine` static mount, which terminates as HTTP/2 and silently fails the WS
  * upgrade ("missing Connection header" — the `tailscale-serve-websocket-h2` gotcha).
+ *
+ * IN-01: intentionally reserved, not yet referenced by any production call site — today the server
+ * URL is supplied whole via `SttConfig.serverUrl`/`BackendSelector`'s constructor rather than
+ * assembled from this port. Kept here as the documented, correct default port for whichever call
+ * site (a future `SttConfig` convenience default, most likely) ends up assembling one.
  */
 internal const val WSS_PORT: Int = 8444
 
