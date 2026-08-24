@@ -8,6 +8,7 @@ import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.PreflightHandle
 import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttError
+import io.github.ygaray.sttengine.SttEvent
 import java.io.IOException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -243,4 +244,56 @@ class BackendSelectorTest {
             // Server-only: no fallback attempt at all.
             assertEquals(0, fakeHandle.startCount)
         }
+
+    // --- CR-02: ServerBackend.warnings must reach selector.events end-to-end ------------------------
+
+    @Test
+    fun `a ServerBackend warning reaches selector_events as SttEvent_Warning`() = runTest {
+        val fakeWs = FakeWebSocketFactory()
+        val fakeHandle = FakeRecognizerHandle()
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        var serverBackend: ServerBackend? = null
+        val selector = BackendSelector(
+            appContext = context(),
+            config = SttConfig(serverUrl = "wss://example.ts.net:8444/"),
+            handleFactory = RecognizerHandleFactory {
+                PreflightHandle(fakeHandle, LanguageAvailability.INSTALLED)
+            },
+            permissions = PermissionChecker { true },
+            webSocketFactory = fakeWs,
+            mainDispatcher = dispatcher,
+            serverBackendFactory = { url ->
+                ServerBackend(
+                    webSocketFactory = fakeWs,
+                    serverUrl = url,
+                    language = "en",
+                    mainDispatcher = dispatcher,
+                    backpressureGate = ServerBackpressureGate(ServerBackpressureGateOptions(soft = 10L)),
+                ).also { serverBackend = it }
+            },
+        )
+        val events = mutableListOf<SttEvent>()
+        backgroundScope.launch(dispatcher) { selector.events.collect { events += it } }
+
+        val started = launch(dispatcher) { selector.start() }
+        fakeWs.fireOpen()
+        fakeWs.fireMessage("""{"type":"ready"}""")
+        started.join()
+
+        // Directly drive the gated send path over its soft threshold (mirrors ServerBackendTest's
+        // own `sendPcmFrame` coverage) — this exercises the FORWARDING wire this test targets,
+        // independent of whether a production caller drives sendPcmFrame yet (that pump is deferred,
+        // per ServerBackend's own KDoc and API.md's SttWarning section).
+        checkNotNull(fakeWs.lastSocket).fakeQueueSize = 100L
+        checkNotNull(serverBackend).sendPcmFrame(ByteArray(4))
+
+        val warningEvents = events.filterIsInstance<SttEvent.Warning>()
+        assertEquals(
+            "expected exactly one Warning event forwarded from ServerBackend.warnings: $events",
+            1,
+            warningEvents.size,
+        )
+        assertTrue(warningEvents.single().warning.active)
+        assertEquals("backpressure", warningEvents.single().warning.code)
+    }
 }

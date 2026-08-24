@@ -240,9 +240,11 @@ element — it inherits it — and its diagnostics panel prints both the install
   design exists to hide. The demo decays its meter instead; see `DictationViewModel.startLevelDecay`.
 - **`segmentId` is opaque and per-session.** It starts at 0 and is monotonic within one session. It
   is not a stable identifier and is **not comparable across backends**.
-- **`SttWarning` never fires while a session is on-device.** Keep the branch for cross-backend code
-  regardless — once a session is running on the server backend (Phase 9, `prefer`/`serverUrl` on
-  `SttConfig`), `SttWarning` now fires while the outbound backpressure gate sheds frames under a
-  sustained send overrun. See `API.md`.
+- **`SttWarning` never fires in this version, on either backend.** On-device, that's permanent — the
+  recognition service owns the microphone, so there is no outbound send buffer to warn about. On the
+  server backend (Phase 9, `prefer`/`serverUrl` on `SttConfig`), the forwarding wire from
+  `ServerBackend.warnings` exists, but nothing yet drives the outbound audio pump that would feed the
+  backpressure gate in production, so it is temporarily unreachable rather than permanently absent.
+  Keep the branch for cross-backend code regardless. See `API.md`.
 - **Bumping to a new library version is human-gated.** Change the coordinate to a new immutable tag,
   sync, rebuild, and re-verify on a real device before shipping. See `CLAUDE.md`.

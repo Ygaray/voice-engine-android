@@ -226,6 +226,16 @@ internal class BackendSelector(
                 _events.tryEmit(SttEvent.Level(level))
             }
         }
+        // CR-02: ServerBackend.warnings' own KDoc documents this selector as the ONLY place
+        // SttWarning surfaces on the frozen contract — this collector is that wire. Note that in the
+        // currently shipped code this is still unreachable in practice: sendPcmFrame (the only
+        // producer that feeds ServerBackpressureGate) has no production caller yet — the continuous
+        // audio-pump loop is deferred to Plan 09-03 (see ServerBackend's own KDoc). This collector
+        // makes the forwarding correct so that work lands as a pure wiring change, not a second
+        // missing wire, once the pump exists.
+        scope.launch {
+            serverBackend.warnings.collect { warning -> _events.tryEmit(SttEvent.Warning(warning)) }
+        }
     }
 
     /**

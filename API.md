@@ -207,11 +207,14 @@ hint copy is deliberately **not** part of this type — see the parity section.
 
 ### `SttWarning(code: String, active: Boolean, message: String)`
 
-A non-fatal transient warning. **Structurally present and never emitted in this version.** The
-recognition service owns the microphone, so there is no outbound send buffer and therefore no
-backpressure analog to warn about. The type is kept anyway so a host can share **one exhaustive
-`when`** across both backends without a platform fork in its rendering code — which is the whole
-reason the event union survived translation unchanged.
+A non-fatal transient warning. **Structurally present and never emitted in this version, on either
+backend.** On-device, the recognition service owns the microphone, so there is no outbound send
+buffer and therefore no backpressure analog to warn about — that one is permanent by construction.
+On the server backend, `BackendSelector` already forwards `ServerBackend.warnings` onto this event
+(Phase 9), but nothing yet drives the outbound audio pump that would ever feed the backpressure gate
+in production — that gap is temporary, deferred to a later phase. The type is kept anyway so a host
+can share **one exhaustive `when`** across both backends without a platform fork in its rendering
+code — which is the whole reason the event union survived translation unchanged.
 
 ---
 
@@ -280,7 +283,7 @@ only — events are transient envelopes and their payloads carry the equality.
 | `SttEvent.Error` | `error: SttError` | typed terminal failure; exactly once per session |
 | `SttEvent.Level` | `value: Float` | input level `0.0..1.0`; conflated, drops expected |
 | `SttEvent.Reconnecting` | `info: ReconnectInfo` | bounded recovery only — **not** ordinary restarts |
-| `SttEvent.Warning` | `warning: SttWarning` | never emitted while on-device; **fires once a session is on the server backend** and the outbound backpressure gate sheds frames (Phase 9) — see `SttWarning` |
+| `SttEvent.Warning` | `warning: SttWarning` | **structurally wired end-to-end (Phase 9), never actually emitted in this version**: `BackendSelector` forwards `ServerBackend.warnings` onto this event, but the only producer that would feed it — the outbound backpressure gate under a continuous audio-pump loop — is deferred to a later phase; see `SttWarning` |
 
 `events` is an ordered **mirror** of the six properties, not a second consumer of them, so collecting
 `events` and `finals` together is safe and neither steals from the other.
@@ -301,7 +304,7 @@ error string was copied across.
 | `EngineState` union (5 strings) | `EngineState` enum + `wireName` (5) | **identical strings** |
 | `FinalSegment { text, segmentId }` | `FinalSegment(text, segmentId)` | identical |
 | `ReconnectInfo { attempt, max }` | `ReconnectInfo(attempt, max)` | identical, `attempt` 1-based on both |
-| `SttWarning { code, active, message }` | `SttWarning(code, active, message)` | identical shape; never emitted while on-device, **now fires once a session is on the server backend** (Phase 9) |
+| `SttWarning { code, active, message }` | `SttWarning(code, active, message)` | identical shape; never emitted while on-device, and **still never emitted on the server backend either** in this version — the forwarding wire exists (Phase 9), but its only producer (the outbound audio pump) is deferred |
 | `SttError { code, message }` | `SttError(code, message, platformDetail)` | **+1 field** — divergence 2 |
 | `SttErrorCode` union (7 server + 4 client = 11) | `SttErrorCode.SHARED` (11) | **byte-identical** |
 | — | `SttErrorCode.ANDROID_ONLY` (3) | **additive** — divergence 1 |
