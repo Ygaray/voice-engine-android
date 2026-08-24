@@ -189,6 +189,10 @@ internal class ServerBackend(
         if (terminal) return
         terminal = true
         epoch.advance()
+        // CR-01: a late Ready that races the coroutine-level timeout can open the server-path mic
+        // between the timeout firing and this call — release it here too, mirroring fail()/stop(),
+        // so abandon() never leaves this instance still holding the microphone.
+        releaseAudioSource()
         outboundQueue.clear()
         webSocket?.cancel()
         webSocket = null

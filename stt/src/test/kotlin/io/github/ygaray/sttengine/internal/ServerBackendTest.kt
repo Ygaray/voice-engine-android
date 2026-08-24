@@ -188,4 +188,43 @@ class ServerBackendTest {
             assertEquals(SttErrorCode.PROTOCOL_VIOLATION, errors.single().code)
             assertEquals(EngineState.Error, backend.state.value)
         }
+
+    // --- CR-01: abandon() must release an already-opened server-path mic ---------------------------
+
+    private class RecordingPcmSource : PcmSource {
+        var released = false
+            private set
+
+        override fun read(buffer: ByteArray): Int = 0
+        override fun stop() = Unit
+        override fun release() {
+            released = true
+        }
+    }
+
+    @Test
+    fun `abandon() after Ready already opened the mic still releases it`() = runTest {
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val fakeWs = FakeWebSocketFactory()
+        val recordingSource = RecordingPcmSource()
+        val backend = ServerBackend(
+            webSocketFactory = fakeWs,
+            serverUrl = "wss://example.ts.net:8444/",
+            language = "en",
+            mainDispatcher = dispatcher,
+            pcmSourceFactory = PcmSourceFactory { recordingSource },
+        )
+
+        backgroundScope.launch(dispatcher) { backend.connect() }
+        fakeWs.fireOpen()
+        fakeWs.fireMessage("""{"type":"ready"}""")
+        assertEquals(EngineState.Listening, backend.state.value)
+        assertFalse("mic must not be released yet", recordingSource.released)
+
+        // Simulates the timeout/late-Ready race (CR-01): the caller decided this instance lost the
+        // try-server window and abandons it AFTER Ready already opened the mic.
+        backend.abandon()
+
+        assertTrue("abandon() must release an already-opened mic", recordingSource.released)
+    }
 }
