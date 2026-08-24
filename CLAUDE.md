@@ -106,8 +106,10 @@ Related invariants that follow from it:
 
 - `local.properties` is **gitignored from the first commit**. JitPack sets `ANDROID_HOME` itself, and
   committing a local SDK path to a public mirror leaks a filesystem layout for no benefit.
-- `jitpack.yml` names the **library module only**. A module named there that `settings.gradle.kts`
-  does not include — or the reverse — is an unrecoverable failure found after the tag is immutable.
+- `jitpack.yml` names the **published library modules only** (now `:stt` AND `:recorder` — plan
+  08-05's REC-05 rework extracted the Recorder into its own independently published module). A
+  module named there that `settings.gradle.kts` does not include — or the reverse — is an
+  unrecoverable failure found after the tag is immutable.
 - The reference host app is **outside the published module set**: no `maven-publish`, no
   `explicitApi()`, no binary-compatibility validator. Freezing a surface is the library's job.
 - These documents become **world-readable** when the mirror is pushed. They must contain no private

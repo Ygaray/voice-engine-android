@@ -1,13 +1,20 @@
-// android/verify-recorder-only — a synthetic, never-published minimal-consumer harness (plan 08-04).
+// android/verify-recorder-only — a synthetic, never-published minimal-consumer harness (plan 08-04,
+// repointed at :recorder in plan 08-05's REC-05 rework).
 //
-// Its ENTIRE job is to prove, mechanically, that a consumer importing ONLY
-// io.github.ygaray.sttengine.recorder.* — never io.github.ygaray.sttengine.SttEngine/createSttEngine
-// — produces a minified release build whose R8 mapping.txt names no recognition-only internal class
-// (SttEngineImpl, RecognizerHandle, PlatformRecognizerHandle, RecognizerIntents, RecognizerBundles).
-// This is the BEST CASE the single-:stt-AAR + consumer-R8 approach (D-03) can offer for REC-05 — it
-// does not (and per 08-RESEARCH.md's Pitfall 4/Assumption A3 cannot) prove anything for a debug or
-// unminified consumer build. See check-r8-mapping.sh's own header for both caveats this harness
-// leaves open rather than silently resolving.
+// As of plan 08-05, this consumer depends ONLY on project(":recorder") — a module whose own
+// dependencies {} block never names :stt. That compile-time dependency alone already proves this
+// consumer's classpath contains ZERO :stt bytecode, under ANY build configuration (debug,
+// unminified release, or otherwise) — the module-boundary guarantee, not this harness, is now
+// REC-05's PRIMARY Android proof (see :recorder/build.gradle.kts's verifyNoRecognitionDependency
+// task and :recorder/check-no-recognition-dependency.sh).
+//
+// The R8-mapping inspection below (check-r8-mapping.sh) is retained as a SECONDARY,
+// belt-and-suspenders check layered on top of that compile-time guarantee: it additionally proves
+// that even R8's own reachability analysis, in the one minified-release configuration this harness
+// builds, retains none of the five recognition-only internal classes. It is no longer the primary
+// proof this module exists to provide, and it never was general — see check-r8-mapping.sh's own
+// header for the caveats (08-RESEARCH.md Pitfall 4/Assumption A3 and Pitfall 5) it documents rather
+// than silently resolves.
 //
 // NEVER add `maven-publish` here, and never name this module in android/jitpack.yml — same
 // "outside the published module set" status as :demo (T-08-09).
@@ -18,13 +25,14 @@ plugins {
 
 android {
     namespace = "io.github.ygaray.sttengine.verifyrecorderonly"
-    // Matches :stt's compileSdk exactly (read from android/stt/build.gradle.kts) — this harness
-    // proves something about :stt's consumer, so it must build against the same SDK line.
+    // Matches :recorder's compileSdk exactly (read from android/recorder/build.gradle.kts) — this
+    // harness proves something about :recorder's consumer, so it must build against the same SDK line.
     compileSdk = 36
 
     defaultConfig {
         applicationId = "io.github.ygaray.sttengine.verifyrecorderonly"
-        // Matches :stt's minSdk exactly — a real consumer of :stt can never be older than this floor.
+        // Matches :recorder's minSdk exactly — a real consumer of :recorder can never be older than
+        // this floor.
         minSdk = 33
         targetSdk = 36
         versionCode = 1
@@ -59,9 +67,10 @@ kotlin {
 }
 
 dependencies {
-    // The ONLY dependency, and MinimalRecorderConsumer.kt's only import is
-    // io.github.ygaray.sttengine.recorder.* — never io.github.ygaray.sttengine.SttEngine or
-    // createSttEngine. That single-file, single-package root set is the entire proof surface R8's
-    // reachability analysis sees for this module.
-    implementation(project(":stt"))
+    // The ONLY dependency (plan 08-05: repointed from :stt to :recorder). MinimalRecorderConsumer.kt's
+    // only import is io.github.ygaray.sttengine.recorder.* — never io.github.ygaray.sttengine.SttEngine
+    // or createSttEngine. Depending on :recorder alone means this consumer's classpath cannot
+    // possibly contain :stt bytecode under ANY build configuration — that is the module-boundary
+    // guarantee itself. The R8 reachability analysis below is now a secondary check on top of it.
+    implementation(project(":recorder"))
 }

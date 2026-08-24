@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
-# check-r8-mapping.sh — REC-05's Android best-case proof, made mechanical and non-vacuous.
+# check-r8-mapping.sh — REC-05's Android SECONDARY proof (plan 08-05: the module-boundary guarantee
+# below is now primary), made mechanical and non-vacuous.
 #
-# WHAT THIS PROVES: :verify-recorder-only imports ONLY io.github.ygaray.sttengine.recorder.* (never
-# io.github.ygaray.sttengine.SttEngine/createSttEngine or any internal recognition symbol) and builds
-# with isMinifyEnabled=true + an EMPTY proguard-rules.pro. If R8's own reachability analysis still
-# retains none of the five recognition-only internal classes in that build's real mapping.txt, that is
-# the best-case, mechanical evidence the single-:stt-AAR approach (D-03) can offer for REC-05 on
-# Android.
+# AS OF PLAN 08-05: :verify-recorder-only depends on project(":recorder") alone — a module whose own
+# dependencies {} block never names :stt. That compile-time dependency already proves this
+# consumer's classpath contains ZERO :stt bytecode under ANY build configuration. THE AUTHORITATIVE
+# REC-05 PROOF is now :recorder/build.gradle.kts's verifyNoRecognitionDependency Gradle task (wired
+# into :recorder:check) plus its static-grep companion, :recorder/check-no-recognition-dependency.sh.
+# This script is a secondary, belt-and-suspenders check layered on top of that guarantee, not the
+# primary one — do not mistake it for the authoritative proof.
+#
+# WHAT THIS SCRIPT (still) PROVES: :verify-recorder-only imports ONLY io.github.ygaray.sttengine.recorder.*
+# (never io.github.ygaray.sttengine.SttEngine/createSttEngine or any internal recognition symbol) and
+# builds with isMinifyEnabled=true + an EMPTY proguard-rules.pro. If R8's own reachability analysis
+# still retains none of the five recognition-only internal classes in that build's real mapping.txt,
+# that is additional, mechanical evidence on top of the module-boundary guarantee above.
 #
 # WHAT THIS DOES NOT PROVE — two caveats this script documents rather than silently resolving
-# (08-RESEARCH.md, Pitfall 4 / Assumption A3 and Pitfall 5):
+# (08-RESEARCH.md, Pitfall 4 / Assumption A3 and Pitfall 5) — both remain true even now that the
+# module boundary is primary, since they describe THIS script's own residual scope, not REC-05 as a
+# whole:
 #
 #   1. BEST CASE ONLY, build-config-dependent. A debug build, an unminified release, or any real
 #      consumer that happens to reference an SttEngine symbol for unrelated reasons ships 100% of the

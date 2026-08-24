@@ -7,11 +7,11 @@ import io.github.ygaray.sttengine.recorder.Recorder
 import io.github.ygaray.sttengine.recorder.createRecorder
 
 /**
- * A synthetic minimal consumer (plan 08-04): the ENTIRE root set R8's reachability analysis sees
- * for this module's release build. This file imports NOTHING from
- * [io.github.ygaray.sttengine.SttEngine], `createSttEngine`, or any `internal` recognition
- * symbol — only [io.github.ygaray.sttengine.recorder]'s public surface (`createRecorder`,
- * [Recorder], [RecordedFile]).
+ * A synthetic minimal consumer (plan 08-04; repointed at `:recorder` in plan 08-05's REC-05 rework):
+ * the ENTIRE root set R8's reachability analysis sees for this module's release build. This file
+ * imports NOTHING from [io.github.ygaray.sttengine.SttEngine], `createSttEngine`, or any `internal`
+ * recognition symbol — only [io.github.ygaray.sttengine.recorder]'s public surface (`createRecorder`,
+ * [Recorder], [RecordedFile]), now resolved from `:recorder` instead of `:stt`.
  *
  * Declared as the manifest's sole (launcher-less) Activity so AAPT's manifest-component keep
  * rule gives R8 a genuine reachability root. A plain, un-instantiated class with no manifest
