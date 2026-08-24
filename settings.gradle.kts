@@ -30,3 +30,9 @@ include(":stt")
 // `maven-publish`, so it is outside the published module set (D-23) — the mirror ships the library
 // and the worked example of how to consume it, never the example as an artifact.
 include(":demo")
+// Synthetic minimal-consumer R8 harness (plan 08-04, REC-05). Same "outside the published module
+// set" status as :demo above: never named in jitpack.yml, never carries maven-publish. Its only
+// job is to prove, via a real isMinifyEnabled=true release build, that a consumer importing ONLY
+// io.github.ygaray.sttengine.recorder.* produces a mapping.txt naming none of the recognition-only
+// internal classes — see android/verify-recorder-only/check-r8-mapping.sh.
+include(":verify-recorder-only")

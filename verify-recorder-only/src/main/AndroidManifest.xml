@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    android/verify-recorder-only — a synthetic minimal-consumer harness (plan 08-04), never
+    installed and never published. Deliberately as bare as a working reachability root allows:
+    one launcher-less Activity (MinimalRecorderConsumer itself) and nothing else — no permission,
+    no launcher intent-filter. The Activity declaration exists ONLY so AAPT's manifest-component
+    keep rule gives R8 a genuine, non-vacuous reachability root; without it, R8 would shrink this
+    whole module to nothing (a plain un-instantiated class is entirely unreachable), producing an
+    empty mapping.txt that would make check-r8-mapping.sh's assertions pass vacuously.
+
+    Note what this manifest CANNOT prove either way: RECORD_AUDIO and the RecognitionService
+    <queries> entry merge into every :stt consumer's manifest unconditionally, R8-independent
+    (08-RESEARCH.md Pitfall 5). check-r8-mapping.sh documents this caveat in its own header rather
+    than silently implying this harness resolves it.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".MinimalRecorderConsumer"
+            android:exported="false" />
+    </application>
+</manifest>
