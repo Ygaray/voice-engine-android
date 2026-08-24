@@ -63,13 +63,14 @@ typed `recognizer-unavailable` failure, not a reason to switch backends.
 
 ## `SttEngine` — the contract
 
-Six flow properties and two suspend functions. **The delivery semantics differ per property, and
+Seven flow properties and two suspend functions. **The delivery semantics differ per property, and
 they are part of the contract, not an implementation detail** — choosing the wrong one silently
 loses dictated text.
 
 | Member | Type | Delivery | Why |
 |---|---|---|---|
 | `state` | `StateFlow<EngineState>` | **replays** the current value to every new collector | a recomposing host reads the current state immediately rather than waiting for the next transition |
+| `backend` | `StateFlow<Backend>` | **replays** the current value | Android-only additive metadata (Phase 9, SEL-03, D-01) — which of `Backend.Server`/`Backend.Native` is actually driving the session. Never widens `state`/`SttEvent`; a host that does not care never has to touch it. `Native` on the v1.0 default path (no `serverUrl`, or `prefer = OnDevice`) for the engine's entire life; flips to `Server` once a try-server window succeeds, and back to `Native` one-way on a mid-session drop (SEL-04) — never back to `Server` within the same session. |
 | `partial` | `StateFlow<String>` | **replays**, conflated | "replaces the previous partial" *is* StateFlow conflation; a superseded partial is worthless and dropping it is correct |
 | `finals` | `Flow<FinalSegment>` | **lossless, single-consumer** | see below |
 | `errors` | `Flow<SttError>` | at most one per session | first-error-wins; `state == Error` is reached exactly once |
@@ -137,13 +138,29 @@ this set is closed by design and a host genuinely wants the compiler to point at
 ## `SttConfig`
 
 ```kotlin
-public class SttConfig(public val language: String = "en")
+public class SttConfig @JvmOverloads constructor(
+    public val language: String = "en",
+    public val prefer: BackendPreference = BackendPreference.Auto,
+    public val serverUrl: String? = null,
+)
 ```
 
-One field. `serverUrl` and `sampleRate` from the TypeScript options object are **dropped, not
-stubbed**: there is no server and no wire format on this backend, so both would be knobs a host could
-set and watch do nothing. Stubbing them would advertise a capability that does not exist. A future
-server-backed Android backend gets its own factory and its own config type.
+Three fields (Phase 9, D-01). `prefer` (`BackendPreference`) selects which `Backend` to prefer —
+`Auto` (default) tries the self-hosted server first with a bounded timeout and falls back to native
+silently; `Server` forces server-only (surfacing exactly one typed error on failure, no native
+fallback); `OnDevice` skips the server phase entirely, byte-identical to the v1.0 default path.
+`serverUrl` is the self-hosted STT server's WebSocket URL (e.g. `wss://host.ts.net:8444/`), or `null`
+to disable the server backend entirely — a session with a `null` `serverUrl` always runs native,
+regardless of `prefer`. There is no safe default hostname on Android the way `location.hostname`
+exists in a browser, so the host must supply this explicitly to opt in.
+
+`sampleRate` from the TypeScript options object stays **dropped, not stubbed**: the wire protocol's
+sample rate is fixed (`16_000`) and is never a host-settable knob on either backend.
+
+`@JvmOverloads` is required on this constructor — without it, adding `prefer`/`serverUrl` as two more
+trailing-defaulted parameters would silently drop the single-arg `SttConfig(String)` overload from the
+frozen `.api` dump (Kotlin's "every parameter has a default" special case only auto-generates the
+zero-arg and full-arg constructors, not every arity in between).
 
 `language` is passed straight through to `RecognizerIntent.EXTRA_LANGUAGE` and is checked against the
 device's installed on-device models before any audio is captured. It exists from day one so that v2
@@ -226,12 +243,12 @@ The companion exposes 14 constants and two named sets:
 | `PROTOCOL_VIOLATION` | `protocol-violation` | no |
 | `INTERNAL_ERROR` | `internal-error` | yes — including every unclassified recognizer integer |
 | `MIC_DENIED` | `mic-denied` | yes (`ERROR_INSUFFICIENT_PERMISSIONS`, and the permission preflight) |
-| `SERVER_UNREACHABLE` | `server-unreachable` | yes, and it is a **bug signal**: seeing it means the session was not on-device |
+| `SERVER_UNREACHABLE` | `server-unreachable` | **depends on the active backend** (Phase 9, D-04): unreachable while on-device (native never touches a socket); reachable once a session has committed to the server backend — a genuine server-side failure there, not a bug signal |
 | `RECONNECT_EXHAUSTED` | `reconnect-exhausted` | yes (`ERROR_TOO_MANY_REQUESTS` budget exhaustion) |
-| `SEND_BACKPRESSURE` | `send-backpressure` | no — no outbound buffer exists |
+| `SEND_BACKPRESSURE` | `send-backpressure` | **depends on the active backend** (Phase 9, D-04): unreachable while on-device (no outbound buffer exists there); reachable once a session has committed to the server backend, where the ported `ServerBackpressureGate`'s sustained-overrun escalation can fire it |
 
-The unreachable ones stay in `SHARED` because `SHARED` is the **cross-language** contract, not the
-set this backend can emit.
+The unreachable-while-on-device ones stay in `SHARED` because `SHARED` is the **cross-language**
+contract, not the set every backend can emit in every configuration.
 
 **`SttErrorCode.ANDROID_ONLY` — the three additive codes.**
 
@@ -263,7 +280,7 @@ only — events are transient envelopes and their payloads carry the equality.
 | `SttEvent.Error` | `error: SttError` | typed terminal failure; exactly once per session |
 | `SttEvent.Level` | `value: Float` | input level `0.0..1.0`; conflated, drops expected |
 | `SttEvent.Reconnecting` | `info: ReconnectInfo` | bounded recovery only — **not** ordinary restarts |
-| `SttEvent.Warning` | `warning: SttWarning` | **never emitted on this backend** — see `SttWarning` |
+| `SttEvent.Warning` | `warning: SttWarning` | never emitted while on-device; **fires once a session is on the server backend** and the outbound backpressure gate sheds frames (Phase 9) — see `SttWarning` |
 
 `events` is an ordered **mirror** of the six properties, not a second consumer of them, so collecting
 `events` and `finals` together is safe and neither steals from the other.
@@ -284,13 +301,13 @@ error string was copied across.
 | `EngineState` union (5 strings) | `EngineState` enum + `wireName` (5) | **identical strings** |
 | `FinalSegment { text, segmentId }` | `FinalSegment(text, segmentId)` | identical |
 | `ReconnectInfo { attempt, max }` | `ReconnectInfo(attempt, max)` | identical, `attempt` 1-based on both |
-| `SttWarning { code, active, message }` | `SttWarning(code, active, message)` | identical shape; **never emitted here** |
+| `SttWarning { code, active, message }` | `SttWarning(code, active, message)` | identical shape; never emitted while on-device, **now fires once a session is on the server backend** (Phase 9) |
 | `SttError { code, message }` | `SttError(code, message, platformDetail)` | **+1 field** — divergence 2 |
 | `SttErrorCode` union (7 server + 4 client = 11) | `SttErrorCode.SHARED` (11) | **byte-identical** |
 | — | `SttErrorCode.ANDROID_ONLY` (3) | **additive** — divergence 1 |
 | `SttEventMap` (7 events) | `SttEvent` sealed interface (7 members) | same names, same payloads |
-| `on(event, cb)` returning an unsubscribe handle | six `Flow` / `StateFlow` properties + `events` | mechanism differs, event set identical |
-| `SttEngineOptions { serverUrl?, language? }` | `SttConfig(language)` | `serverUrl` / `sampleRate` **dropped, not stubbed** |
+| `on(event, cb)` returning an unsubscribe handle | seven `Flow` / `StateFlow` properties + `events` | mechanism differs, event set identical |
+| `SttEngineOptions { serverUrl?, language? }` | `SttConfig(language, prefer, serverUrl)` | `serverUrl` re-added (Phase 9, D-01) — `prefer`/`backend` are Android-only additive; `sampleRate` stays **dropped, not stubbed** |
 | engine requests microphone access itself | **host** holds `RECORD_AUDIO` | divergence 3 |
 | `start(): Promise<void>` / `stop()` | `suspend fun start()` / `suspend fun stop()` | same settle semantics |
 

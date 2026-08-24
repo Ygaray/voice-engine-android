@@ -240,7 +240,9 @@ element — it inherits it — and its diagnostics panel prints both the install
   design exists to hide. The demo decays its meter instead; see `DictationViewModel.startLevelDecay`.
 - **`segmentId` is opaque and per-session.** It starts at 0 and is monotonic within one session. It
   is not a stable identifier and is **not comparable across backends**.
-- **`SttWarning` never fires on this backend.** Keep the branch for cross-backend code; expect
-  nothing from it here. See `API.md`.
+- **`SttWarning` never fires while a session is on-device.** Keep the branch for cross-backend code
+  regardless — once a session is running on the server backend (Phase 9, `prefer`/`serverUrl` on
+  `SttConfig`), `SttWarning` now fires while the outbound backpressure gate sheds frames under a
+  sustained send overrun. See `API.md`.
 - **Bumping to a new library version is human-gated.** Change the coordinate to a new immutable tag,
   sync, rebuild, and re-verify on a real device before shipping. See `CLAUDE.md`.

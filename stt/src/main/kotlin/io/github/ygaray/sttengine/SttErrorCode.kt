@@ -70,13 +70,23 @@ public value class SttErrorCode(public val value: String) {
         /** The microphone is unavailable to the engine — on Android, the HOST holds the permission (D-11). */
         public val MIC_DENIED: SttErrorCode = SttErrorCode("mic-denied")
 
-        /** The server could not be reached. Structurally unreachable on the Android backend (no server). */
+        /**
+         * The server could not be reached. Reachable on Android once a session has committed to the
+         * server backend (Phase 9, D-04) — a mid-session drop before that point swallows into a
+         * silent native fallback instead (SEL-01); once committed, this code firing describes a
+         * genuine server-side failure, not a bug signal.
+         */
         public val SERVER_UNREACHABLE: SttErrorCode = SttErrorCode("server-unreachable")
 
         /** The bounded recovery budget ran out; the session is terminal. */
         public val RECONNECT_EXHAUSTED: SttErrorCode = SttErrorCode("reconnect-exhausted")
 
-        /** The outbound audio buffer overflowed. Structurally unreachable on Android (D-17, see [SttWarning]). */
+        /**
+         * The outbound audio buffer overflowed. Reachable on Android once a session has committed to
+         * the server backend (Phase 9, D-04) — the ported [ServerBackpressureGate]'s sustained-
+         * overrun escalation. Firing here describes a genuine, sustained send-side overrun, not a
+         * bug signal.
+         */
         public val SEND_BACKPRESSURE: SttErrorCode = SttErrorCode("send-backpressure")
 
         // --- END SHARED -------------------------------------------------------------------------
