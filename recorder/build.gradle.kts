@@ -147,12 +147,20 @@ tasks.register("verifyNoRecognitionDependency") {
     description = "Fails if :recorder's resolved release classpath ever names :stt (T-08-10, REC-05)."
 
     doLast {
+        // WR-02: release-only scope is DELIBERATE, not an oversight — only the release variant is
+        // ever published (see `publishing { singleVariant("release") }` above), so that is the only
+        // classpath this compile-time guarantee needs to cover. A `debugImplementation(project(":stt"))`
+        // would not be caught here, but it also never reaches the published artifact, so it cannot
+        // break REC-05's actual guarantee for consumers.
         val configurationsToCheck = listOf("releaseRuntimeClasspath", "releaseCompileClasspath")
         val forbiddenProjectPath = ":stt"
         val forbiddenModuleName = "stt-engine-android"
         // Vacuous-pass-prevention target (mirrors ReleaseAudioSourceSeamTest / check-r8-mapping.sh's
         // discipline): assert the SAME resolved set genuinely contains something expected BEFORE
         // asserting the absence of something forbidden.
+        // IN-02: update this if :recorder's dependency set ever changes — this check hard-codes
+        // coroutines-android as the "something expected" and would start failing check for an
+        // unrelated reason if that dependency is ever swapped or renamed upstream.
         val expectedModuleName = "kotlinx-coroutines-android"
 
         for (configurationName in configurationsToCheck) {
