@@ -76,7 +76,7 @@ for cls in "${forbidden_classes[@]}"; do
   # Match the class as a retained-class KEY: the left-hand side of an R8 mapping.txt class line
   # ("original.package.ClassName -> obfuscated:"), anchored at line start (never indented — member
   # lines are always indented) so a substring match inside an unrelated signature can't false-fire.
-  hit="$(grep -E "^[A-Za-z0-9_.]*\\b${cls}\\b[A-Za-z0-9_]* -> " "${MAPPING_FILE}" || true)"
+  hit="$(grep -E "^[A-Za-z0-9_.]*\\b${cls}\\b -> " "${MAPPING_FILE}" || true)"
   if [ -n "${hit}" ]; then
     echo "check-r8-mapping: FAIL — recognition-only class '${cls}' is retained in mapping.txt:" >&2
     echo "${hit}" | sed 's/^/    /' >&2
