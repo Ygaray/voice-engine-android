@@ -139,6 +139,18 @@ internal class RecorderImpl(
     }
 
     override suspend fun stop(): RecordedFile {
+        // Guard on state the same way pause()/resume()/start() already do (CR-04): stop() while
+        // Idle/Error — either never started, or a previous stop() already completed — must not
+        // silently return stale/fabricated data. `outputFile` is reset to null on a successful
+        // stop() below specifically so this guard also catches a SECOND stop() call, not just the
+        // very-first-call case `checkNotNull` used to guard alone.
+        if (mutableState.value != RecorderState.Recording && mutableState.value != RecorderState.Paused) {
+            mutableErrors.emit(
+                RecorderError(RecorderErrorCode.INVALID_STATE, "stop() requires an active session"),
+            )
+            throw IllegalStateException("stop() called with no active recording session")
+        }
+
         val file = checkNotNull(outputFile) { "stop() called before start()" }
 
         stopPolling()
@@ -151,6 +163,7 @@ internal class RecorderImpl(
         session = null
 
         val durationMs = ((System.currentTimeMillis() - startedAtMs) - pausedAccumMs).coerceAtLeast(0L)
+        outputFile = null
         mutableState.value = RecorderState.Idle
 
         return RecordedFile(

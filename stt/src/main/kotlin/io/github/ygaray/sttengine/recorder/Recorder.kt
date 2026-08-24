@@ -66,6 +66,10 @@ public interface Recorder {
     /**
      * End the session and return the finished [RecordedFile]. `durationMs` excludes any time spent
      * [RecorderState.Paused]. Returns the Recorder to [RecorderState.Idle].
+     *
+     * `stop()` while not [RecorderState.Recording]/[RecorderState.Paused] — never started, or a
+     * previous `stop()` already completed — pushes [RecorderErrorCode.INVALID_STATE] on [errors]
+     * and throws `IllegalStateException` rather than returning stale or fabricated data.
      */
     public suspend fun stop(): RecordedFile
 
