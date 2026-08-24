@@ -45,6 +45,9 @@ internal class AudioRecordPcmSource private constructor(
     private val record: AudioRecord,
 ) : PcmSource {
 
+    /** WR-02: the idempotence guard the [PcmSource] contract requires of [release], like [stop]. */
+    private var released = false
+
     override fun read(buffer: ByteArray): Int = record.read(buffer, 0, buffer.size)
 
     override fun stop() {
@@ -52,6 +55,8 @@ internal class AudioRecordPcmSource private constructor(
     }
 
     override fun release() {
+        if (released) return
+        released = true
         record.release()
     }
 
