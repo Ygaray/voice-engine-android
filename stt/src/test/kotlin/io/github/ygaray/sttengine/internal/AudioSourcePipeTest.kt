@@ -189,6 +189,31 @@ class AudioSourcePipeTest {
         }
     }
 
+    // --- D-03: AudioSourcePipe as an explicit named consumer of a shared PcmSourceFactory ------------
+
+    @Test
+    fun `two AudioSourcePipe instances opened against the same factory each get an independent source`() {
+        var opens = 0
+        val factory = PcmSourceFactory { _ ->
+            opens += 1
+            CountingPcmSource(framesBeforeEnd = 1)
+        }
+        val pipeA = AudioSourcePipe(sourceFactory = factory, pipeFactory = RecordingPipeFactory())
+        val pipeB = AudioSourcePipe(sourceFactory = factory, pipeFactory = RecordingPipeFactory())
+
+        pipeA.open()
+        pipeB.open()
+
+        // Each AudioSourcePipe is A consumer of the factory, not an inherent sole owner (D-03) —
+        // the factory is invoked once per pipe.open(), independently.
+        assertEquals(2, opens)
+        assertTrue(pipeA.isOpen)
+        assertTrue(pipeB.isOpen)
+
+        pipeA.close()
+        pipeB.close()
+    }
+
     // --- fixtures -----------------------------------------------------------------------------------
 
     /** Counts what the pipe did to it, and can either end at once or never. */
