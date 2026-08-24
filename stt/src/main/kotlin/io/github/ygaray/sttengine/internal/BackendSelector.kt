@@ -8,6 +8,7 @@ import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttEngine
 import io.github.ygaray.sttengine.SttError
+import io.github.ygaray.sttengine.SttErrorCode
 import io.github.ygaray.sttengine.SttEvent
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -47,10 +48,15 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    into this selector's own equivalent flow via one launched collector per property (mirrors
  *    [SttEngineImpl]'s single-state-mutation-point discipline, applied to a whole upstream engine).
  * 4. On timeout/failure: [ServerBackend.abandon] closes the half-open socket without emitting any
- *    host-visible state, then falls through to native — exactly like the v1.0 default path. **This
- *    plan (09-01) proves the mechanical fallback exists and reaches `Listening`; the swallow-vs-
- *    surface distinction for SEL-01's three specific failure conditions (timeout/unreachable/busy)
- *    and SEL-02's `prefer == Server` force-surface semantics (D-04) are Task 2's addition.**
+ *    host-visible state (D-04's swallow mechanism — the failed instance's flows are simply never
+ *    forwarded, so nothing it already produced internally is ever observed). Then:
+ *    - `prefer == Server`: [fail] with the typed error [ServerBackend] produced (or
+ *      [SttErrorCode.SERVER_UNREACHABLE] if the failure was a bare coroutine timeout that never
+ *      reached an OkHttp callback) — no native fallback in this mode (SEL-02's force-server
+ *      semantics).
+ *    - Otherwise (`prefer == Auto`): fall through to native, exactly like the v1.0 default path
+ *      (SEL-01's silent swallow of the connect timeout / unreachable / `busy` close-1013
+ *      conditions — no typed error reaches the host on this branch).
  *
  * ## Everything is injected (mirrors [SttEngineImpl])
  *
@@ -131,11 +137,21 @@ internal class BackendSelector(
                 return
             }
 
-            // Never leak the half-open socket — abandon it BEFORE falling through to native.
-            // TASK 1: proves the mechanical fallback path exists and reaches Listening. The
-            // swallow-vs-surface distinction for SEL-01's three failure conditions and SEL-02's
-            // prefer=Server force-surface semantics (D-04) land in Task 2 (09-01-TASK-2).
+            // Never leak the half-open socket — abandon it BEFORE deciding what happens next.
+            // Emits nothing on its own errors/state (D-04): this IS the swallow mechanism, not a
+            // special case bolted on top of it.
             serverBackend.abandon()
+
+            if (config.prefer == BackendPreference.Server) {
+                // prefer:server means server-only — no native fallback (SEL-02).
+                fail(
+                    serverBackend.lastError
+                        ?: SttError(SttErrorCode.SERVER_UNREACHABLE, "server unreachable"),
+                )
+                return
+            }
+            // Otherwise (Auto): fall through to native below — SEL-01's silent swallow of the
+            // connect timeout / unreachable / busy (close 1013) conditions.
         }
 
         setBackend(Backend.Native)

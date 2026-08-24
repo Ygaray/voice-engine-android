@@ -3,14 +3,18 @@ package io.github.ygaray.sttengine.internal
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import io.github.ygaray.sttengine.Backend
+import io.github.ygaray.sttengine.BackendPreference
 import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.PreflightHandle
 import io.github.ygaray.sttengine.SttConfig
+import io.github.ygaray.sttengine.SttError
+import java.io.IOException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -85,5 +89,131 @@ class BackendSelectorTest {
             assertEquals(0, fakeWs.createCount)
             assertEquals(Backend.Native, selector.backend.value)
             assertEquals(EngineState.Listening, selector.state.value)
+        }
+
+    // --- Task 2: SEL-01's swallow conditions + SEL-02's prefer forcing --------------------------
+
+    @Test
+    fun `a try-server connect that times out falls back to native silently`() = runTest {
+        val fakeWs = FakeWebSocketFactory()
+        val fakeHandle = FakeRecognizerHandle()
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val selector = BackendSelector(
+            appContext = context(),
+            config = SttConfig(serverUrl = "wss://example.ts.net:8444/", prefer = BackendPreference.Auto),
+            handleFactory = RecognizerHandleFactory {
+                PreflightHandle(fakeHandle, LanguageAvailability.INSTALLED)
+            },
+            permissions = PermissionChecker { true },
+            webSocketFactory = fakeWs,
+            mainDispatcher = dispatcher,
+            tryServerTimeoutMs = 100L,
+        )
+        val errors = mutableListOf<SttError>()
+        backgroundScope.launch(dispatcher) { selector.errors.collect { errors += it } }
+
+        val started = launch(dispatcher) { selector.start() }
+        // The fake server never answers at all — no fireOpen/fireMessage — so the only way out of
+        // connect() is the coroutine-level timeout expiring.
+        testScheduler.advanceUntilIdle()
+        fakeHandle.reachListening()
+        started.join()
+
+        assertEquals(Backend.Native, selector.backend.value)
+        assertEquals(EngineState.Listening, selector.state.value)
+        assertTrue("no error should be emitted on a swallowed timeout", errors.isEmpty())
+        assertEquals(1, fakeHandle.startCount)
+    }
+
+    @Test
+    fun `a fake server that closes with code 1013 busy during try-server falls back to native silently`() =
+        runTest {
+            val fakeWs = FakeWebSocketFactory()
+            val fakeHandle = FakeRecognizerHandle()
+            val dispatcher = UnconfinedTestDispatcher(testScheduler)
+            val selector = BackendSelector(
+                appContext = context(),
+                config = SttConfig(serverUrl = "wss://example.ts.net:8444/"),
+                handleFactory = RecognizerHandleFactory {
+                    PreflightHandle(fakeHandle, LanguageAvailability.INSTALLED)
+                },
+                permissions = PermissionChecker { true },
+                webSocketFactory = fakeWs,
+                mainDispatcher = dispatcher,
+            )
+            val errors = mutableListOf<SttError>()
+            backgroundScope.launch(dispatcher) { selector.errors.collect { errors += it } }
+
+            val started = launch(dispatcher) { selector.start() }
+            fakeWs.fireOpen()
+            fakeWs.fireClosing(1013, "busy")
+            fakeHandle.reachListening()
+            started.join()
+
+            assertEquals(Backend.Native, selector.backend.value)
+            assertEquals(EngineState.Listening, selector.state.value)
+            assertTrue("no error should be emitted on a swallowed busy close", errors.isEmpty())
+            assertEquals(1, fakeHandle.startCount)
+        }
+
+    @Test
+    fun `prefer=OnDevice never invokes the fake WebSocket factory at all`() = runTest {
+        val fakeWs = FakeWebSocketFactory()
+        val fakeHandle = FakeRecognizerHandle()
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val selector = BackendSelector(
+            appContext = context(),
+            config = SttConfig(
+                serverUrl = "wss://example.ts.net:8444/",
+                prefer = BackendPreference.OnDevice,
+            ),
+            handleFactory = RecognizerHandleFactory {
+                PreflightHandle(fakeHandle, LanguageAvailability.INSTALLED)
+            },
+            permissions = PermissionChecker { true },
+            webSocketFactory = fakeWs,
+            mainDispatcher = dispatcher,
+        )
+
+        val started = launch(dispatcher) { selector.start() }
+        fakeHandle.reachListening()
+        started.join()
+
+        assertEquals(0, fakeWs.createCount)
+        assertEquals(Backend.Native, selector.backend.value)
+        assertEquals(EngineState.Listening, selector.state.value)
+    }
+
+    @Test
+    fun `prefer=Server with a try-server failure surfaces exactly one typed error and never touches native`() =
+        runTest {
+            val fakeWs = FakeWebSocketFactory()
+            val fakeHandle = FakeRecognizerHandle()
+            val dispatcher = UnconfinedTestDispatcher(testScheduler)
+            val selector = BackendSelector(
+                appContext = context(),
+                config = SttConfig(
+                    serverUrl = "wss://example.ts.net:8444/",
+                    prefer = BackendPreference.Server,
+                ),
+                handleFactory = RecognizerHandleFactory {
+                    PreflightHandle(fakeHandle, LanguageAvailability.INSTALLED)
+                },
+                permissions = PermissionChecker { true },
+                webSocketFactory = fakeWs,
+                mainDispatcher = dispatcher,
+            )
+            val errors = mutableListOf<SttError>()
+            backgroundScope.launch(dispatcher) { selector.errors.collect { errors += it } }
+
+            val started = launch(dispatcher) { selector.start() }
+            fakeWs.fireOpen()
+            fakeWs.fireFailure(IOException("connection refused"))
+            started.join()
+
+            assertEquals(1, errors.size)
+            assertEquals(EngineState.Error, selector.state.value)
+            // Server-only: no fallback attempt at all.
+            assertEquals(0, fakeHandle.startCount)
         }
 }
