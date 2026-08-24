@@ -13,6 +13,7 @@ import io.github.ygaray.sttengine.SttEvent
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -138,7 +139,37 @@ internal class BackendSelector(
     /** One-shot guard for [handleServerDrop] — SEL-04's handoff is one-way per session. */
     private var handoffStarted = false
 
+    /**
+     * The in-flight [ServerBackend] under a try-server connect attempt — assigned the moment it is
+     * constructed, BEFORE `connect()` is awaited, and cleared once the try-server phase resolves
+     * either way. This is what lets [stop] abandon it even while [start] is still suspended inside
+     * the try-server window (CR-03: closes the "`stop()` during try-server does nothing" race —
+     * without this field, `stop()` finds [activeServer] `null` for the entire window, because that
+     * field is only assigned on a successful connect).
+     */
+    private var pendingServer: ServerBackend? = null
+
+    /**
+     * The job actually running [runStart] — launched on [scope] rather than executed inline in the
+     * caller's own coroutine, specifically so [stop] has something it can cancel regardless of which
+     * phase `start()` is currently in (CR-03's other half: [pendingServer] stops a leaked mic/socket,
+     * this stops the REST of `start()`'s sequence — e.g. a still-pending `startNative()` — from
+     * running to completion and mutating [state]/[backend] after `stop()` already returned).
+     *
+     * [start] itself only launches this job and joins it — [Job.join] never throws on cancellation,
+     * so a `stop()`-triggered cancellation here never propagates out of `start()` to the host; it
+     * simply makes `start()` return once the cancellation settles, exactly like an ordinary
+     * completion would.
+     */
+    private var startJob: Job? = null
+
     override suspend fun start() {
+        val job = scope.launch { runStart() }
+        startJob = job
+        job.join()
+    }
+
+    private suspend fun runStart() {
         val serverUrl = config.serverUrl
         if (serverUrl != null && config.prefer != BackendPreference.OnDevice) {
             // CR-04: mirrors SttEngineImpl.start()'s own first line — a host rendering a
@@ -146,7 +177,15 @@ internal class BackendSelector(
             // window too, not just on the native-only path.
             setState(EngineState.Connecting)
             val serverBackend = serverBackendFactory(serverUrl)
-            val connected = withTimeoutOrNull(tryServerTimeoutMs) { serverBackend.connect() }
+            pendingServer = serverBackend
+            val connected = try {
+                withTimeoutOrNull(tryServerTimeoutMs) { serverBackend.connect() }
+            } finally {
+                // The try-server phase has resolved one way or another (success, timeout, failure,
+                // or a stop()-triggered cancellation) — nothing further should treat this instance
+                // as "pending" once we leave this block.
+                pendingServer = null
+            }
             if (connected == true) {
                 activeServer = serverBackend
                 setBackend(Backend.Server)
@@ -156,7 +195,8 @@ internal class BackendSelector(
 
             // Never leak the half-open socket — abandon it BEFORE deciding what happens next.
             // Emits nothing on its own errors/state (D-04): this IS the swallow mechanism, not a
-            // special case bolted on top of it.
+            // special case bolted on top of it. Idempotent — a no-op if stop() already abandoned
+            // this instance via pendingServer above.
             serverBackend.abandon()
 
             if (config.prefer == BackendPreference.Server) {
@@ -176,6 +216,15 @@ internal class BackendSelector(
     }
 
     override suspend fun stop() {
+        // CR-03: cancel whatever `start()` sequence is still in flight FIRST — before touching
+        // activeServer/activeNative — so nothing further in that sequence (a still-pending
+        // startNative() call, most notably) can mutate state/backend after this stop() returns.
+        startJob?.cancel()
+        // Belt-and-suspenders alongside the cancellation above: abandon a try-server attempt that
+        // is still pending RIGHT NOW, in case stop() is racing runStart() between two suspension
+        // points where cancellation has not yet been delivered. abandon() is idempotent.
+        pendingServer?.abandon()
+        pendingServer = null
         activeServer?.stop()
         activeNative?.stop()
     }

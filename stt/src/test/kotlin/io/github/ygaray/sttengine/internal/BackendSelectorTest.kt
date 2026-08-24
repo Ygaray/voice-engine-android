@@ -296,4 +296,82 @@ class BackendSelectorTest {
         assertTrue(warningEvents.single().warning.active)
         assertEquals("backpressure", warningEvents.single().warning.code)
     }
+
+    // --- CR-03: stop() must interrupt an in-flight try-server attempt, not no-op --------------------
+
+    @Test
+    fun `stop() during the try-server window abandons the pending socket immediately`() = runTest {
+        val fakeWs = FakeWebSocketFactory()
+        val fakeHandle = FakeRecognizerHandle()
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val selector = BackendSelector(
+            appContext = context(),
+            config = SttConfig(serverUrl = "wss://example.ts.net:8444/", prefer = BackendPreference.Auto),
+            handleFactory = RecognizerHandleFactory {
+                PreflightHandle(fakeHandle, LanguageAvailability.INSTALLED)
+            },
+            permissions = PermissionChecker { true },
+            webSocketFactory = fakeWs,
+            mainDispatcher = dispatcher,
+            tryServerTimeoutMs = 100L,
+        )
+
+        val started = launch(dispatcher) { selector.start() }
+        // The fake server never answers at all — start() is genuinely suspended inside the
+        // try-server connect() window right now, not merely about to time out.
+        assertEquals(EngineState.Connecting, selector.state.value)
+        assertEquals(0, checkNotNull(fakeWs.lastSocket).cancelCount)
+
+        val stopped = launch(dispatcher) { selector.stop() }
+        stopped.join()
+
+        // CR-03: previously stop() found both activeServer/activeNative null here and did nothing —
+        // the pending socket kept running unbounded. It must now be abandoned immediately, not left
+        // to the full tryServerTimeoutMs window. (>= 1 rather than == 1: the coroutine-level
+        // cancellation this triggers ALSO fires ServerBackend.connect()'s own
+        // `invokeOnCancellation { socket.cancel() }`, so more than one cancel() call on the same
+        // socket is expected and harmless — the pre-existing plain-timeout path already double-calls
+        // it the same way.)
+        assertTrue(
+            "stop() during try-server must cancel the pending socket immediately, not defer to " +
+                "the full tryServerTimeoutMs window",
+            checkNotNull(fakeWs.lastSocket).cancelCount >= 1,
+        )
+
+        started.join()
+    }
+
+    @Test
+    fun `native never starts after stop() returns during the try-server window`() = runTest {
+        val fakeWs = FakeWebSocketFactory()
+        val fakeHandle = FakeRecognizerHandle()
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val selector = BackendSelector(
+            appContext = context(),
+            config = SttConfig(serverUrl = "wss://example.ts.net:8444/", prefer = BackendPreference.Auto),
+            handleFactory = RecognizerHandleFactory {
+                PreflightHandle(fakeHandle, LanguageAvailability.INSTALLED)
+            },
+            permissions = PermissionChecker { true },
+            webSocketFactory = fakeWs,
+            mainDispatcher = dispatcher,
+            tryServerTimeoutMs = 100L,
+        )
+
+        val started = launch(dispatcher) { selector.start() }
+        val stopped = launch(dispatcher) { selector.stop() }
+        stopped.join()
+        started.join()
+
+        // Let virtual time run past the full try-server timeout — if stop() had failed to actually
+        // interrupt the in-flight attempt (CR-03), this is exactly where the native fallback would
+        // start, mutating state/backend after the host's stop() call already returned.
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(
+            "native must never start once stop() has returned during the try-server window",
+            0,
+            fakeHandle.startCount,
+        )
+    }
 }
