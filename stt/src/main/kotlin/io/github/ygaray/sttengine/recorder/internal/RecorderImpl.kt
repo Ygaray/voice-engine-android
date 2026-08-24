@@ -156,11 +156,24 @@ internal class RecorderImpl(
         stopPolling()
 
         // Idempotent teardown — each step best-effort/tolerant of already-torn-down state,
-        // mirroring AudioSourcePipe.close's discipline.
+        // mirroring AudioSourcePipe.close's discipline. `activeSession?.stop()`'s failure is
+        // captured (not swallowed, CR-05): `android.media.MediaRecorder.stop()` documents throwing
+        // a RuntimeException when "no valid audio/video data has been received" (the well-known
+        // very-short-recording pitfall) — that must surface as a typed error, since the caller
+        // otherwise gets a normal-looking RecordedFile pointing at a possibly empty/corrupt file.
         val activeSession = session
-        runCatching { activeSession?.stop() }
+        val stopFailure = runCatching { activeSession?.stop() }.exceptionOrNull()
         runCatching { activeSession?.release() }
         session = null
+
+        if (stopFailure != null) {
+            mutableErrors.emit(
+                RecorderError(
+                    RecorderErrorCode.NO_STORAGE,
+                    stopFailure.message ?: "recording finalize failed",
+                ),
+            )
+        }
 
         val durationMs = ((System.currentTimeMillis() - startedAtMs) - pausedAccumMs).coerceAtLeast(0L)
         outputFile = null
