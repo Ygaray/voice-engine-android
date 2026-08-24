@@ -177,20 +177,33 @@ internal class AudioSourcePipe(
         pump = null
 
         try {
+            // CR-02: stop the recorder first (best effort at unblocking a wedged read), then close
+            // both descriptors — closing the write end can itself help unwedge a pump parked in a
+            // blocking read via EOF/broken pipe — then JOIN THE PUMP before releasing the recorder.
+            // The pump's own KDoc-acknowledged hazard is that it can be parked inside
+            // `record.read()` at teardown time; releasing the recorder while another thread may
+            // still be inside a blocking call on it is unsafe. Joining first (bounded, as always)
+            // gives the pump its chance to exit before the object it is calling into is torn down.
             runCatching { dyingSource?.stop() }
-            runCatching { dyingSource?.release() }
         } finally {
-            // In a finally so a recorder that throws on release cannot leak a descriptor, and
-            // nested so neither descriptor can be skipped by the other failing.
+            // In a finally so a recorder that throws on stop cannot skip the descriptor/pump
+            // teardown, and nested so neither step can be skipped by another failing.
             try {
-                // The WRITE end first: to the recognizer that is a clean end of stream.
+                // The WRITE end first: to the recognizer that is a clean end of stream, and it may
+                // also help unblock a pump wedged inside `read()`.
                 runCatching { dyingWrite?.close() }
             } finally {
                 try {
                     runCatching { dyingRead?.close() }
                 } finally {
-                    // Bounded — see PUMP_JOIN_MS. Never unbounded: this runs on the main looper.
-                    runCatching { dyingPump?.join(PUMP_JOIN_MS) }
+                    try {
+                        // Bounded — see PUMP_JOIN_MS. Never unbounded: this runs on the main looper.
+                        runCatching { dyingPump?.join(PUMP_JOIN_MS) }
+                    } finally {
+                        // Only after the pump has had its bounded chance to exit: releasing before
+                        // this point would race a still-in-flight `read()` on the same recorder.
+                        runCatching { dyingSource?.release() }
+                    }
                 }
             }
         }

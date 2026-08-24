@@ -14,6 +14,15 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
+ * A conservative lower bound for the CR-02 ordering assertion below. `AudioSourcePipe`'s own
+ * pump-join bound (`PUMP_JOIN_MS`, file-private to `AudioSourcePipe.kt`) is 250ms; the pre-fix
+ * ordering called `release()` immediately after `stop()` — well under this threshold — so a
+ * floor comfortably below 250ms but well above "immediately" still discriminates the two
+ * orderings without flaking on scheduling jitter.
+ */
+private const val MIN_EXPECTED_JOIN_WAIT_MS = 200L
+
+/**
  * Rung (c)'s resource discipline — the entire risk of the only rung where this library owns the
  * microphone.
  *
@@ -154,6 +163,74 @@ class AudioSourcePipeTest {
 
         assertFalse(pipe.isOpen)
         assertEquals(1, source.releaseCount)
+    }
+
+    // --- CR-02: close() must give the pump its bounded chance to exit BEFORE releasing the
+    // recorder, since the pump may be parked inside the very `read()` call `release()` would
+    // otherwise race. ---------------------------------------------------------------------------
+
+    @Test
+    fun `close() does not release the recorder until the bounded pump join has been attempted`() {
+        // A source whose read() blocks well past the pump-join bound (a stand-in for
+        // PUMP_JOIN_MS, which is file-private to AudioSourcePipe.kt) so close() cannot possibly
+        // observe the pump thread having already exited before the join wait elapses. If
+        // `release()` fires before that wait is honored, this proves the unsafe ordering CR-02
+        // describes; if it fires only after, it proves the fix.
+        val source = BlockingReleaseOrderingPcmSource(blockReadForMs = 400)
+        val pipe = AudioSourcePipe(sourceFactory = { source }, pipeFactory = RecordingPipeFactory())
+
+        pipe.open()
+        assertTrue("the pump must have entered read() before close() runs", source.awaitReadEntered())
+
+        pipe.close()
+
+        assertTrue("release() must have been called by the time close() returns", source.releaseCalled)
+        // PUMP_JOIN_MS is 250ms; the read is held for 400ms, so release() can only have fired
+        // after close() attempted (and necessarily waited out) the bounded join — never
+        // immediately after stop(), which is what the pre-fix ordering did.
+        assertTrue(
+            "release() must not fire until at least the bounded pump-join wait has elapsed " +
+                "(observed ${source.elapsedMsBeforeRelease}ms)",
+            source.elapsedMsBeforeRelease >= MIN_EXPECTED_JOIN_WAIT_MS,
+        )
+    }
+
+    /**
+     * Signals when the pump has entered [read], then blocks there for [blockReadForMs] — long
+     * enough to outlast the pump-join bound — before returning end-of-stream. Records how long
+     * [read] had already been blocking by the time [release] was invoked.
+     */
+    private class BlockingReleaseOrderingPcmSource(
+        private val blockReadForMs: Long,
+    ) : PcmSource {
+        @Volatile var releaseCalled: Boolean = false
+            private set
+        @Volatile var elapsedMsBeforeRelease: Long = -1
+            private set
+
+        private val enteredRead = CountDownLatch(1)
+        private var readEnteredAtNanos: Long = 0
+
+        fun awaitReadEntered(): Boolean = enteredRead.await(END_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+
+        override fun read(buffer: ByteArray): Int {
+            readEnteredAtNanos = System.nanoTime()
+            enteredRead.countDown()
+            Thread.sleep(blockReadForMs)
+            return -1
+        }
+
+        override fun stop() = Unit
+
+        override fun release() {
+            releaseCalled = true
+            elapsedMsBeforeRelease =
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - readEnteredAtNanos)
+        }
+
+        private companion object {
+            const val END_TIMEOUT_SECONDS = 5L
+        }
     }
 
     // --- the descriptor is not addressable outside the open window ---------------------------------
