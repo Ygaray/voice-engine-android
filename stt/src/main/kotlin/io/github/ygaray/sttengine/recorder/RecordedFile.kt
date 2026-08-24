@@ -7,8 +7,11 @@ package io.github.ygaray.sttengine.recorder
  * binary-compatibility reason as [RecorderError]: a future optional field must be addable without
  * breaking every already-published consumer's resolved `copy()`/constructor ABI.
  *
- * @property uri An opaque, Recorder-owned locator for the recorded file — an internal `file://`
- *   path into the host app's private storage. Never derived from consumer input (T-08-04).
+ * @property uri An opaque, Recorder-owned locator for the recorded file — an internal, bare
+ *   absolute filesystem path (e.g. `/data/user/0/<pkg>/files/<uuid>.m4a`) into the host app's
+ *   private storage, with NO `file://` scheme prefix (`File(uri)` — not `Uri.parse(uri)` — is the
+ *   correct way to resolve it; `delete()`'s own implementation does exactly this). Never derived
+ *   from consumer input (T-08-04).
  * @property durationMs Wall-clock recording time, excluding any time spent [RecorderState.Paused].
  * @property format The concrete container/codec actually produced — always `"audio/mp4"` for this
  *   Recorder, since the session is configured for `MediaRecorder.OutputFormat.MPEG_4` +
