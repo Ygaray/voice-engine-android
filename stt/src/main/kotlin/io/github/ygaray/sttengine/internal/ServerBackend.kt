@@ -4,6 +4,7 @@ import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.SttError
 import io.github.ygaray.sttengine.SttErrorCode
+import io.github.ygaray.sttengine.SttWarning
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -26,6 +27,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString.Companion.toByteString
 
 /**
  * The narrow seam between [ServerBackend] and OkHttp's `WebSocket` construction (Phase 9, D-02).
@@ -78,9 +80,18 @@ internal class OkHttpWebSocketFactory(
  * hand-rolling a second `AudioRecord` wrapper." [releaseAudioSource] is the release half
  * [BackendSelector]'s mid-session handoff calls BEFORE any native `SpeechRecognizer` acquire — two
  * mic clients cannot coexist (T-09-06). Continuously PUMPING captured frames through a live capture
- * loop is deferred to the on-device measurement work (Plan 09-03); Task 2 wires the gated
- * `sendPcmFrame` send path this class exposes for that future caller. This class only owns the
- * resource LIFECYCLE here, which is exactly what the handoff's ordering guarantee depends on.
+ * loop is deferred to the on-device measurement work (Plan 09-03); [sendPcmFrame] is the gated send
+ * path that future caller will drive, one frame at a time.
+ *
+ * ## Outbound backpressure (Phase 9 Task 2, T-09-05)
+ *
+ * [sendPcmFrame] ports `web/src/engine.ts`'s `sendFrame`/`flushQueue` — a small outbound FIFO
+ * ([outboundQueue], mirrors `engine.ts`'s `MAX_QUEUE_FRAMES`), gated by [backpressureGate] fed
+ * OkHttp's real `WebSocket.queueSize()` (the `ws.bufferedAmount` analog) rather than a
+ * hand-maintained counter. Every `WebSocket.send(...)` call is Boolean-checked (Common Pitfall 2):
+ * OkHttp's `send()` returns `false` — never throws — on an already closing/closed/canceled socket or
+ * past its own internal queue ceiling, and a `false` return routes through the SAME [fail] funnel as
+ * any other terminal failure, with [SttErrorCode.SEND_BACKPRESSURE], never a silently dropped frame.
  */
 internal class ServerBackend(
     private val webSocketFactory: WebSocketFactory,
@@ -88,6 +99,8 @@ internal class ServerBackend(
     private val language: String,
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
     private val pcmSourceFactory: PcmSourceFactory = AudioRecordPcmSource,
+    private val backpressureGate: ServerBackpressureGate = ServerBackpressureGate(),
+    private val monotonicMs: () -> Long = { System.currentTimeMillis() },
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + mainDispatcher)
@@ -116,6 +129,19 @@ internal class ServerBackend(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     val level: Flow<Float> = _level.asSharedFlow()
+
+    /** Backpressure shed/clear notices (Task 2). [BackendSelector] forwards these onto
+     *  `SttEvent.Warning` — the only place [SttWarning] surfaces on the frozen contract. */
+    private val _warnings = MutableSharedFlow<SttWarning>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val warnings: Flow<SttWarning> = _warnings.asSharedFlow()
+
+    /** The outbound PCM FIFO [sendPcmFrame] sheds from under sustained backpressure. Mirrors
+     *  `engine.ts`'s `queue` + `MAX_QUEUE_FRAMES`. */
+    private val outboundQueue: ArrayDeque<ByteArray> = ArrayDeque()
 
     private var webSocket: WebSocket? = null
     private var connectContinuation: CancellableContinuation<Boolean>? = null
@@ -163,6 +189,7 @@ internal class ServerBackend(
         if (terminal) return
         terminal = true
         epoch.advance()
+        outboundQueue.clear()
         webSocket?.cancel()
         webSocket = null
     }
@@ -176,6 +203,7 @@ internal class ServerBackend(
         terminal = true
         epoch.advance()
         releaseAudioSource()
+        outboundQueue.clear()
         webSocket?.close(NORMAL_CLOSE_CODE, "normal")
         webSocket = null
         setState(EngineState.Idle)
@@ -198,6 +226,89 @@ internal class ServerBackend(
         source.release()
     }
 
+    // --- the backpressure-aware outbound PCM send path (Phase 9 Task 2, T-09-05) --------------------
+
+    /**
+     * Queue one PCM frame for the socket, then evaluate [backpressureGate] against OkHttp's real
+     * `WebSocket.queueSize()` (mirrors `engine.ts`'s `sendFrame`, fed on every outbound frame tick):
+     *
+     * - [BackpressureAction.Send] / [BackpressureAction.ClearWarning]: flush [outboundQueue] via
+     *   [flushQueue].
+     * - [BackpressureAction.DropOldest]: shed the oldest queued frame(s) to hold the bound — never
+     *   send while shedding, so the socket's own buffer can actually drain — and emit a throttled
+     *   [SttWarning] when [BackpressureAction.DropOldest.warn] is true.
+     * - [BackpressureAction.Fatal]: a sustained overrun — [fail] with
+     *   [SttErrorCode.SEND_BACKPRESSURE] (D-08 stage 2).
+     *
+     * A no-op once [terminal] or before [webSocket] exists (gap audio — mirrors `engine.ts`'s
+     * `readyState !== WS_OPEN` gate).
+     */
+    fun sendPcmFrame(pcm: ByteArray) {
+        if (terminal) return
+        val socket = webSocket ?: return
+        outboundQueue.addLast(pcm)
+        when (val action = backpressureGate.evaluate(socket.queueSize(), monotonicMs())) {
+            is BackpressureAction.Send -> flushQueue(socket)
+
+            is BackpressureAction.DropOldest -> {
+                // Hold the bound: drop from the FRONT (oldest) so only the newest frames survive.
+                while (outboundQueue.size > MAX_QUEUE_FRAMES) outboundQueue.removeFirst()
+                if (action.warn) {
+                    _warnings.tryEmit(
+                        SttWarning(
+                            code = "backpressure",
+                            active = true,
+                            message = "outbound buffer over soft ceiling — shedding oldest audio to keep up",
+                        ),
+                    )
+                }
+            }
+
+            is BackpressureAction.ClearWarning -> {
+                _warnings.tryEmit(
+                    SttWarning(
+                        code = "backpressure",
+                        active = false,
+                        message = "outbound buffer drained — backpressure cleared",
+                    ),
+                )
+                flushQueue(socket)
+            }
+
+            is BackpressureAction.Fatal ->
+                fail(
+                    SttError(
+                        SttErrorCode.SEND_BACKPRESSURE,
+                        "send buffer overrun — audio produced faster than the socket can drain",
+                    ),
+                )
+        }
+    }
+
+    /**
+     * Flush the whole outbound FIFO to the socket in order. Every [WebSocket.send] call is
+     * Boolean-checked (Common Pitfall 2, T-09-05) — unlike the web port's un-checked
+     * `socket.send(...)` call sites, which cannot fail synchronously there. A `false` return here —
+     * OkHttp's internal queue ceiling, or the socket already closing/closed/canceled — is ALSO a
+     * terminal send-backpressure failure, never a silently dropped frame.
+     */
+    private fun flushQueue(socket: WebSocket) {
+        while (outboundQueue.isNotEmpty()) {
+            val frame = outboundQueue.first()
+            val sent = socket.send(frame.toByteString())
+            if (!sent) {
+                fail(
+                    SttError(
+                        SttErrorCode.SEND_BACKPRESSURE,
+                        "outbound send failed — the socket queue is full or already closing",
+                    ),
+                )
+                return
+            }
+            outboundQueue.removeFirst()
+        }
+    }
+
     // --- the one terminal-failure funnel (mirrors SttEngineImpl.fail / engine.ts's fail) -----------
 
     /**
@@ -215,6 +326,7 @@ internal class ServerBackend(
         // Before the error is emitted: an instance that has failed terminally must not still be
         // holding the microphone (mirrors SttEngineImpl.fail's own ordering discipline).
         releaseAudioSource()
+        outboundQueue.clear()
         webSocket?.cancel()
         webSocket = null
 
@@ -355,5 +467,10 @@ internal class ServerBackend(
     private companion object {
         const val NORMAL_CLOSE_CODE = 1000
         const val BUSY_CLOSE_CODE = 1013
+
+        /** Mirrors `engine.ts:79`'s `MAX_QUEUE_FRAMES` — each frame ~1 KB, so ~64 KB, matched to the
+         *  ported gate's own soft ceiling. Bounds [outboundQueue] so it cannot grow unbounded while
+         *  shedding. */
+        const val MAX_QUEUE_FRAMES = 64
     }
 }

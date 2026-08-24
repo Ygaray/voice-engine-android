@@ -85,9 +85,8 @@ internal class FakeWebSocketFactory : WebSocketFactory {
 
 /**
  * The fake [WebSocket] a [FakeWebSocketFactory] hands to a `ServerBackend`. Records every [send]
- * call rather than opening a real socket — this fixture only exercises text frames (the wire
- * protocol's JSON control frames), matching what `ServerBackend`/`BackendSelector` actually send in
- * this plan (the outbound PCM audio pump is Plan 09-02/09-03 scope).
+ * call rather than opening a real socket — both the text overload (the wire protocol's JSON control
+ * frames) and the binary overload ([sentBinary], the outbound PCM path Phase 9 Task 2 wires).
  */
 internal class FakeWebSocket(
     val url: String,
@@ -96,6 +95,9 @@ internal class FakeWebSocket(
 
     /** Every text frame sent on this socket, oldest first. */
     val sent: MutableList<String> = mutableListOf()
+
+    /** Every binary frame sent on this socket, oldest first (Task 2's outbound PCM send path). */
+    val sentBinary: MutableList<ByteString> = mutableListOf()
 
     var cancelCount: Int = 0
         private set
@@ -108,9 +110,14 @@ internal class FakeWebSocket(
      *  already-closing/closed/canceled or over-the-ceiling send failure (Common Pitfall 2). */
     var sendSucceeds: Boolean = true
 
+    /** Reported by [queueSize] — the `ws.bufferedAmount` analog [ServerBackpressureGate] is fed.
+     *  `0L` by default (a healthy, draining socket); a test overrides this to drive the gate's
+     *  soft/hard thresholds against a real [ServerBackend] rather than the gate in isolation. */
+    var fakeQueueSize: Long = 0L
+
     override fun request(): Request = Request.Builder().url(url).build()
 
-    override fun queueSize(): Long = 0L
+    override fun queueSize(): Long = fakeQueueSize
 
     override fun send(text: String): Boolean {
         if (!sendSucceeds) return false
@@ -118,7 +125,11 @@ internal class FakeWebSocket(
         return true
     }
 
-    override fun send(bytes: ByteString): Boolean = sendSucceeds
+    override fun send(bytes: ByteString): Boolean {
+        if (!sendSucceeds) return false
+        sentBinary += bytes
+        return true
+    }
 
     override fun close(code: Int, reason: String?): Boolean {
         closeCount++
