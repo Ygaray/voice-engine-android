@@ -125,6 +125,9 @@ internal class BackendSelector(
     private var activeServer: ServerBackend? = null
     private var activeNative: SttEngineImpl? = null
 
+    /** One-shot guard for [handleServerDrop] — SEL-04's handoff is one-way per session. */
+    private var handoffStarted = false
+
     override suspend fun start() {
         val serverUrl = config.serverUrl
         if (serverUrl != null && config.prefer != BackendPreference.OnDevice) {
@@ -174,10 +177,20 @@ internal class BackendSelector(
         _events.tryEmit(SttEvent.State(next))
     }
 
-    /** One launched collector per property — mirrors [SttEngineImpl]'s single-state-mutation-point
-     *  discipline, applied here to a whole upstream engine rather than one field at a time. */
+    /**
+     * One launched collector per property — mirrors [SttEngineImpl]'s single-state-mutation-point
+     * discipline, applied here to a whole upstream engine rather than one field at a time.
+     *
+     * The `state` collector deliberately DROPS [ServerBackend]'s own [EngineState.Error]: once this
+     * selector has committed to the server path, ANY [ServerBackend] failure is handled by
+     * [handleServerDrop]'s one-way handoff (SEL-04, D-03), never mirrored onto this selector's own
+     * `state` — the whole transition stays invisible on the shared contract (`state` never even
+     * touches `Error`, let alone `Reconnecting`), exactly like an ordinary native restart already is.
+     */
     private fun forwardServer(serverBackend: ServerBackend) {
-        scope.launch { serverBackend.state.collect { setState(it) } }
+        scope.launch {
+            serverBackend.state.collect { next -> if (next != EngineState.Error) setState(next) }
+        }
         scope.launch {
             serverBackend.partial.collect { text ->
                 _partial.value = text
@@ -191,10 +204,7 @@ internal class BackendSelector(
             }
         }
         scope.launch {
-            serverBackend.errors.collect { error ->
-                errorsChannel.trySend(error)
-                _events.tryEmit(SttEvent.Error(error))
-            }
+            serverBackend.errors.collect { handleServerDrop(serverBackend) }
         }
         scope.launch {
             serverBackend.level.collect { level ->
@@ -202,6 +212,53 @@ internal class BackendSelector(
                 _events.tryEmit(SttEvent.Level(level))
             }
         }
+    }
+
+    /**
+     * The one-way server→native handoff (Phase 9 Task 1, SEL-04, D-03). **The order is the whole
+     * point** — mirrors [SttEngineImpl.scheduleRestart]'s own restart-sequence discipline:
+     *
+     * ```
+     * 1. commit the live partial          (words already spoken are never dropped)
+     * 2. release the server-path mic      (release BEFORE any native acquire — two mic clients
+     *                                       cannot coexist, T-09-06; the WebSocket is already closed
+     *                                       by ServerBackend's OWN fail() funnel by the time an
+     *                                       error reaches this collector at all)
+     * 3. construct native and start it    (native acquisition happens only AFTER release)
+     * ```
+     *
+     * `state` never transitions to [EngineState.Reconnecting] anywhere in this sequence, and
+     * [ServerBackend]'s own terminal [EngineState.Error] is never mirrored onto this selector's
+     * `state` in the first place ([forwardServer] filters it) — the whole transition is invisible on
+     * the shared contract, exactly like an ordinary native restart already is (D-17). [backend] is
+     * flipped to [Backend.Native] only once the native session actually reaches [EngineState.Listening]
+     * (see [startNative]'s own state collector), never before — a host reading [backend] must never
+     * observe `Native` ahead of native audio actually flowing.
+     *
+     * ONE-WAY: guarded by identity against [activeServer] plus a one-shot flag, so a second failure
+     * — from an already-abandoned instance, or any other stray emission — is a no-op. This selector
+     * never attempts the server again for the rest of this session's lifetime.
+     */
+    private suspend fun handleServerDrop(serverBackend: ServerBackend) {
+        if (serverBackend !== activeServer || handoffStarted) return
+        handoffStarted = true
+        activeServer = null
+
+        // 1. commit the live partial BEFORE any teardown.
+        val partialText = serverBackend.partial.value
+        if (partialText.isNotBlank()) {
+            val segment = FinalSegment(partialText, HANDOFF_SEGMENT_ID)
+            finalsChannel.trySend(segment)
+            _events.tryEmit(SttEvent.Final(segment))
+        }
+
+        // 2. release the server-path mic — explicit here for the handoff's own documentation/
+        //    testability even though ServerBackend.fail() already released it as part of its own
+        //    teardown; idempotent, so this call is a safe no-op either way.
+        serverBackend.releaseAudioSource()
+
+        // 3. construct native and start it — native acquisition happens only AFTER release (above).
+        startNative()
     }
 
     /**
@@ -222,7 +279,16 @@ internal class BackendSelector(
             mainDispatcher = mainDispatcher,
         )
         activeNative = native
-        scope.launch { native.state.collect { setState(it) } }
+        scope.launch {
+            native.state.collect { next ->
+                // Only flip `backend` once native audio is ACTUALLY flowing (SEL-04) — never
+                // before, so a host reading `backend` never observes Native ahead of native audio.
+                // A no-op on the plain v1.0/native-only path, where `backend` is already Native
+                // from construction.
+                if (next == EngineState.Listening) setBackend(Backend.Native)
+                setState(next)
+            }
+        }
         scope.launch {
             native.partial.collect { text ->
                 _partial.value = text
@@ -265,5 +331,10 @@ internal class BackendSelector(
     private companion object {
         /** PLACEHOLDER — see the constructor parameter's KDoc. Pending Plan 09-03 measurement. */
         const val DEFAULT_TRY_SERVER_TIMEOUT_MS: Long = 2_500L
+
+        /** The synthetic [FinalSegment.segmentId] the SEL-04 handoff's own commit-on-drop uses.
+         *  `segmentId` is opaque and per-session (API.md) — this is not part of [ServerBackend]'s own
+         *  server-numbered sequence, just a safe fixed value for the one-off commit this path makes. */
+        const val HANDOFF_SEGMENT_ID: Int = 0
     }
 }

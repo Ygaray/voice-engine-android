@@ -71,13 +71,16 @@ internal class OkHttpWebSocketFactory(
  * BEFORE it reads the epoch fence or touches any shared field, mirroring
  * `PlatformRecognizerHandle.onMain`'s hop for exactly the same reason.
  *
- * ## Not yet wired: the outbound audio pump
+ * ## The server-path microphone (Phase 9 Task 1, SEL-04)
  *
- * [pcmSourceFactory] is accepted here so the constructor shape is settled now, but opening it and
- * streaming PCM frames to the server is Plan 09-02/09-03 scope (the phase's own objective:
- * "SEL-04 ... and the on-device timing measurement are Plan 09-02 and 09-03") — this plan proves the
- * connect → config → ready handshake and the swallow-into-fallback policy end-to-end first, per its
- * own tracer-then-expand structure.
+ * [pcmSourceFactory] opens [audioSource] once the session reaches [ServerFrame.Ready] — mirroring
+ * Pattern 3's "`ServerBackend` calls `AudioRecordPcmSource.open(16_000)` directly rather than
+ * hand-rolling a second `AudioRecord` wrapper." [releaseAudioSource] is the release half
+ * [BackendSelector]'s mid-session handoff calls BEFORE any native `SpeechRecognizer` acquire — two
+ * mic clients cannot coexist (T-09-06). Continuously PUMPING captured frames through a live capture
+ * loop is deferred to the on-device measurement work (Plan 09-03); Task 2 wires the gated
+ * `sendPcmFrame` send path this class exposes for that future caller. This class only owns the
+ * resource LIFECYCLE here, which is exactly what the handoff's ordering guarantee depends on.
  */
 internal class ServerBackend(
     private val webSocketFactory: WebSocketFactory,
@@ -117,6 +120,10 @@ internal class ServerBackend(
     private var webSocket: WebSocket? = null
     private var connectContinuation: CancellableContinuation<Boolean>? = null
     private var terminal = false
+
+    /** The server-path microphone, opened in [doOnMessage] once [ServerFrame.Ready] arrives. `null`
+     *  until then, and after [releaseAudioSource] has run. */
+    private var audioSource: PcmSource? = null
 
     /**
      * The typed error this instance last produced, or `null` if [connect] never failed through
@@ -168,9 +175,27 @@ internal class ServerBackend(
         if (terminal) return
         terminal = true
         epoch.advance()
+        releaseAudioSource()
         webSocket?.close(NORMAL_CLOSE_CODE, "normal")
         webSocket = null
         setState(EngineState.Idle)
+    }
+
+    /**
+     * Releases the server-path microphone (Phase 9 Task 1, SEL-04). Idempotent — tolerates being
+     * called when nothing was ever opened (a `null` [audioSource], e.g. this instance never reached
+     * [ServerFrame.Ready] at all) or when already released.
+     *
+     * [BackendSelector]'s mid-session handoff calls this EXPLICITLY, BEFORE constructing the native
+     * fallback (release-then-acquire, D-03/T-09-06) — two mic clients cannot coexist. [fail] and
+     * [stop] also call it as part of their own teardown, so a terminal failure or a requested stop
+     * never leaves this instance still holding the microphone either.
+     */
+    fun releaseAudioSource() {
+        val source = audioSource ?: return
+        audioSource = null
+        source.stop()
+        source.release()
     }
 
     // --- the one terminal-failure funnel (mirrors SttEngineImpl.fail / engine.ts's fail) -----------
@@ -187,6 +212,9 @@ internal class ServerBackend(
         terminal = true
         lastError = error
         epoch.advance()
+        // Before the error is emitted: an instance that has failed terminally must not still be
+        // holding the microphone (mirrors SttEngineImpl.fail's own ordering discipline).
+        releaseAudioSource()
         webSocket?.cancel()
         webSocket = null
 
@@ -262,7 +290,24 @@ internal class ServerBackend(
         if (terminal) return
         when (val result = parseServerFrame(text)) {
             is ParseResult.Ok -> when (val frame = result.frame) {
-                ServerFrame.Ready -> succeed()
+                ServerFrame.Ready -> {
+                    // Open the server-path mic BEFORE declaring the session Listening (Task 1,
+                    // SEL-04) — a session is not really live if it cannot capture audio to send.
+                    // A capture failure here is routed through the SAME fail() funnel as any other
+                    // terminal failure, never a bare uncaught exception (CLAUDE.md's loud-typed-
+                    // failure discipline).
+                    val opened = try {
+                        pcmSourceFactory.open(SAMPLE_RATE)
+                    } catch (unavailable: Throwable) {
+                        null
+                    }
+                    if (opened == null) {
+                        fail(SttError(SttErrorCode.MIC_DENIED, "microphone unavailable for the server-backed session"))
+                    } else {
+                        audioSource = opened
+                        succeed()
+                    }
+                }
 
                 is ServerFrame.Partial -> _partial.value = frame.text
 
