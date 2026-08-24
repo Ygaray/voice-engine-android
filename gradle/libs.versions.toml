@@ -9,6 +9,12 @@ agp = "8.13.0"
 # reusable library, exactly as web/'s zero runtime deps is.
 coroutines = "1.11.0"
 
+# Phase 9 (D-02, operator-approved): the ServerBackend's WS transport. A deliberate, singular break
+# of the zero-dep-beyond-coroutines doctrine — hand-rolling a TLS WebSocket for the *.ts.net cert +
+# framing is large and error-prone. Pinned to 5.2.1, not the registry's latest (5.5.0 as of the
+# phase's research) — a deliberate pin, not a stale one.
+okhttp = "5.2.1"
+
 # D-12 / Obstacle 2: binary-compatibility-validator gives :stt apiDump/apiCheck, which freezes the
 # public surface. It is in maintenance mode upstream (fixes + new Kotlin versions only) — acceptable,
 # since the tool's whole job is a byte-diff of a text file.
@@ -37,6 +43,9 @@ lifecycle-runtime-compose = "2.9.4"
 # :stt — coroutines. The `-android` artifact (not `-core`) is required: D-09's main-thread contract
 # needs Dispatchers.Main.immediate, which only ships in kotlinx-coroutines-android.
 coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+# Phase 9's ServerBackend transport (D-02). `implementation`, not `api` — no OkHttp type may reach
+# the public SttEngine surface (mirrors the RecognizerHandle-seam precedent).
+okhttp             = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 # JVM suite — runTest drives the restart ladder and dedup suites deterministically.
 coroutines-test    = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 junit              = { module = "junit:junit", version.ref = "junit" }

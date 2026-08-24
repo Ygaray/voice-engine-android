@@ -161,13 +161,19 @@ public class ContractSurfaceTest {
 
     /**
      * Implementing the interface anonymously is the assertion: it will not compile unless
-     * `SttEngine` declares exactly these six Flow properties and both suspend functions. That is a
-     * stronger, earlier check than reflecting over the members at runtime.
+     * `SttEngine` declares exactly these seven Flow properties and both suspend functions. That is
+     * a stronger, earlier check than reflecting over the members at runtime.
+     *
+     * `backend` (Phase 9, SEL-03) is the one addition since v1.0 — Android-only additive metadata
+     * that never widened `state`/`SttEvent` (D-01/D-03); this test asserting a seventh property
+     * compiled unmodified except for this one new override is itself evidence the addition stayed
+     * additive.
      */
     @Test
-    public fun `SttEngine declares the six flows and both suspend functions`() {
+    public fun `SttEngine declares the seven flows and both suspend functions`() {
         val engine: SttEngine = object : SttEngine {
             override val state: StateFlow<EngineState> = MutableStateFlow(EngineState.Idle)
+            override val backend: StateFlow<Backend> = MutableStateFlow(Backend.Native)
             override val partial: StateFlow<String> = MutableStateFlow("")
             override val finals: Flow<FinalSegment> = emptyFlow()
             override val errors: Flow<SttError> = emptyFlow()
@@ -178,6 +184,7 @@ public class ContractSurfaceTest {
         }
 
         assertEquals(EngineState.Idle, engine.state.value)
+        assertEquals(Backend.Native, engine.backend.value)
         assertEquals("", engine.partial.value)
         assertNotNull(engine.finals)
         assertNotNull(engine.errors)

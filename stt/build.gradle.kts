@@ -142,6 +142,11 @@ dependencies {
     // at `compile` scope, which is what an exported type requires.
     api(libs.coroutines.android)
 
+    // Phase 9 (D-02): the ServerBackend's WS transport. `implementation`, NOT `api` — no OkHttp
+    // type may ever reach the public SttEngine surface (mirrors the RecognizerHandle-seam
+    // precedent); consumers must not need OkHttp on their compile classpath to use this library.
+    implementation(libs.okhttp)
+
     // JVM unit tests — the majority of the suite runs here, behind the injected RecognizerHandle
     // seam, with no device and no Robolectric.
     testImplementation(libs.junit)

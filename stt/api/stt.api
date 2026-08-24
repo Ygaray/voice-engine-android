@@ -1,3 +1,20 @@
+public final class io/github/ygaray/sttengine/Backend : java/lang/Enum {
+	public static final field Native Lio/github/ygaray/sttengine/Backend;
+	public static final field Server Lio/github/ygaray/sttengine/Backend;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lio/github/ygaray/sttengine/Backend;
+	public static fun values ()[Lio/github/ygaray/sttengine/Backend;
+}
+
+public final class io/github/ygaray/sttengine/BackendPreference : java/lang/Enum {
+	public static final field Auto Lio/github/ygaray/sttengine/BackendPreference;
+	public static final field OnDevice Lio/github/ygaray/sttengine/BackendPreference;
+	public static final field Server Lio/github/ygaray/sttengine/BackendPreference;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lio/github/ygaray/sttengine/BackendPreference;
+	public static fun values ()[Lio/github/ygaray/sttengine/BackendPreference;
+}
+
 public final class io/github/ygaray/sttengine/EngineState : java/lang/Enum {
 	public static final field Connecting Lio/github/ygaray/sttengine/EngineState;
 	public static final field Error Lio/github/ygaray/sttengine/EngineState;
@@ -31,14 +48,19 @@ public final class io/github/ygaray/sttengine/ReconnectInfo {
 public final class io/github/ygaray/sttengine/SttConfig {
 	public fun <init> ()V
 	public fun <init> (Ljava/lang/String;)V
-	public synthetic fun <init> (Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;)V
+	public fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;)V
+	public synthetic fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getLanguage ()Ljava/lang/String;
+	public final fun getPrefer ()Lio/github/ygaray/sttengine/BackendPreference;
+	public final fun getServerUrl ()Ljava/lang/String;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 
 public abstract interface class io/github/ygaray/sttengine/SttEngine {
+	public abstract fun getBackend ()Lkotlinx/coroutines/flow/StateFlow;
 	public abstract fun getErrors ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun getEvents ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun getFinals ()Lkotlinx/coroutines/flow/Flow;

@@ -42,6 +42,20 @@ public interface SttEngine {
     public val state: StateFlow<EngineState>
 
     /**
+     * Which [Backend] is actually driving the current session — Android-only additive observable
+     * metadata (SEL-03, D-01, D-03). Never widens [state]/[SttEvent]: a host that does not care never
+     * has to touch it, unlike a `when` over [SttEvent], which every existing host already writes.
+     *
+     * [Backend.Native] on an engine constructed with no `serverUrl` (or
+     * [BackendPreference.OnDevice]) for the entirety of its life — the v1.0 default path never
+     * changes value here. On a session that tried the server first (SEL-01) this flips to
+     * [Backend.Server] once the try-server window succeeds, and back to [Backend.Native] one-way on
+     * a mid-session drop (SEL-04, D-03) — it never flips back to [Backend.Server] within the same
+     * session.
+     */
+    public val backend: StateFlow<Backend>
+
+    /**
      * The live, in-progress transcript text. Latest-wins.
      *
      * A `StateFlow` because conflation IS the desired semantic here: a partial that has been

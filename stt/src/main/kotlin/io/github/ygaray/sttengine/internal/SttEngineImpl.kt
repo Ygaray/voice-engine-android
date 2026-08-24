@@ -3,6 +3,7 @@ package io.github.ygaray.sttengine.internal
 import android.content.Context
 import android.os.Bundle
 import android.speech.RecognitionListener
+import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.ReconnectInfo
@@ -106,6 +107,13 @@ internal class SttEngineImpl(
 
     private val _state = MutableStateFlow(EngineState.Idle)
     override val state: StateFlow<EngineState> = _state.asStateFlow()
+
+    /**
+     * Fixed at [Backend.Native] for this engine's entire life (Phase 9, SEL-03). `SttEngineImpl` is
+     * the on-device-only engine — it never runs against the server — so this never mutates, unlike
+     * `internal.BackendSelector`'s own `backend`, which does.
+     */
+    override val backend: StateFlow<Backend> = MutableStateFlow(Backend.Native).asStateFlow()
 
     private val _partial = MutableStateFlow("")
     override val partial: StateFlow<String> = _partial.asStateFlow()

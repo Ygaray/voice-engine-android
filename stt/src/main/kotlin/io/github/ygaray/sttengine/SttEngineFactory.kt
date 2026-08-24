@@ -1,11 +1,14 @@
 package io.github.ygaray.sttengine
 
 import android.content.Context
+import io.github.ygaray.sttengine.internal.BackendSelector
 import io.github.ygaray.sttengine.internal.ContextPermissionChecker
+import io.github.ygaray.sttengine.internal.OkHttpWebSocketFactory
 import io.github.ygaray.sttengine.internal.PlatformRecognizerHandleFactory
 import io.github.ygaray.sttengine.internal.SessionLog
 import io.github.ygaray.sttengine.internal.SttEngineImpl
 import kotlinx.coroutines.Dispatchers
+import okhttp3.OkHttpClient
 
 /**
  * Build an [SttEngine] backed by this device's **on-device** recognition service.
@@ -49,6 +52,30 @@ public fun createSttEngine(
     diagnosticLogging: Boolean = false,
 ): SttEngine {
     val applicationContext = context.applicationContext ?: context
+
+    // Phase 9 (SEL-01/SEL-02): a BackendSelector is wired ONLY when a server backend is actually
+    // reachable in principle — a serverUrl is configured AND the host has not forced on-device.
+    // Every other call (the v1.0 default: no serverUrl, or an explicit OnDevice preference)
+    // constructs a plain SttEngineImpl exactly as before — byte-identical to v1.0, unchanged by
+    // this branch's mere existence.
+    val serverEligible = config.serverUrl != null && config.prefer != BackendPreference.OnDevice
+    if (serverEligible) {
+        return BackendSelector(
+            appContext = applicationContext,
+            config = config,
+            handleFactory = PlatformRecognizerHandleFactory,
+            permissions = ContextPermissionChecker(applicationContext),
+            log = SessionLog.forContext(applicationContext, enabled = diagnosticLogging),
+            // One shared OkHttpClient per engine instance, wrapped behind the WebSocketFactory seam
+            // (BackendSelector's own KDoc explains why: OkHttpClient/WebSocket have no fake-friendly
+            // seam of their own). Platform-default TLS validation only — no custom TrustManager or
+            // hostnameVerifier (T-09-02, RESEARCH.md Security Domain V6): the `*.ts.net` cert is
+            // publicly trusted, so a hand-rolled trust control here would be the anti-pattern.
+            webSocketFactory = OkHttpWebSocketFactory(OkHttpClient()),
+            mainDispatcher = Dispatchers.Main.immediate,
+        )
+    }
+
     return SttEngineImpl(
         appContext = applicationContext,
         config = config,
