@@ -233,6 +233,41 @@ class AudioSourcePipeTest {
         }
     }
 
+    // --- CR-03: a non-IOException read failure (e.g. a torn-down AudioRecord) must not escape the
+    // pump thread and crash the host process. -----------------------------------------------------
+
+    @Test
+    fun `an IllegalStateException from read() does not escape the pump thread as an uncaught exception`() {
+        val uncaught = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { _, throwable -> uncaught.set(throwable) }
+        try {
+            val source = object : PcmSource {
+                override fun read(buffer: ByteArray): Int =
+                    throw IllegalStateException("read() called on an uninitialized AudioRecord")
+                override fun stop() = Unit
+                override fun release() = Unit
+            }
+            val pipe = AudioSourcePipe(sourceFactory = { source }, pipeFactory = RecordingPipeFactory())
+
+            pipe.open()
+            // Bounded: the pump thread must have had a chance to run read() and hit the
+            // exception before close() (and the assertion below) runs.
+            Thread.sleep(200)
+            pipe.close()
+
+            assertEquals(
+                "an IllegalStateException from a torn-down recorder must be caught inside " +
+                    "pumpInto(), never propagate to the default UncaughtExceptionHandler " +
+                    "(which would otherwise kill the whole host process)",
+                null,
+                uncaught.get(),
+            )
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(previousHandler)
+        }
+    }
+
     // --- the descriptor is not addressable outside the open window ---------------------------------
 
     @Test

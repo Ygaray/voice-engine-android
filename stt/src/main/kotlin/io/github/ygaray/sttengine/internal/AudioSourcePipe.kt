@@ -2,7 +2,6 @@ package io.github.ygaray.sttengine.internal
 
 import android.os.ParcelFileDescriptor
 import java.io.FileOutputStream
-import java.io.IOException
 import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -218,9 +217,15 @@ internal class AudioSourcePipe(
                 into.write(buffer, 0, read)
                 into.flush()
             }
-        } catch (ended: IOException) {
-            // Either the recognizer let go of its end or ours was closed under us. Both are the
-            // ordinary end of a session, not a fault: the thread's only job is to stop pumping.
+        } catch (ended: Exception) {
+            // CR-03: any read/write failure — an ordinary IOException (the recognizer let go of
+            // its end, or ours was closed under us) or an IllegalStateException from a
+            // concurrently-released AudioRecord (see CR-02: the recorder can legitimately be torn
+            // down while this thread is parked inside `read()`) — is the ordinary end of a
+            // session, never a fault. `Exception` (not `Throwable`) is deliberate: it must not
+            // swallow an `Error` like `OutOfMemoryError`. This thread has no
+            // `UncaughtExceptionHandler`, so an unguarded exception here would otherwise kill the
+            // whole host process, not just this session.
         } finally {
             pumping.set(false)
         }
