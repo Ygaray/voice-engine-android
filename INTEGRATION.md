@@ -174,6 +174,104 @@ command, or a log line you then parse.
 
 ---
 
+## 7. Adopt the Recorder (optional, separate module)
+
+`:recorder` is a second, independently publishable Gradle module (JitPack artifact
+`stt-engine-android-recorder`) — mic in, compressed `.m4a` file out, usable standalone by a
+record-only consumer. A record-only host depends on **only** this coordinate and pulls in zero
+recognition code (REC-05):
+
+```kotlin
+implementation("com.github.Ygaray:stt-engine-android-recorder:v0.1.0")   // immutable tag — NEVER a branch snapshot
+```
+
+Same rule as step 2: pin a tag or a commit SHA, never `main-SNAPSHOT` or any moving branch ref. This
+coordinate does not transitively pull in `:stt` — a consumer that only needs recording never links
+recognition code, and that separation is mechanically enforced by
+`android/recorder/check-no-recognition-dependency.sh`, wired into `:recorder:check`.
+
+Construct + collect, mirroring steps 4/5's shape:
+
+```kotlin
+val recorder = createRecorder(context = getApplication())
+
+val state by recorder.state.collectAsStateWithLifecycle()
+
+LaunchedEffect(recorder, lifecycleOwner) {
+    lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+        launch { recorder.level.collect(::onLevel) }
+        launch { recorder.errors.collect(::onRecorderError) }
+    }
+}
+
+// start a session
+scope.launch { recorder.start() }
+
+// end it and use the finished file
+scope.launch {
+    val recordedFile = recorder.stop()
+    // recordedFile.uri / .durationMs / .format / .createdAt
+}
+```
+
+The host must already hold `RECORD_AUDIO` (see step 3) — `createRecorder()` has no Activity and
+cannot request it. See `API.md`'s Recorder section for the full `RecorderState`/`RecorderError`
+taxonomy and the documented PEAK-vs-RMS amplitude asymmetry against the web Recorder.
+
+---
+
+## 8. Adopt Voice Notes (optional, composes Recorder + the batch endpoint)
+
+`:voicenotes` is a third, independently publishable Gradle module (JitPack artifact
+`stt-engine-android-voicenotes`) — record-now / transcribe-when-reachable, composing the Recorder
+above with a durable Room-backed queue and the Phase 7 batch endpoint:
+
+```kotlin
+implementation("com.github.Ygaray:stt-engine-android-voicenotes:v0.1.0")   // immutable tag — NEVER a branch snapshot
+```
+
+Same pinning rule as steps 2 and 7. This module depends on `:recorder` internally (a voice note is a
+recording plus persistence and drain), so a consumer of `:voicenotes` gets Recorder capability
+transitively — it does not need its own `:recorder` dependency line as well.
+
+It needs a `serverUrl` pointing at the Phase 7 batch endpoint (e.g. `https://host.ts.net:8446` — see
+`server/README.md`). Unlike `createSttEngine`, there is **no tailnet-default baked in** — the host
+must supply this explicitly:
+
+```kotlin
+val voiceNotes = createVoiceNotes(
+    context = getApplication(),
+    serverUrl = "https://host.ts.net:8446",
+)
+
+val notes by voiceNotes.notes.collectAsStateWithLifecycle()
+val pendingCount by voiceNotes.pendingCount.collectAsStateWithLifecycle()
+
+LaunchedEffect(voiceNotes, lifecycleOwner) {
+    lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+        launch { voiceNotes.noteTranscribed.collect(::onNoteTranscribed) }
+    }
+}
+
+// record a new note
+scope.launch { voiceNotes.record() }
+
+// stop and enqueue it for drain
+scope.launch { voiceNotes.stopAndEnqueue() }
+
+// force an immediate drain attempt
+scope.launch { voiceNotes.drainNow() }
+```
+
+**Read this before shipping a multi-platform host:** this Android implementation drains via
+`WorkManager`, in the background, surviving app close — the opposite of the web `createVoiceNote()`
+backend, which drains only while its page is open (an in-page timer loop; no background-execution
+capability exists on the web platform). A host targeting both platforms must not assume identical
+drain timing. See `API.md`'s Voice Notes section for the full `NoteRecord`/`NoteStatus`/
+`NoteErrorCode` taxonomy.
+
+---
+
 ## Troubleshooting
 
 The two failures a first-time integrator actually hits.

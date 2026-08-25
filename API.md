@@ -303,6 +303,110 @@ opposite reason: this set is closed by design.
 
 ---
 
+## Recorder
+
+A **separate, independently publishable module** (`:recorder`, JitPack artifact
+`stt-engine-android-recorder`) — mic in, compressed `.m4a` file out, usable standalone by a
+record-only consumer with zero dependency on recognition (REC-05, mechanically enforced by
+`verifyNoRecognitionDependency`, wired into `:recorder:check`). A record-only host imports only this
+module and never touches `SttEngine`.
+
+```kotlin
+public fun createRecorder(context: Context): Recorder
+```
+
+| Parameter | Meaning |
+|---|---|
+| `context` | any context — the application context is taken from it and retained, so passing an Activity leaks nothing |
+
+**The host must already hold `RECORD_AUDIO`** — this module has no Activity, so it cannot request a
+runtime permission, the same asymmetry `SttEngine` documents above. `INTEGRATION.md` §7 has the
+worked snippet.
+
+### `Recorder` — the contract
+
+**Call `start()`/`pause()`/`resume()`/`stop()` from a background dispatcher.** Each is a `suspend fun`
+that calls straight through to blocking native `android.media.MediaRecorder` operations
+(`prepare()`/`start()`/`stop()`/`release()`), which can take tens to low-hundreds of milliseconds on
+real devices. None of them internally confines to `Dispatchers.IO` — calling them from
+`Dispatchers.Main` (e.g. the default `viewModelScope.launch { ... }`) risks blocking the main thread
+long enough to ANR.
+
+| Member | Type | Notes |
+|---|---|---|
+| `state` | `StateFlow<RecorderState>` | current state, replayed to every new collector |
+| `level` | `Flow<Float>` | normalized `[0,1]` amplitude ticks, roughly every ~150ms, while `state` is `Recording`. Conflated — a stale meter frame is worthless, same rationale as `SttEngine.level`. Silent (no ticks), not zero-valued, before `start()` and while `Idle`/`Paused` — it never emits a `0f` placeholder. |
+| `errors` | `Flow<RecorderError>` | typed Recorder failures, at most one path to `RecorderState.Error` per session |
+| `start()` | `suspend fun` | begin a session: open a new output file and start capturing. A second `start()` while already `Recording`/`Paused` pushes `RecorderErrorCode.ALREADY_RECORDING` on `errors` and does **not** open a second session. |
+| `pause()` | `suspend fun` | suspend the active session; writes to the same output file resume on `resume()`. `pause()` while not `Recording` pushes `RecorderErrorCode.INVALID_STATE`. |
+| `resume()` | `suspend fun` | resume a suspended session. `resume()` while not `Paused` pushes `RecorderErrorCode.INVALID_STATE`. |
+| `stop(): RecordedFile` | `suspend fun` | end the session and return the finished `RecordedFile`; `durationMs` excludes any time spent `Paused`; returns to `Idle`. `stop()` while not `Recording`/`Paused` — never started, or a previous `stop()` already completed — pushes `RecorderErrorCode.INVALID_STATE` on `errors` **and throws `IllegalStateException`** rather than returning stale or fabricated data. |
+| `delete(uri: String)` | `suspend fun` | delete the file at `uri`. A no-op (not an error) if the file does not exist — idempotent by design (REC-03). Rejected with `RecorderErrorCode.INVALID_STATE` if `uri` is the currently open (not-yet-stopped) recording. |
+
+**Platform amplitude asymmetry, documented not hidden (REC-06):** `level` is
+`MediaRecorder.getMaxAmplitude()` **PEAK**, not RMS — there is no RMS variant exposed by the platform
+API. The web Recorder's equivalent signal is **RMS** (`~10 Hz normalized RMS (0–1)`, `web/docs/API.md`).
+A host that renders "the same meter feel" on both platforms without accounting for this will see
+different behavior for identical audio.
+
+### `RecorderState`
+
+None of these is a `data class` — same binary-compatibility rule as the engine's own model types (see
+`CLAUDE.md` invariant #2). A DISTINCT enum from `EngineState`: the Recorder and the recognition
+engine are separate capabilities, and a record-only consumer never has to reason about recognition's
+five-state machine to render a four-state recording UI.
+
+`enum class RecorderState(val wireName: String)` — exactly four values, by locked design, with no
+fifth transient/starting state. `state` stays `Idle` until `start()` either reaches `Recording` or
+surfaces a typed error via `errors` (pushing `Error`).
+
+| Entry | `wireName` | Meaning |
+|---|---|---|
+| `Idle` | `idle` | no active recording session — the initial state and the state `stop()` returns to |
+| `Recording` | `recording` | a session is actively capturing audio to the output file |
+| `Paused` | `paused` | the session is suspended: the underlying file is untouched until `resume()` |
+| `Error` | `error` | terminal for the current session — a typed `RecorderError` was pushed on `errors` |
+
+### `RecordedFile`
+
+None of these is a `data class` (`CLAUDE.md` invariant #2) — a future optional field must be addable
+without breaking every already-published consumer's resolved `copy()`/constructor ABI.
+
+`RecordedFile(uri: String, durationMs: Long, format: String, createdAt: String)` — the result of a
+completed recording session (REC-01):
+
+| Field | Meaning |
+|---|---|
+| `uri` | An opaque, Recorder-owned locator — an internal, bare absolute filesystem path (e.g. `/data/user/0/<pkg>/files/<uuid>.m4a`) into the host app's private storage, with NO `file://` scheme prefix (`File(uri)`, not `Uri.parse(uri)`, is the correct way to resolve it). Never derived from consumer input. |
+| `durationMs` | Wall-clock recording time, excluding any time spent `Paused`. |
+| `format` | The concrete container/codec actually produced — always `"audio/mp4"` for this Recorder (`MediaRecorder.OutputFormat.MPEG_4` + `MediaRecorder.AudioEncoder.AAC`, REC-04). Reported from what was configured, not probed from the file. |
+| `createdAt` | An ISO-8601 UTC timestamp captured at `start()` time. |
+
+### `RecorderErrorCode` / `RecorderError`
+
+```kotlin
+@JvmInline public value class RecorderErrorCode(public val value: String)
+```
+
+A **value class, not an enum** — a FRESH, separate set from `SttErrorCode`, mirroring its open-set
+idiom: `android.media.MediaRecorder` can raise failure modes this Recorder did not anticipate, so the
+set stays open rather than a closed `enum` that would source-break every consumer's exhaustive `when`
+the day a new code is added. Never add a Recorder-only value to `SttErrorCode.SHARED`/`.ANDROID_ONLY`,
+and never touch `ErrorCodeParityTest`/`scripts/check-error-code-parity.sh` for this type — those gates
+exist exclusively for the frozen 11-code recognition contract, unrelated to recording.
+
+| Constant | String | When |
+|---|---|---|
+| `MIC_DENIED` | `mic-denied` | `MediaRecorder.start()` raised a `RuntimeException` — the mic is unavailable or busy |
+| `NO_STORAGE` | `no-storage` | `prepare()`/`start()` raised an `IOException` — disk-full or a permission failure |
+| `ALREADY_RECORDING` | `already-recording` | `start()` was called while a session was already `Recording`/`Paused` |
+| `INVALID_STATE` | `invalid-state` | a call arrived out of order for the current `RecorderState` — `pause()` while not `Recording`, `resume()` while not `Paused`, or `delete(uri)` on the live recording's own `uri` |
+
+`RecorderError(code: RecorderErrorCode, message: String)` — **deliberately NOT a `data class`**
+(`CLAUDE.md` invariant #2), for the same binary-compatibility reason as every other model type here.
+
+---
+
 ## Contract parity with the TypeScript client
 
 The Kotlin surface is a **translation**, not a redesign: every name, every state value and every
