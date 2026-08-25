@@ -95,7 +95,7 @@ dependencies {
     // `implementation`: every member of the Recorder interface is a Flow/StateFlow, so coroutines
     // types are part of the PUBLIC SIGNATURE (same D-07-derived rationale as :stt).
     //
-    // Deliberately NEVER `project(":stt")` or the published `com.github.Ygaray:stt-engine-android`
+    // Deliberately NEVER `project(":stt")` or the published `com.github.Ygaray:voice-engine-android`
     // coordinate — that is the entire point of this module boundary (T-08-10). Enforced by
     // verifyNoRecognitionDependency below, wired into `check`.
     api(libs.coroutines.android)
@@ -118,9 +118,9 @@ publishing {
             groupId = "com.github.Ygaray"
             // == the MIRROR REPO NAME's second published artifact, not the module name (:recorder).
             // Mirrors the sibling backup-engine naming convention (module :backup -> artifact
-            // backup-engine): module :recorder -> artifact stt-engine-android-recorder.
-            artifactId = "stt-engine-android-recorder"
-            version = "0.1.0"
+            // backup-engine): module :recorder -> artifact voice-engine-android-recorder.
+            artifactId = "voice-engine-android-recorder"
+            version = "0.2.0"
             afterEvaluate {
                 from(components["release"])
             }
@@ -154,7 +154,7 @@ tasks.register("verifyNoRecognitionDependency") {
         // break REC-05's actual guarantee for consumers.
         val configurationsToCheck = listOf("releaseRuntimeClasspath", "releaseCompileClasspath")
         val forbiddenProjectPath = ":stt"
-        val forbiddenModuleName = "stt-engine-android"
+        val forbiddenModuleName = "voice-engine-android"
         // Vacuous-pass-prevention target (mirrors ReleaseAudioSourceSeamTest / check-r8-mapping.sh's
         // discipline): assert the SAME resolved set genuinely contains something expected BEFORE
         // asserting the absence of something forbidden.

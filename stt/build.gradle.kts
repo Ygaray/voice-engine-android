@@ -181,8 +181,8 @@ publishing {
             groupId = "com.github.Ygaray"
             // == the MIRROR REPO NAME, not the module name (:stt). Same rule the sibling follows:
             // its module is :backup and its artifactId is backup-engine.
-            artifactId = "stt-engine-android"
-            version = "0.1.0"
+            artifactId = "voice-engine-android"
+            version = "0.2.0"
             afterEvaluate {
                 from(components["release"])
             }

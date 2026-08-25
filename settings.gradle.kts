@@ -23,7 +23,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "stt-engine-android"
+rootProject.name = "voice-engine-android"
 // The publishable library module.
 include(":stt")
 // The SECOND publishable library module (plan 08-05, REC-05 rework). Extracted out of :stt so the

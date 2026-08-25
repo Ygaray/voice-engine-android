@@ -136,10 +136,10 @@ publishing {
             groupId = "com.github.Ygaray"
             // == the MIRROR REPO NAME's third published artifact, not the module name (:voicenotes).
             // Mirrors the sibling naming convention (module :recorder -> artifact
-            // stt-engine-android-recorder): module :voicenotes -> artifact
-            // stt-engine-android-voicenotes.
-            artifactId = "stt-engine-android-voicenotes"
-            version = "0.1.0"
+            // voice-engine-android-recorder): module :voicenotes -> artifact
+            // voice-engine-android-voicenotes.
+            artifactId = "voice-engine-android-voicenotes"
+            version = "0.2.0"
             afterEvaluate {
                 from(components["release"])
             }

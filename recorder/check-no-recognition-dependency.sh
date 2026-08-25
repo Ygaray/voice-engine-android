@@ -37,14 +37,14 @@ fail() { echo "check-no-recognition-dependency: FAIL — $*" >&2; exit 1; }
 # DISCUSS ":stt" (documenting what must never be added) and verifyNoRecognitionDependency's own
 # enforcement code legitimately holds the bare string ":stt" as its COMPARISON TARGET
 # (`val forbiddenProjectPath = ":stt"`), not as a dependency declaration. Only a real Gradle
-# dependency notation — `project(":stt")`, or the published `com.github.Ygaray:stt-engine-android`
+# dependency notation — `project(":stt")`, or the published `com.github.Ygaray:voice-engine-android`
 # coordinate string used inside a dependency call — is a genuine regression this script must catch.
 # (No line in this file legitimately needs a literal `//` inside a string, so the trailing-comment
 # strip is safe here without special-casing string literals.)
 cleaned="$(sed -E 's#^[[:space:]]*//.*$##; s#[[:space:]]*//.*$##' "${BUILD_FILE}")"
 
 # Line-scoped view: catches the common single-line regression shape and reports exact line numbers.
-hits="$(printf '%s\n' "${cleaned}" | grep -nE 'project\(":stt"\)|com\.github\.Ygaray:stt-engine-android' || true)"
+hits="$(printf '%s\n' "${cleaned}" | grep -nE 'project\(":stt"\)|com\.github\.Ygaray:voice-engine-android' || true)"
 
 # WR-01: a dependency declaration wrapped across multiple lines —
 #   implementation(
@@ -57,7 +57,7 @@ hits="$(printf '%s\n' "${cleaned}" | grep -nE 'project\(":stt"\)|com\.github\.Yg
 # allows a newline/indentation between `project(` and its closing `)`), so a multi-line reference
 # cannot evade detection just by being reformatted.
 joined="$(printf '%s' "${cleaned}" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
-joined_hit="$(printf '%s' "${joined}" | grep -oE 'project\([[:space:]]*":stt"[[:space:]]*\)|com\.github\.Ygaray:stt-engine-android' || true)"
+joined_hit="$(printf '%s' "${joined}" | grep -oE 'project\([[:space:]]*":stt"[[:space:]]*\)|com\.github\.Ygaray:voice-engine-android' || true)"
 
 if [ -n "${hits}" ]; then
   echo "check-no-recognition-dependency: FAIL — :recorder/build.gradle.kts declares a real dependency on :stt:" >&2
