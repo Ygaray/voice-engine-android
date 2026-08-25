@@ -39,6 +39,11 @@ internal class VoiceNotesImpl(
     private val workManager: WorkManager = WorkManager.getInstance(context),
 ) : VoiceNotes {
 
+    // Not exposed for cancellation anywhere in the public VoiceNotes contract: SharingStarted.Eagerly
+    // never stops sharing on its own, so every createVoiceNotes() call permanently pins this
+    // SupervisorJob + its Room Flow collector for the remaining life of the process. Callers are
+    // expected to call createVoiceNotes() exactly once per process and retain the result for its
+    // lifetime — there is currently no lifecycle-teardown method (WR-03, 10-REVIEW.md).
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val dao get() = VoiceNotesRuntime.database(context).noteDao()
@@ -49,8 +54,10 @@ internal class VoiceNotesImpl(
 
     override val noteTranscribed = VoiceNotesRuntime.noteTranscribed.asSharedFlow()
 
-    override val pendingCount: kotlinx.coroutines.flow.StateFlow<Int> = dao.observeAll()
-        .map { entities -> entities.count { it.status != NoteStatus.Done.wireName } }
+    // Derived from `notes` rather than a second independent `dao.observeAll()` — avoids
+    // duplicating the same underlying Room query with its own separate collector.
+    override val pendingCount: kotlinx.coroutines.flow.StateFlow<Int> = notes
+        .map { records -> records.count { it.status != NoteStatus.Done } }
         .stateIn(scope, SharingStarted.Eagerly, 0)
 
     override val lastSyncedAt = VoiceNotesRuntime.lastSyncedAt.asStateFlow()
