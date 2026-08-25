@@ -13,7 +13,16 @@ package io.github.ygaray.sttengine.voicenotes
  * render, not `toString()`'s `Recorded`/`Queued`/etc.
  */
 public enum class NoteStatus(public val wireName: String) {
-    /** [io.github.ygaray.sttengine.recorder.Recorder.stop] returned, not yet queued for drain. */
+    /**
+     * [io.github.ygaray.sttengine.recorder.Recorder.stop] returned, not yet queued for drain.
+     *
+     * NOT currently persisted or observed by this implementation: `stopAndEnqueue()` constructs
+     * the first-ever [NoteRecord] directly with [Queued] (there is no intermediate durable write
+     * at this stage). This value is reserved for a future/alternate implementation that persists
+     * a `Recorded` row before enqueueing; a consumer's exhaustive `when` over [NoteStatus] must
+     * still handle it, but it will never actually be observed in the current codebase (IN-01,
+     * 10-REVIEW.md).
+     */
     Recorded("recorded"),
 
     /** Persisted to the durable store and enqueued for drain, no job id obtained yet. */
