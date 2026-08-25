@@ -90,6 +90,14 @@ kotlin {
     }
 }
 
+// NoteDatabase declares `exportSchema = true` (D-03: migration-safe from day one, no
+// fallbackToDestructiveMigration()) — that flag is inert without telling KSP where to write the
+// schema JSON, which is what makes an actual future Migration checkable against version 1's real
+// shape. Without this arg, Room silently skips the export and only warns at compile time.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     // Flow/StateFlow on the public surface — same D-07-derived rationale as :stt/:recorder.
     api(libs.coroutines.android)
