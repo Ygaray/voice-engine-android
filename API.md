@@ -407,6 +407,123 @@ exist exclusively for the frozen 11-code recognition contract, unrelated to reco
 
 ---
 
+## Voice Notes
+
+A third, independently publishable Gradle module (`:voicenotes`, JitPack artifact
+`stt-engine-android-voicenotes`) — record-now / transcribe-when-reachable (NOTE-01..06): a thin
+composition over `Recorder` above (capture) and the Phase 7 batch endpoint (transcription),
+persisting every note transition to a Room-backed durable store as the source of truth.
+
+```kotlin
+public fun createVoiceNotes(context: Context, serverUrl: String): VoiceNotes
+```
+
+| Parameter | Meaning |
+|---|---|
+| `context` | any context — the application context is taken from it and retained, so passing an Activity leaks nothing |
+| `serverUrl` | the Phase 7 batch endpoint's base URL (e.g. `https://host.ts.net:8446`) — `POST {serverUrl}/jobs` / `GET {serverUrl}/jobs/{id}` are built from it directly |
+
+**There is no tailnet-default baked into `serverUrl`** here, unlike `createSttEngine`'s own
+`wss://<hostname>:8444/` default — the host must supply it explicitly.
+
+### `VoiceNotes` — the contract
+
+Delivery semantics differ per property, deliberately, mirroring `SttEngine`'s own doc-comment table
+convention:
+
+| Member | Type | Notes |
+|---|---|---|
+| `notes` | `StateFlow<List<NoteRecord>>` | every known note, replayed to every new collector — a recomposing Compose host wants the current list immediately, same rationale as `SttEngine.state` |
+| `noteTranscribed` | `Flow<NoteRecord>` | delivered when a consumer is alive AND persisted onto the corresponding `NoteRecord` (NOTE-04) — never event-only. **Lossless**, not a `StateFlow`: a transcript that has already been delivered must never be silently replaced/dropped for a late collector, mirroring `SttEngine.finals`'s rationale. |
+| `pendingCount` | `StateFlow<Int>` | count of notes whose `status` is `Queued`, `Transcribing`, or the retryable `Failed` — i.e. not yet `Done` |
+| `lastSyncedAt` | `StateFlow<String?>` | ISO-8601 UTC timestamp of the most recent successful drain (a note reaching `Done`), or `null` if none has ever succeeded |
+| `record()` | `suspend fun` | begin recording a new note — forwards to `Recorder.start()`. Record-time failures (`NoteErrorCode.MIC_DENIED`/`.NO_STORAGE`/`.ALREADY_RECORDING`) surface through the Recorder's own error path — the note-contract decision reuses Phase 8's Recorder error vocabulary rather than inventing a parallel taxonomy. |
+| `stopAndEnqueue(): NoteRecord` | `suspend fun` | stop the in-progress recording, persist a new `NoteRecord` with `NoteStatus.Queued` (durable BEFORE returning — a recorded note must never be lost), and schedule its drain. Returns the freshly persisted `NoteRecord`. |
+| `drainNow()` | `suspend fun` | force a drain attempt now, bypassing any backoff wait currently in effect — without cancelling an attempt already in flight (never blind-replaces a running drain) |
+| `delete(id: String)` | `suspend fun` | remove a note and its underlying recorded file. Delegates file removal to `Recorder.delete()` using the note's own stored `NoteRecord.uri` unchanged — never reconstructing a path from `id` or any other field. |
+
+**NOTE-04's persist-before-notify guarantee, stated explicitly:** every implementation persists a
+note's new state to the durable store BEFORE emitting `noteTranscribed` for it — a consumer that
+calls into `notes` from inside its own `noteTranscribed` collector must see the already-persisted
+transcript, not a stale `Transcribing` row.
+
+**Web vs. Android: the drain asymmetry (read this before shipping).** This Android implementation
+drains via `WorkManager`, in the background, surviving app close — the opposite of the web
+`createVoiceNote()` backend, which drains only while its page is open (an in-page timer loop; no
+background-execution capability exists on the web platform). A host targeting both platforms must
+not assume identical drain timing.
+
+### `NoteRecord`
+
+None of these is a `data class` (`CLAUDE.md` invariant #2) — a future optional field must be addable
+without breaking every already-published consumer's resolved `copy()`/constructor ABI. Since this is
+a plain class it has no `copy()`: constructing a new `NoteRecord(...)` listing every field explicitly
+is required whenever a note's state needs to change.
+
+`NoteRecord(id: String, uri: String, format: String, createdAt: String, durationMs: Long, status:
+NoteStatus, jobId: String? = null, transcript: String? = null, errorCode: NoteErrorCode? = null,
+errorMessage: String? = null)` — 10 fields:
+
+| Field | Meaning |
+|---|---|
+| `id` | a client-generated, self-issued identifier (never derived from any external input, mirroring `RecordedFile.uri`'s rule) |
+| `uri` | `RecordedFile.uri` embedded VERBATIM — the Recorder's own opaque, Recorder-owned locator. Never reconstructed from `id` or any other field for a filesystem path. |
+| `format` | `RecordedFile.format` embedded verbatim — always `"audio/mp4"` for this Recorder |
+| `createdAt` | `RecordedFile.createdAt` embedded verbatim — an ISO-8601 UTC timestamp captured at record time |
+| `durationMs` | `RecordedFile.durationMs` embedded verbatim — wall-clock recording time |
+| `status` | the note's current lifecycle stage — see `NoteStatus` |
+| `jobId` | the batch endpoint's job id once `POST /jobs` has succeeded, persisted BEFORE any polling begins — `null` until then, and cleared again if a `GET /jobs/{id}` 404s after eviction/server-restart (the job reference was lost, not the transcription) |
+| `transcript` | non-null exactly when `status` is `Done` — persisted BEFORE `noteTranscribed` is emitted |
+| `errorCode` | non-null exactly when `status` is `Failed` — see `NoteErrorCode` |
+| `errorMessage` | a human-readable detail accompanying `errorCode`, non-null exactly when `status` is `Failed` |
+
+### `NoteStatus`
+
+A closed set by design (mirrors `EngineState`, not `RecorderErrorCode`/`NoteErrorCode`): a host
+genuinely wants the compiler to point at a new lifecycle stage. `recorded -> queued -> transcribing
+-> done | failed`.
+
+| Entry | `wireName` | Meaning |
+|---|---|---|
+| `Recorded` | `recorded` | `Recorder.stop()` returned, not yet queued for drain. **NOT currently persisted or observed by this implementation** — `stopAndEnqueue()` constructs the first-ever `NoteRecord` directly with `Queued`; there is no intermediate durable write at this stage. This value is reserved for a future/alternate implementation; a consumer's exhaustive `when` over `NoteStatus` must still handle it, but it will never actually be observed in the current codebase. |
+| `Queued` | `queued` | persisted to the durable store and enqueued for drain, no job id obtained yet |
+| `Transcribing` | `transcribing` | a job id was obtained from `POST /jobs` and is being polled via `GET /jobs/{id}` |
+| `Done` | `done` | terminal success: `transcript` is non-null |
+| `Failed` | `failed` | terminal-for-now failure: `errorCode`/`errorMessage` are set. Retryable. |
+
+### `NoteErrorCode` / `NoteError`
+
+```kotlin
+@JvmInline public value class NoteErrorCode(public val value: String)
+```
+
+A **value class, not an enum** — a FRESH, separate set from `SttErrorCode` and from
+`RecorderErrorCode`, mirroring `RecorderErrorCode`'s open-set idiom: the drain worker can raise
+failure modes this module did not anticipate, so the set stays open rather than a closed `enum` that
+would source-break every consumer's exhaustive `when` the day a new code is added. Never add a
+note-only value to `SttErrorCode.SHARED`/`.ANDROID_ONLY`, and never touch `ErrorCodeParityTest`/
+`scripts/check-error-code-parity.sh` for this type.
+
+7 companion constants — the first four are **reused verbatim** from `RecorderErrorCode`, per the
+note-contract decision ("reuse Phase 8's Recorder error vocabulary for record-time failures — do not
+invent a parallel taxonomy"); the remaining three are new upload/drain-specific codes this module
+owns:
+
+| Constant | String | When |
+|---|---|---|
+| `MIC_DENIED` | `mic-denied` | `MediaRecorder.start()` raised a `RuntimeException` — the mic is unavailable or busy |
+| `NO_STORAGE` | `no-storage` | `prepare()`/`start()` raised an `IOException` — disk-full or a permission failure |
+| `ALREADY_RECORDING` | `already-recording` | `record()` was called while a session was already in progress |
+| `INVALID_STATE` | `invalid-state` | a call arrived out of order for the note's current lifecycle stage |
+| `UPLOAD_TOO_LARGE` | `upload-too-large` | `POST /jobs` rejected the upload as exceeding the server's enforced size cap |
+| `UPLOAD_REJECTED` | `upload-rejected` | `POST /jobs` rejected the upload for a reason other than size (e.g. malformed multipart) |
+| `TRANSCRIPTION_FAILED` | `transcription-failed` | `GET /jobs/{id}` reached a terminal `status=failed` — a typed, permanent transcription failure |
+
+`NoteError(code: NoteErrorCode, message: String)` — **deliberately NOT a `data class`** (`CLAUDE.md`
+invariant #2), for the same binary-compatibility reason as every other model type here.
+
+---
+
 ## Contract parity with the TypeScript client
 
 The Kotlin surface is a **translation**, not a redesign: every name, every state value and every
