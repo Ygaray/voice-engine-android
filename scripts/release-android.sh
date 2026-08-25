@@ -114,7 +114,7 @@ ORG="${ORG:-Ygaray}"
 # repository name (that is the rule that makes the consumer coordinate clean — proven in-house by
 # the sibling library, whose module is `:backup` and whose artifactId is `backup-engine`). Making
 # the repo name a variable would let the two drift into a permanently wrong coordinate.
-MIRROR_REPO="stt-engine-android"
+MIRROR_REPO="voice-engine-android"
 GROUP_ID="com.github.${ORG}"
 TAG="v${VERSION}"
 SPLIT_BRANCH="android-release"
@@ -156,18 +156,31 @@ trap cleanup EXIT INT TERM
 echo "release-android: preparing ${TAG} → ${PUSH_URL}   (mode: ${MODE})"
 echo "release-android: coordinate will be ${GROUP_ID}:${MIRROR_REPO}:${TAG}"
 
-# --- GATE 1: the library builds and its public surface is frozen -------------------------------
-echo "release-android: GATE 1 — :stt:assembleRelease :stt:apiCheck …"
-( cd "${ANDROID_DIR}" && ./gradlew --no-daemon :stt:assembleRelease :stt:apiCheck ) \
-  || abort "GATE 1 failed — the release variant does not build, or the frozen API surface changed \
-without a deliberate ./gradlew :stt:apiDump. Read the apiCheck diff before regenerating the dump"
+# --- GATE 1: all three libraries build and their public surfaces are frozen --------------------
+# Covers :stt/:recorder/:voicenotes, not just :stt (RESEARCH.md Pitfall 3: the script used to gate
+# only the first module ever published, silently shipping the other two with zero pre-tag proof).
+echo "release-android: GATE 1 — :stt/:recorder/:voicenotes assembleRelease + apiCheck …"
+( cd "${ANDROID_DIR}" && ./gradlew --no-daemon \
+    :stt:assembleRelease :stt:apiCheck \
+    :recorder:assembleRelease :recorder:apiCheck \
+    :voicenotes:assembleRelease :voicenotes:apiCheck ) \
+  || abort "GATE 1 failed — one of :stt/:recorder/:voicenotes does not build, or a frozen API \
+surface changed without a deliberate ./gradlew <module>:apiDump. Read the apiCheck diff before \
+regenerating the dump"
 
-# --- GATE 2: JVM suite green, parity in HARD mode, plus the three-way repo-root gate ------------
-echo "release-android: GATE 2 — :stt:testDebugUnitTest -Pstt.requireWebParity=true …"
-( cd "${ANDROID_DIR}" && ./gradlew --no-daemon :stt:testDebugUnitTest -Pstt.requireWebParity=true ) \
-  || abort "GATE 2 failed — the JVM suite is not green with parity in hard mode. If the failure is \
-ErrorCodeParityTest reporting a MISSING web/src/errors.ts, this script is being run from somewhere \
-that is not the mono-repo; a release cannot be cut from the mirror"
+# --- GATE 2: JVM suite green across all three modules, parity in HARD mode on :stt, plus the ----
+# three-way repo-root gate. The parity flag applies ONLY to :stt (ErrorCodeParityTest lives there);
+# :recorder/:voicenotes carry no parity test of their own, so it is not added to their invocations.
+echo "release-android: GATE 2 — :stt:testDebugUnitTest -Pstt.requireWebParity=true, \
+:recorder:testDebugUnitTest, :voicenotes:testDebugUnitTest …"
+( cd "${ANDROID_DIR}" && ./gradlew --no-daemon \
+    :stt:testDebugUnitTest -Pstt.requireWebParity=true \
+    :recorder:testDebugUnitTest \
+    :voicenotes:testDebugUnitTest ) \
+  || abort "GATE 2 failed — the JVM suite is not green across :stt/:recorder/:voicenotes with \
+parity in hard mode on :stt. If the failure is ErrorCodeParityTest reporting a MISSING \
+web/src/errors.ts, this script is being run from somewhere that is not the mono-repo; a release \
+cannot be cut from the mirror"
 
 echo "release-android: GATE 2 — scripts/check-error-code-parity.sh (three-way, repo root) …"
 ( cd "${REPO_ROOT}" && bash scripts/check-error-code-parity.sh ) \
@@ -262,34 +275,47 @@ printf '%s\n' "${JITPACK_CMDS[@]}" \
 ':stt:publishReleasePublicationToMavenLocal'; the dry run would be exercising a different build \
 than the one JitPack will run. Found: ${JITPACK_CMDS[*]}"
 
+# Each published module's artifactId is the mirror repo name plus its own suffix (:stt == the
+# mirror name itself; :recorder/:voicenotes append "-recorder"/"-voicenotes" — the same
+# artifactId-derived-from-mirror-name rule the header comment documents, now applied to all three
+# published modules instead of just the first). Computed here so GATE 3's existence assertions
+# below can loop instead of hardcoding a single path (RESEARCH.md Pitfall 3).
+ARTIFACT_IDS=("${MIRROR_REPO}" "${MIRROR_REPO}-recorder" "${MIRROR_REPO}-voicenotes")
+
 # Publish into the REAL local maven repository, with no extra flags, because that is exactly what
-# JitPack does — fidelity here is the whole point of the gate. The coordinate directory is a cache
-# of a locally built artifact, so clearing it first is safe and makes the assertion below
+# JitPack does — fidelity here is the whole point of the gate. Each coordinate directory is a cache
+# of a locally built artifact, so clearing all three first is safe and makes the assertions below
 # deterministic rather than passing on a stale artifact from an earlier run.
-M2_COORD_DIR="${HOME}/.m2/repository/${GROUP_ID//.//}/${MIRROR_REPO}/${VERSION}"
-rm -rf "${M2_COORD_DIR}"
+for artifact_id in "${ARTIFACT_IDS[@]}"; do
+  rm -rf "${HOME}/.m2/repository/${GROUP_ID//.//}/${artifact_id}/${VERSION}"
+done
 
 for cmd in "${JITPACK_CMDS[@]}"; do
   echo "release-android: GATE 3 — running literal jitpack.yml command in the split clone: ${cmd}"
   ( cd "${MIRROR}" && eval "${cmd}" ) \
     || abort "GATE 3 failed — the literal JitPack command failed against the split tree. This is \
 the failure that would otherwise have been discovered against an immutable tag. Read the output \
-above: a missing wrapper, a file that did not survive the split, the second module breaking \
-configuration, or a wrong artifactId"
+above: a missing wrapper, a file that did not survive the split, a module breaking configuration, \
+or a wrong artifactId"
 done
 
-# The artifactId rule made mechanical: the artifact must land under the MIRROR REPO NAME, and the
-# sources jar must be there too — that is the AGP-8 `singleVariant("release") { withSourcesJar() }`
-# opt-in, the single most common JitPack-Android publish failure.
-[ -f "${M2_COORD_DIR}/${MIRROR_REPO}-${VERSION}.aar" ] \
-  || abort "GATE 3 failed — no ${MIRROR_REPO}-${VERSION}.aar under ${M2_COORD_DIR}. The artifactId \
-must equal the mirror REPOSITORY name, not the Gradle module name"
-[ -f "${M2_COORD_DIR}/${MIRROR_REPO}-${VERSION}-sources.jar" ] \
-  || abort "GATE 3 failed — no sources jar was published. Restore \
-android { publishing { singleVariant(\"release\") { withSourcesJar() } } }"
-
-echo "release-android: GATE 3 — published from the split tree:"
-ls -1 "${M2_COORD_DIR}"
+# The artifactId rule made mechanical, across all three published modules: each module's artifact
+# must land under ITS OWN coordinate directory, and the sources jar must be there too — that is the
+# AGP-8 `singleVariant("release") { withSourcesJar() }` opt-in, the single most common
+# JitPack-Android publish failure. Looping here (rather than asserting :stt alone) is what closes
+# RESEARCH.md Pitfall 3 for good: a wrong or missing :recorder/:voicenotes artifact now aborts the
+# release before the tag exists, instead of silently shipping unverified.
+for artifact_id in "${ARTIFACT_IDS[@]}"; do
+  m2_dir="${HOME}/.m2/repository/${GROUP_ID//.//}/${artifact_id}/${VERSION}"
+  [ -f "${m2_dir}/${artifact_id}-${VERSION}.aar" ] \
+    || abort "GATE 3 failed — no ${artifact_id}-${VERSION}.aar under ${m2_dir}. The artifactId must \
+equal that module's own published coordinate name"
+  [ -f "${m2_dir}/${artifact_id}-${VERSION}-sources.jar" ] \
+    || abort "GATE 3 failed — no sources jar was published for ${artifact_id}. Restore \
+android { publishing { singleVariant(\"release\") { withSourcesJar() } } } on that module"
+  echo "release-android: GATE 3 — published from the split tree (${artifact_id}):"
+  ls -1 "${m2_dir}"
+done
 
 # --- PREFLIGHT STOPS HERE ----------------------------------------------------------------------
 if [ "${MODE}" = "preflight" ]; then
