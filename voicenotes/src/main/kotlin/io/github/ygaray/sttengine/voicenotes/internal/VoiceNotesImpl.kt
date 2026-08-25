@@ -98,6 +98,10 @@ internal class VoiceNotesImpl(
 
     override suspend fun delete(id: String) {
         val entity = dao.getById(id) ?: return
+        // Stop any in-flight/queued drain for this note FIRST — otherwise a DrainWorker that
+        // already read this row before delete() ran can resurrect it via its own terminal
+        // `dao.upsert(...)` (INSERT OR REPLACE) after the file and row below are gone.
+        workManager.cancelUniqueWork(id)
         // The Recorder's own idempotent file deletion — never reconstruct a path from `id` (V12).
         recorder.delete(entity.uri)
         dao.deleteById(id)
