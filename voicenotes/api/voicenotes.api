@@ -73,3 +73,7 @@ public abstract interface class io/github/ygaray/sttengine/voicenotes/VoiceNotes
 	public abstract fun stopAndEnqueue (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
+public final class io/github/ygaray/sttengine/voicenotes/VoiceNotesFactoryKt {
+	public static final fun createVoiceNotes (Landroid/content/Context;Ljava/lang/String;)Lio/github/ygaray/sttengine/voicenotes/VoiceNotes;
+}
+

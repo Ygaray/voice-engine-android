@@ -10,4 +10,4 @@
     self-declare whatever manifest entries they need via their own AARs, with no manual entry
     required here.
 -->
-<manifest xmlns:android="http://schemas.android.com/apk/res-auto" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
