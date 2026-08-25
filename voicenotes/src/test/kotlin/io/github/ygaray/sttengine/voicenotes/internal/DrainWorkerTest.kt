@@ -234,7 +234,7 @@ class DrainWorkerTest {
         var postJobCallCount = 0
         var getJobCallCount = 0
 
-        override suspend fun postJob(file: File, serverUrl: String): PostJobOutcome {
+        override suspend fun postJob(file: File, serverUrl: String, format: String): PostJobOutcome {
             postJobCallCount++
             return postJobResult
         }

@@ -16,7 +16,7 @@ import org.json.JSONObject
  * `{status: processing|done|failed}`.
  */
 internal interface BatchHttpClient {
-    suspend fun postJob(file: File, serverUrl: String): PostJobOutcome
+    suspend fun postJob(file: File, serverUrl: String, format: String): PostJobOutcome
     suspend fun getJob(jobId: String, serverUrl: String): JobOutcome
 }
 
@@ -55,13 +55,16 @@ internal class OkHttpBatchClient(
     private val client: OkHttpClient = OkHttpClient(),
 ) : BatchHttpClient {
 
-    override suspend fun postJob(file: File, serverUrl: String): PostJobOutcome {
+    override suspend fun postJob(file: File, serverUrl: String, format: String): PostJobOutcome {
         val body = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart(
                 "file",
                 file.name,
-                file.asRequestBody("application/octet-stream".toMediaType()),
+                // The note's real MIME type (e.g. "audio/mp4"), not a generic octet-stream — the
+                // rest of the codebase treats NoteRecord.format as a first-class, verbatim-carried
+                // field, and the batch endpoint may dispatch/validate on Content-Type.
+                file.asRequestBody(format.toMediaType()),
             )
             .build()
         val request = Request.Builder()

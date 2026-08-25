@@ -41,7 +41,7 @@ internal class DrainWorker(
         val client = VoiceNotesRuntime.httpClient
 
         val jobId = note.jobId ?: run {
-            when (val outcome = client.postJob(File(note.uri), serverUrl)) {
+            when (val outcome = client.postJob(File(note.uri), serverUrl, note.format)) {
                 is PostJobOutcome.Accepted -> {
                     val updated = NoteRecord(
                         id = note.id,
