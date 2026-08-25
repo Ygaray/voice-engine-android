@@ -44,7 +44,14 @@ internal object VoiceNotesRuntime {
         }
     }
 
-    /** Mutable, swappable by tests — production default is [OkHttpBatchClient]. */
+    /**
+     * Test-only escape hatch, same pattern as [testDatabase] — swapped by tests (e.g.
+     * `DrainWorkerTest`'s `VoiceNotesRuntime.httpClient = fakeClient`); production default is
+     * [OkHttpBatchClient]. `@Volatile` because it is read from a background [DrainWorker]
+     * coroutine that may run concurrently with test/setup code mutating it.
+     */
+    @VisibleForTesting
+    @Volatile
     internal var httpClient: BatchHttpClient = OkHttpBatchClient()
 
     /**
