@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    :voicenotes library manifest. Under AGP 8 the namespace comes from build.gradle.kts, so no
+    package attribute is needed here. There is no <application> element — this library contributes
+    no components and declares no explicit permission itself.
+
+    :voicenotes never calls MediaRecorder directly — that is :recorder's job, whose own manifest's
+    RECORD_AUDIO permission merges in transitively for any app that depends on this module (through
+    :voicenotes's implementation(project(":recorder")) dependency). Room and WorkManager both
+    self-declare whatever manifest entries they need via their own AARs, with no manual entry
+    required here.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res-auto" />

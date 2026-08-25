@@ -3,9 +3,10 @@ jdk:
 install:
   # The module path here MUST match a module settings.gradle.kts actually includes — a mismatch is an
   # unrecoverable failure discovered only after the mirror tag is immutable (D-23, Pitfall 8).
-  # There are now TWO independently published library modules (plan 08-05's REC-05 rework added
-  # :recorder). Name the library modules ONLY. The reference host app (plan 07) and the
-  # verify-recorder-only R8 harness (plan 08-04) are outside the published module set (D-23) and
-  # must never appear in this install list.
+  # There are now THREE independently published library modules (plan 08-05's REC-05 rework added
+  # :recorder; Phase 10 plan 10-03 added :voicenotes). Name the library modules ONLY. The reference
+  # host app (plan 07) and the verify-recorder-only R8 harness (plan 08-04) are outside the
+  # published module set (D-23) and must never appear in this install list.
   - ./gradlew :stt:publishReleasePublicationToMavenLocal
   - ./gradlew :recorder:publishReleasePublicationToMavenLocal
+  - ./gradlew :voicenotes:publishReleasePublicationToMavenLocal

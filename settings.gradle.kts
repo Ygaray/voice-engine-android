@@ -31,6 +31,12 @@ include(":stt")
 // guarantee, stronger than the R8-mapping-grep proof :verify-recorder-only offered alone. Named in
 // android/jitpack.yml alongside :stt (D-23, Pitfall 8: a mismatch here is unrecoverable after a tag).
 include(":recorder")
+// The THIRD publishable library module (Phase 10, plan 10-03). Composes :recorder for capture and
+// adds a Room-backed persisted note queue + WorkManager-driven drain — never :stt (this module has
+// zero recognition dependency, mirroring the "server-only, never native" phase note). Named in
+// android/jitpack.yml alongside :stt/:recorder (D-23, Pitfall 8: a mismatch here is unrecoverable
+// after a tag).
+include(":voicenotes")
 // The reference host app (D-27/D-28). It is NEVER named in jitpack.yml and carries no
 // `maven-publish`, so it is outside the published module set (D-23) — the mirror ships the library
 // and the worked example of how to consume it, never the example as an artifact.

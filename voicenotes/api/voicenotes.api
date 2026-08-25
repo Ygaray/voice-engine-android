@@ -1,0 +1,75 @@
+public final class io/github/ygaray/sttengine/voicenotes/NoteError {
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode-EZxFns0 ()Ljava/lang/String;
+	public final fun getMessage ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/voicenotes/NoteErrorCode {
+	public static final field Companion Lio/github/ygaray/sttengine/voicenotes/NoteErrorCode$Companion;
+	public static final synthetic fun box-impl (Ljava/lang/String;)Lio/github/ygaray/sttengine/voicenotes/NoteErrorCode;
+	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
+	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public static fun hashCode-impl (Ljava/lang/String;)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (Ljava/lang/String;)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/voicenotes/NoteErrorCode$Companion {
+	public final fun getALREADY_RECORDING-EZxFns0 ()Ljava/lang/String;
+	public final fun getINVALID_STATE-EZxFns0 ()Ljava/lang/String;
+	public final fun getMIC_DENIED-EZxFns0 ()Ljava/lang/String;
+	public final fun getNO_STORAGE-EZxFns0 ()Ljava/lang/String;
+	public final fun getTRANSCRIPTION_FAILED-EZxFns0 ()Ljava/lang/String;
+	public final fun getUPLOAD_REJECTED-EZxFns0 ()Ljava/lang/String;
+	public final fun getUPLOAD_TOO_LARGE-EZxFns0 ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/voicenotes/NoteRecord {
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLio/github/ygaray/sttengine/voicenotes/NoteStatus;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLio/github/ygaray/sttengine/voicenotes/NoteStatus;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCreatedAt ()Ljava/lang/String;
+	public final fun getDurationMs ()J
+	public final fun getErrorCode-KhMSLjU ()Ljava/lang/String;
+	public final fun getErrorMessage ()Ljava/lang/String;
+	public final fun getFormat ()Ljava/lang/String;
+	public final fun getId ()Ljava/lang/String;
+	public final fun getJobId ()Ljava/lang/String;
+	public final fun getStatus ()Lio/github/ygaray/sttengine/voicenotes/NoteStatus;
+	public final fun getTranscript ()Ljava/lang/String;
+	public final fun getUri ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/voicenotes/NoteStatus : java/lang/Enum {
+	public static final field Done Lio/github/ygaray/sttengine/voicenotes/NoteStatus;
+	public static final field Failed Lio/github/ygaray/sttengine/voicenotes/NoteStatus;
+	public static final field Queued Lio/github/ygaray/sttengine/voicenotes/NoteStatus;
+	public static final field Recorded Lio/github/ygaray/sttengine/voicenotes/NoteStatus;
+	public static final field Transcribing Lio/github/ygaray/sttengine/voicenotes/NoteStatus;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getWireName ()Ljava/lang/String;
+	public static fun valueOf (Ljava/lang/String;)Lio/github/ygaray/sttengine/voicenotes/NoteStatus;
+	public static fun values ()[Lio/github/ygaray/sttengine/voicenotes/NoteStatus;
+}
+
+public abstract interface class io/github/ygaray/sttengine/voicenotes/VoiceNotes {
+	public abstract fun delete (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun drainNow (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun getLastSyncedAt ()Lkotlinx/coroutines/flow/StateFlow;
+	public abstract fun getNoteTranscribed ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getNotes ()Lkotlinx/coroutines/flow/StateFlow;
+	public abstract fun getPendingCount ()Lkotlinx/coroutines/flow/StateFlow;
+	public abstract fun record (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun stopAndEnqueue (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+

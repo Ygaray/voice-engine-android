@@ -33,6 +33,15 @@ androidx-test-runner = "1.6.2"
 # compile without it.
 androidx-test-rules = "1.6.1"
 
+# Phase 10 (D-03): :voicenotes' Room-backed persisted note queue + WorkManager-driven drain. First
+# usage of either in this codebase. Versions verified current-stable against
+# dl.google.com/dl/android/maven2 and github.com/google/ksp/releases at plan-10-03 execution time
+# (2026-08-24) — Room 2.8.4 / WorkManager 2.11.2 are each the latest non-alpha release, and KSP
+# 2.3.11 is the latest release, versioned independently of the Kotlin compiler (KSP2).
+room = "2.8.4"
+ksp = "2.3.11"
+work = "2.11.2"
+
 # :demo module only (plan 07) — never published (D-23). compose-bom is 2026.06.00 and NOT
 # 2026.07.00: the registry probe returned 404 for .07, so .06 is the latest that exists.
 compose-bom = "2026.06.00"
@@ -59,6 +68,15 @@ androidx-test-junit  = { module = "androidx.test.ext:junit", version.ref = "andr
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidx-test-runner" }
 androidx-test-rules  = { module = "androidx.test:rules", version.ref = "androidx-test-rules" }
 
+# :voicenotes — Room-backed note store + WorkManager drain (Phase 10, D-03).
+room-runtime     = { module = "androidx.room:room-runtime", version.ref = "room" }
+room-ktx         = { module = "androidx.room:room-ktx", version.ref = "room" }
+# Consumed via ksp(...), not implementation — this is the annotation processor, not a runtime dep.
+room-compiler    = { module = "androidx.room:room-compiler", version.ref = "room" }
+work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
+# Test-only — androidx.work.testing's WorkManagerTestInitHelper/TestDriver for deterministic Worker tests.
+work-testing     = { module = "androidx.work:work-testing", version.ref = "work" }
+
 # :demo only (plan 07). D-07's per-event StateFlow surface exists so a recomposing Compose host can
 # read the value now; lifecycle-runtime-compose is what supplies collectAsStateWithLifecycle().
 compose-bom               = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
@@ -78,3 +96,5 @@ kotlin-android                 = { id = "org.jetbrains.kotlin.android", version.
 # no `kotlinCompilerExtensionVersion` to pin any more, and pinning one would not compile.
 compose-compiler               = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 binary-compatibility-validator = { id = "org.jetbrains.kotlinx.binary-compatibility-validator", version.ref = "bcv" }
+# :voicenotes — Room's KSP2 annotation-processing engine (Phase 10, D-03).
+ksp                            = { id = "com.google.devtools.ksp", version.ref = "ksp" }
