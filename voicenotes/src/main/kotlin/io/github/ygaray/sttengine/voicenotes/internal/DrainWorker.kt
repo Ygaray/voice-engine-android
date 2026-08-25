@@ -89,7 +89,10 @@ internal class DrainWorker(
                 dao.upsert(updated.toEntity())
                 VoiceNotesRuntime.lastSyncedAt.value = Instant.now().toString()
                 // AFTER the persist — resolves edge-probe NOTE-04 (persist-before-notify).
-                VoiceNotesRuntime.noteTranscribed.tryEmit(updated)
+                // `emit` (not `tryEmit`) so a full 64-slot buffer SUSPENDS until room frees up
+                // instead of silently dropping the one-shot notification — required by the
+                // documented LOSSLESS contract (VoiceNotes.kt, VoiceNotesRuntime.kt).
+                VoiceNotesRuntime.noteTranscribed.emit(updated)
                 Result.success()
             }
             is JobOutcome.Failed -> {
