@@ -2,7 +2,6 @@ package io.github.ygaray.sttengine.voicenotes.internal
 
 import io.github.ygaray.sttengine.voicenotes.NoteErrorCode
 import java.io.File
-import java.io.IOException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -85,7 +84,11 @@ internal class OkHttpBatchClient(
                     else -> PostJobOutcome.Transient
                 }
             }
-        } catch (e: IOException) {
+        } catch (e: Exception) {
+            // Any network failure (IOException) OR an unexpected/malformed response body
+            // (org.json.JSONException from JSONObject(...)/.getString(...), which is NOT an
+            // IOException) — both fall back to Transient/retry per this class's own documented
+            // contract, never propagating an uncaught exception out of doWork().
             PostJobOutcome.Transient
         }
     }
@@ -111,7 +114,9 @@ internal class OkHttpBatchClient(
                     else -> JobOutcome.Transient
                 }
             }
-        } catch (e: IOException) {
+        } catch (e: Exception) {
+            // Same rationale as postJob's catch above: network failures AND malformed/unexpected
+            // JSON bodies both retry rather than crash doWork().
             JobOutcome.Transient
         }
     }
