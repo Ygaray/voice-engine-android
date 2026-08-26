@@ -2,10 +2,15 @@
 
 A reusable, host-agnostic Kotlin library for live dictation on Android. It exposes the **same
 dictation contract** as the project's TypeScript client — the same five engine states, the same
-eleven error strings, the same live-partial-then-immutable-final model — implemented entirely
-**offline and on-device** over the platform `SpeechRecognizer`. There is no server, no socket and no
-wire protocol anywhere in the path: the recognizer service owns the microphone end to end, and
-nothing this library does leaves the phone.
+eleven error strings, the same live-partial-then-immutable-final model — implemented **offline and
+on-device by default** over the platform `SpeechRecognizer`. A self-hosted server backend also exists,
+but it is strictly **opt-in and off by default**: with no `serverUrl` configured (the default
+`SttConfig()`), the library behaves exactly as it always has — no server, no socket, no wire protocol
+anywhere in the path, and the recognizer service owns the microphone end to end. Supplying a
+`serverUrl` and leaving `prefer = BackendPreference.Auto` (the default once a `serverUrl` is given)
+tries the self-hosted server first with a bounded timeout and falls back to native seamlessly on
+failure or drop. See `API.md`'s `SttConfig` section for the full `prefer`/`serverUrl`/`Backend`
+mechanism.
 
 The library owns the recognition plumbing — preflight, the session state machine, the restart loop
 that makes continuous dictation possible on an API that only recognizes one utterance at a time,

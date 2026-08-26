@@ -12,9 +12,11 @@ a build-verified app cannot drift apart silently.
 - A way to request a runtime permission — an Activity, or Compose's
   `rememberLauncherForActivityResult`. **The host requests the microphone; the library only checks
   it.** This is the one contract asymmetry against the TypeScript client (see `API.md`).
-- Nothing else. There is no auth, no account, no network and no server to configure. The library's
-  only transitive dependency is `kotlinx-coroutines-android`, and it arrives at `compile` scope
-  automatically because every member of the engine interface is a `Flow`.
+- Nothing else required either way. No auth or account is needed on either backend. A network/server
+  is optionally involved only when you supply `serverUrl` in `SttConfig` (opt-in, governed by
+  `prefer` — see `API.md`); with no `serverUrl`, the library runs exactly as it always has, entirely
+  on-device. The library's only transitive dependency is `kotlinx-coroutines-android`, and it arrives
+  at `compile` scope automatically because every member of the engine interface is a `Flow`.
 
 ---
 
