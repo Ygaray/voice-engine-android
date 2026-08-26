@@ -97,7 +97,7 @@ class RecorderModuleBoundaryTest {
                 "(project(\":stt\") or the published coordinate). Remove it — this is the exact " +
                 "regression T-08-10/REC-05 exists to prevent.",
             Regex("""project\(\s*":stt"\s*\)""").containsMatchIn(joined) ||
-                joined.contains("com.github.Ygaray:stt-engine-android"),
+                joined.contains("com.github.Ygaray:voice-engine-android"),
         )
     }
 
