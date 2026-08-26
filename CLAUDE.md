@@ -1,12 +1,12 @@
-# CLAUDE.md — `stt-engine-android` (the reusable Android dictation library)
+# CLAUDE.md — `voice-engine-android` (the reusable Android dictation library)
 
 You are working in a **reusable, host-agnostic Android library**: the on-device speech-to-text engine
 that independent consumer apps import via **JitPack**. This module names **no app-specific
 concepts** — it is pure, reusable mechanism.
 
 - **Import root:** `io.github.ygaray.sttengine`
-- **JitPack coordinate:** `com.github.Ygaray:stt-engine-android:<tag>`
-- **Public mirror:** `github.com/Ygaray/stt-engine-android`
+- **JitPack coordinate:** `com.github.Ygaray:voice-engine-android:<tag>`
+- **Public mirror:** `github.com/Ygaray/voice-engine-android`
 - **Worked reference:** the `:demo` module here — a reference host app, never published
 
 **Read [`API.md`](API.md) for the public surface and [`INTEGRATION.md`](INTEGRATION.md) to wire a new

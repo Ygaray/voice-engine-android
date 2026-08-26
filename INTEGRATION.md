@@ -1,4 +1,4 @@
-# INTEGRATION.md — adopt `stt-engine-android` in a new Android app
+# INTEGRATION.md — adopt `voice-engine-android` in a new Android app
 
 Operational checklist for wiring the library into a **consumer app**. The public surface every step
 references is in **[`API.md`](API.md)**; the reuse rules are in **[`CLAUDE.md`](CLAUDE.md)**. The
@@ -33,13 +33,38 @@ maven { url = uri("https://jitpack.io") }
 In your app module's **`build.gradle.kts`**:
 
 ```kotlin
-implementation("com.github.Ygaray:stt-engine-android:v0.1.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray:voice-engine-android:v0.2.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 Pin a tag or a commit SHA. **Never `main-SNAPSHOT` or any moving branch ref** — a moving coordinate
 means the bytes you tested and the bytes your users run are not the same bytes, and there is no way
-to tell after the fact which is which. The artifact id is `stt-engine-android`: it equals the mirror
+to tell after the fact which is which. The artifact id is `voice-engine-android`: it equals the mirror
 repository name, not the Gradle module name (`:stt`).
+
+### Migrating from `stt-engine-android`
+
+This library was renamed from `stt-engine-android` to `voice-engine-android` to reflect its
+audio-layer identity (Recorder + Voice Notes, not just recognition). If you already depend on the old
+coordinate, here is exactly what changed and what still holds.
+
+**Old coordinate (still resolvable):** `com.github.Ygaray:stt-engine-android:v0.1.0` — mirror
+`github.com/Ygaray/stt-engine-android`. Per this project's migration policy (D-03), the old mirror and
+its `v0.1.0` tag are left completely untouched and remain resolvable for **at least one more
+release**. Verified: `git ls-remote --tags https://github.com/Ygaray/stt-engine-android.git` still
+returns exactly `8220bb545ac07aa4c441a65ed03282670a9f6b9c refs/tags/v0.1.0`, and its JitPack build log
+(`https://jitpack.io/com/github/Ygaray/stt-engine-android/v0.1.0/build.log`) still resolves with a
+clean, complete build.
+
+**New coordinate:** `com.github.Ygaray:voice-engine-android:v0.2.0` — mirror
+`github.com/Ygaray/voice-engine-android`, verified live: tag `v0.2.0` resolves at commit
+`ff6477c3a9428884b6b44f5d926ca004b8de667d`. Two more artifacts ship for the **first time** under this
+coordinate — there is no old coordinate to preserve for either, since neither was ever tag-published
+before this rename: `com.github.Ygaray:voice-engine-android-recorder:v0.2.0` and
+`com.github.Ygaray:voice-engine-android-voicenotes:v0.2.0`.
+
+**To migrate:** update the `implementation(...)` line(s) in your consumer app's `build.gradle.kts`
+from the old coordinate to the new one, pin the new tag (`v0.2.0`), sync, and rebuild. Same rule as
+always: pin a tag or a commit SHA, **never `main-SNAPSHOT` or any moving branch ref**.
 
 ## 3. Declare and request the microphone permission
 
@@ -179,12 +204,12 @@ command, or a log line you then parse.
 ## 7. Adopt the Recorder (optional, separate module)
 
 `:recorder` is a second, independently publishable Gradle module (JitPack artifact
-`stt-engine-android-recorder`) — mic in, compressed `.m4a` file out, usable standalone by a
+`voice-engine-android-recorder`) — mic in, compressed `.m4a` file out, usable standalone by a
 record-only consumer. A record-only host depends on **only** this coordinate and pulls in zero
 recognition code (REC-05):
 
 ```kotlin
-implementation("com.github.Ygaray:stt-engine-android-recorder:v0.1.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray:voice-engine-android-recorder:v0.2.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 Same rule as step 2: pin a tag or a commit SHA, never `main-SNAPSHOT` or any moving branch ref. This
@@ -225,11 +250,11 @@ taxonomy and the documented PEAK-vs-RMS amplitude asymmetry against the web Reco
 ## 8. Adopt Voice Notes (optional, composes Recorder + the batch endpoint)
 
 `:voicenotes` is a third, independently publishable Gradle module (JitPack artifact
-`stt-engine-android-voicenotes`) — record-now / transcribe-when-reachable, composing the Recorder
+`voice-engine-android-voicenotes`) — record-now / transcribe-when-reachable, composing the Recorder
 above with a durable Room-backed queue and the Phase 7 batch endpoint:
 
 ```kotlin
-implementation("com.github.Ygaray:stt-engine-android-voicenotes:v0.1.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray:voice-engine-android-voicenotes:v0.2.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 Same pinning rule as steps 2 and 7. This module depends on `:recorder` internally (a voice note is a

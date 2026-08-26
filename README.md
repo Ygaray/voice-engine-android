@@ -1,4 +1,4 @@
-# stt-engine-android
+# voice-engine-android
 
 A reusable, host-agnostic Kotlin library for live dictation on Android. It exposes the **same
 dictation contract** as the project's TypeScript client — the same five engine states, the same
@@ -66,7 +66,7 @@ Then depend on it in your app module's **`build.gradle.kts`**. Pin an **immutabl
 commit SHA) — never a moving branch snapshot:
 
 ```kotlin
-implementation("com.github.Ygaray:stt-engine-android:<tag>")
+implementation("com.github.Ygaray:voice-engine-android:<tag>")
 ```
 
 ## Quick start

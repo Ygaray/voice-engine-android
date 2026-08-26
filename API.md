@@ -1,4 +1,4 @@
-# API.md — `stt-engine-android` public surface
+# API.md — `voice-engine-android` public surface
 
 Everything a consumer touches. Package root: `io.github.ygaray.sttengine`. To wire it into an app,
 see **[`INTEGRATION.md`](INTEGRATION.md)**; for the reuse rules, **[`CLAUDE.md`](CLAUDE.md)**.
@@ -306,7 +306,7 @@ opposite reason: this set is closed by design.
 ## Recorder
 
 A **separate, independently publishable module** (`:recorder`, JitPack artifact
-`stt-engine-android-recorder`) — mic in, compressed `.m4a` file out, usable standalone by a
+`voice-engine-android-recorder`) — mic in, compressed `.m4a` file out, usable standalone by a
 record-only consumer with zero dependency on recognition (REC-05, mechanically enforced by
 `verifyNoRecognitionDependency`, wired into `:recorder:check`). A record-only host imports only this
 module and never touches `SttEngine`.
@@ -410,7 +410,7 @@ exist exclusively for the frozen 11-code recognition contract, unrelated to reco
 ## Voice Notes
 
 A third, independently publishable Gradle module (`:voicenotes`, JitPack artifact
-`stt-engine-android-voicenotes`) — record-now / transcribe-when-reachable (NOTE-01..06): a thin
+`voice-engine-android-voicenotes`) — record-now / transcribe-when-reachable (NOTE-01..06): a thin
 composition over `Recorder` above (capture) and the Phase 7 batch endpoint (transcription),
 persisting every note transition to a Room-backed durable store as the source of truth.
 
