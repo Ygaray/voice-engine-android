@@ -4,9 +4,9 @@
 #
 # ┌─ WHAT THIS DOES ────────────────────────────────────────────────────────────────────────────┐
 # │ Development stays in the private `stt-engine` mono-repo. A release promotes THIS directory   │
-# │ (`android/`) to the ROOT of a separate PUBLIC repo (`stt-engine-android`) via                │
+# │ (`android/`) to the ROOT of a separate PUBLIC repo (`voice-engine-android`) via              │
 # │ `git subtree split --prefix=android`, then tags `vX.Y.Z` there. JitPack builds that tag on   │
-# │ first request and serves `com.github.<org>:stt-engine-android:vX.Y.Z`. Consumers need no     │
+# │ first request and serves `com.github.<org>:voice-engine-android:vX.Y.Z`. Consumers need no   │
 # │ credentials, no mono-repo checkout and no manual steps.                                      │
 # └─────────────────────────────────────────────────────────────────────────────────────────────┘
 #
@@ -24,10 +24,13 @@
 # │ version number. Everything checkable before the tag is checked before the tag.               │
 # └─────────────────────────────────────────────────────────────────────────────────────────────┘
 #
-#   GATE 1 — the library builds and its public surface is frozen.
-#            `:stt:assembleRelease` + `:stt:apiCheck`. A surface that drifted without a deliberate
-#            `apiDump` regeneration must never reach a tag: consumers pin tags, and an accidental
-#            ABI change is only discovered in somebody else's build.
+#   GATE 1 — the library builds and its public surface is frozen, across all three published
+#            modules.
+#            `:stt:assembleRelease` + `:stt:apiCheck`, `:recorder:assembleRelease` +
+#            `:recorder:apiCheck`, `:voicenotes:assembleRelease` + `:voicenotes:apiCheck`. A surface
+#            that drifted without a deliberate `apiDump` regeneration must never reach a tag:
+#            consumers pin tags, and an accidental ABI change is only discovered in somebody else's
+#            build.
 #
 #   GATE 2 — the JVM suite is green INCLUDING cross-language parity in HARD mode.
 #            `ErrorCodeParityTest` reads `web/src/errors.ts`, which is a SIBLING of `android/` and
@@ -85,8 +88,8 @@
 #
 # TAG NAMING (recorded decision, permanent once published). The mirror repo contains only the
 # Android library, so its NAME already says "android" — a plain `vX.Y.Z` yields the clean
-# `com.github.<org>:stt-engine-android:vX.Y.Z`, matching the sibling library's shape exactly. The
-# alternative `android-vX.Y.Z` would produce `…:stt-engine-android:android-v0.1.0`, which is
+# `com.github.<org>:voice-engine-android:vX.Y.Z`, matching the sibling library's shape exactly. The
+# alternative `android-vX.Y.Z` would produce `…:voice-engine-android:android-v0.1.0`, which is
 # redundant and, because JitPack uses the tag string literally, permanent. If provenance in the
 # mono-repo is wanted, tag the MONO-REPO separately as `android-vX.Y.Z`; a mono-repo tag is never a
 # JitPack input.
