@@ -33,7 +33,7 @@ maven { url = uri("https://jitpack.io") }
 In your app module's **`build.gradle.kts`**:
 
 ```kotlin
-implementation("com.github.Ygaray:voice-engine-android:v0.2.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray:voice-engine-android:v0.3.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 Pin a tag or a commit SHA. **Never `main-SNAPSHOT` or any moving branch ref** — a moving coordinate
@@ -209,7 +209,7 @@ record-only consumer. A record-only host depends on **only** this coordinate and
 recognition code (REC-05):
 
 ```kotlin
-implementation("com.github.Ygaray:voice-engine-android-recorder:v0.2.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray:voice-engine-android-recorder:v0.3.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 Same rule as step 2: pin a tag or a commit SHA, never `main-SNAPSHOT` or any moving branch ref. This
@@ -254,7 +254,7 @@ taxonomy and the documented PEAK-vs-RMS amplitude asymmetry against the web Reco
 above with a durable Room-backed queue and the Phase 7 batch endpoint:
 
 ```kotlin
-implementation("com.github.Ygaray:voice-engine-android-voicenotes:v0.2.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray:voice-engine-android-voicenotes:v0.3.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 Same pinning rule as steps 2 and 7. This module depends on `:recorder` internally (a voice note is a
@@ -296,6 +296,40 @@ backend, which drains only while its page is open (an in-page timer loop; no bac
 capability exists on the web platform). A host targeting both platforms must not assume identical
 drain timing. See `API.md`'s Voice Notes section for the full `NoteRecord`/`NoteStatus`/
 `NoteErrorCode` taxonomy.
+
+---
+
+## 9. Adopt Transcription (optional, the batch protocol client only)
+
+`:transcription` is a fourth, independently publishable Gradle module (JitPack artifact
+`voice-engine-android-transcription`) — the dependency-light batch-protocol client only (`POST /jobs`
+plus `GET /jobs/{id}`), with zero `:stt`/`:recorder`/`:voicenotes`/Room/`WorkManager` coupling:
+
+```kotlin
+implementation("com.github.Ygaray:voice-engine-android-transcription:v0.3.0")   // immutable tag — NEVER a branch snapshot
+```
+
+Same pinning rule as steps 2, 7, and 8: pin a tag or a commit SHA, never `main-SNAPSHOT` or any moving
+branch ref.
+
+```kotlin
+val client = createTranscriptionClient(serverUrl = "https://host.ts.net:8446")
+
+// submit a recorded file
+val outcome = client.submitJob(file, mimeType)
+
+// poll a previously submitted job
+val status = client.getJobStatus(jobId)
+```
+
+See `API.md`'s Transcription section for the full `SubmitOutcome`/`JobStatusOutcome`/
+`TranscriptionErrorCode` taxonomy.
+
+**Unlike `:voicenotes`, this module has no Room-backed persistence of its own** — the caller owns
+retry/polling/persistence entirely. This is the module-boundary contract, not an oversight: a host
+that wants durable, drain-on-a-schedule note tracking should adopt `:voicenotes` instead (step 8); a
+host that just needs the raw wire protocol against its own persistence layer adopts `:transcription`
+directly.
 
 ---
 

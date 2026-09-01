@@ -524,6 +524,72 @@ invariant #2), for the same binary-compatibility reason as every other model typ
 
 ---
 
+## Transcription
+
+A fourth, independently publishable Gradle module (`:transcription`, JitPack artifact
+`voice-engine-android-transcription`) — the dependency-light batch-protocol client only: `POST /jobs`
+(submit) plus `GET /jobs/{id}` (poll). Extracted and hardened from the internal `:voicenotes`
+implementation of the same Phase-7 server contract, with zero `:stt`/`:recorder`/`:voicenotes`/Room/
+`WorkManager` coupling — a consumer of this module pulls in only the batch-protocol wire client, no
+recording, no persistence, no background scheduling.
+
+```kotlin
+public fun createTranscriptionClient(serverUrl: String): TranscriptionClient
+```
+
+| Parameter | Meaning |
+|---|---|
+| `serverUrl` | the batch endpoint's base URL (e.g. `https://host.ts.net:8446`) — `POST {serverUrl}/jobs` / `GET {serverUrl}/jobs/{id}` are built from it directly. No tailnet default is baked in, mirroring `createVoiceNotes`'s "the host must supply it explicitly" contract. |
+
+### `TranscriptionClient` — the contract
+
+| Member | Type | Notes |
+|---|---|---|
+| `submitJob(file: File, mimeType: String)` | `suspend fun` returning `SubmitOutcome` | `POST /jobs` — submit a recorded file for transcription |
+| `getJobStatus(jobId: String)` | `suspend fun` returning `JobStatusOutcome` | `GET /jobs/{id}` — poll a previously submitted job |
+
+### `SubmitOutcome`
+
+The outcome of a `POST /jobs` attempt — a sealed interface with three cases:
+
+| Case | Meaning |
+|---|---|
+| `Accepted(jobId: String)` | `202` — the server accepted the upload and assigned a job id |
+| `Rejected(code: TranscriptionErrorCode, message: String)` | `413`/`400` — the server rejected the upload outright. A permanent, typed failure. |
+| `Transient` | Any network failure or unexpected status (including `408`) — retry, do not mark permanent |
+
+### `JobStatusOutcome`
+
+The outcome of a `GET /jobs/{id}` poll — a sealed interface with five cases:
+
+| Case | Meaning |
+|---|---|
+| `Done(transcript: String)` | `{status:"done", transcript}` — terminal success |
+| `Failed(message: String)` | `{status:"failed", error}` — terminal, permanent failure |
+| `NotFound` | `404` — the job reference was lost (TTL eviction or server restart), not "failed" |
+| `Pending` | `{status:"processing"}` — still running; retry later |
+| `Transient` | Network failure or unexpected status — retry, do not touch persisted state |
+
+### `TranscriptionErrorCode`
+
+```kotlin
+@JvmInline public value class TranscriptionErrorCode(public val value: String)
+```
+
+A fresh, `:transcription`-owned error taxonomy — 2 companion constants:
+
+| Constant | String |
+|---|---|
+| `UPLOAD_TOO_LARGE` | `upload-too-large` |
+| `UPLOAD_REJECTED` | `upload-rejected` |
+
+**Note (mirrors `NoteErrorCode`'s own doc note):** this carries the same wire strings as
+`voicenotes.NoteErrorCode.UPLOAD_TOO_LARGE`/`.UPLOAD_REJECTED` but is **not the same type** — it is a
+genuinely separate, freshly-declared type, and depending on `:transcription` creates no dependency
+edge onto `:voicenotes` or vice versa.
+
+---
+
 ## Contract parity with the TypeScript client
 
 The Kotlin surface is a **translation**, not a redesign: every name, every state value and every
