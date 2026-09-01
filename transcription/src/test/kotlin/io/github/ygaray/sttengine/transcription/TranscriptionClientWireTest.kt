@@ -93,6 +93,27 @@ class TranscriptionClientWireTest {
         assertTrue(client.getJobStatus("job-abc") is JobStatusOutcome.NotFound)
     }
 
+    // WR-01 (136-REVIEW.md): exercise the module's actual DoS mitigation (T-136-01) — a
+    // malformed/non-JSON body must degrade to Transient, never propagate the JSONException
+    // uncaught. Without these, a future narrowing of `catch (e: Exception)` to
+    // `catch (e: IOException)` would silently reopen T-136-01 with no test catching it.
+    @Test
+    fun `malformed 202 body degrades to Transient, not an exception`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("not-json").build())
+        val outcome = client.submitJob(tempAudioFile(), "audio/mp4")
+        assertTrue(outcome is SubmitOutcome.Transient)
+    }
+
+    @Test
+    fun `malformed 200 body degrades to Transient, not an exception`() = runTest {
+        server.enqueue(MockResponse.Builder().code(200).body("not-json").build())
+        val outcome = client.getJobStatus("job-abc")
+        assertTrue(outcome is JobStatusOutcome.Transient)
+    }
+
     private fun tempAudioFile(): File =
-        File.createTempFile("clip", ".m4a").apply { writeBytes(byteArrayOf(0, 1, 2, 3)) }
+        File.createTempFile("clip", ".m4a").apply {
+            deleteOnExit() // IN-02 (136-REVIEW.md): avoid leaking stray clip*.m4a files per test run
+            writeBytes(byteArrayOf(0, 1, 2, 3))
+        }
 }
