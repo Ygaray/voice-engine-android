@@ -102,6 +102,16 @@ class TranscriptionModuleBoundaryTest {
             Regex("""project\(\s*":(stt|recorder|voicenotes)"\s*\)""").containsMatchIn(joined) ||
                 joined.contains("com.github.Ygaray:voice-engine-android"),
         )
+
+        // IN-01 (136-REVIEW.md): parity with verify-no-cross-module-dependency.sh, which already
+        // greps for these two coordinate prefixes alongside the project(...) checks above. The
+        // authoritative enforcement is verifyIndependentModule's resolved-graph inspection; this
+        // is the static-scan layer staying consistent with its sibling shell script.
+        assertFalse(
+            "transcription/build.gradle.kts declares a real dependency on Room or WorkManager " +
+                "(androidx.room:/androidx.work:). :transcription must never depend on either (HUB-01).",
+            Regex("""androidx\.room:|androidx\.work:""").containsMatchIn(joined),
+        )
     }
 
     /** `:transcription`'s own frozen API dump names only Transcription symbols, never a forbidden one. */
