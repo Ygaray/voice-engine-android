@@ -37,6 +37,12 @@ include(":recorder")
 // android/jitpack.yml alongside :stt/:recorder (D-23, Pitfall 8: a mismatch here is unrecoverable
 // after a tag).
 include(":voicenotes")
+// The FOURTH publishable library module (Phase 136, HUB-01). The batch-transcription protocol
+// client (POST /jobs + GET /jobs/{id}), extracted and hardened out of :voicenotes' internal
+// BatchHttpClient.kt into a genuinely independent module — zero :stt/:recorder/:voicenotes/
+// Room/WorkManager coupling. Must ALSO be added to android/jitpack.yml (Plan 02's job, D-23,
+// Pitfall 8: a mismatch here is unrecoverable after a tag).
+include(":transcription")
 // The reference host app (D-27/D-28). It is NEVER named in jitpack.yml and carries no
 // `maven-publish`, so it is outside the published module set (D-23) — the mirror ships the library
 // and the worked example of how to consume it, never the example as an artifact.

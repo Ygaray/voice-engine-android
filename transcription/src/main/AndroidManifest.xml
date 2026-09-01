@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    :transcription library manifest. Under AGP 8 the namespace comes from build.gradle.kts, so no
+    package attribute is needed here. There is no <application> element — this library contributes
+    no components and declares no explicit permission itself.
+
+    No INTERNET permission is declared here, even though this module makes HTTP calls — that is a
+    host-app concern, not a library concern (mirrors :voicenotes'/:stt's own empty manifests; see
+    136-RESEARCH.md Pitfall 4). The consuming app is expected to already hold INTERNET (a
+    non-dangerous, install-time-only permission virtually every networked app declares).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

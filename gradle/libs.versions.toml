@@ -15,6 +15,22 @@ coroutines = "1.11.0"
 # phase's research) — a deliberate pin, not a stale one.
 okhttp = "5.2.1"
 
+# Phase 136 (HUB-01): :transcription's test-only wire-level HTTP fixture library. Pinned to match
+# the okhttp version above — same release train, same publisher (Square). [ASSUMED] per
+# 136-RESEARCH.md's Assumptions Log A1 (WebSearch/WebFetch-sourced, not independently resolved at
+# research time) — confirmed resolvable via `./gradlew :transcription:dependencies` at execution
+# time (see the version-resolution check this task runs before trusting this pin).
+mockwebserver = "5.2.1"
+# Task 1 execution-time finding (not in RESEARCH.md): org.json.JSONObject, used by
+# OkHttpTranscriptionClient, is an Android-platform stub class on the host JVM — without
+# Robolectric, AGP's unitTests.isReturnDefaultValues=true makes every method silently return a
+# default (null/0/false) instead of a real parse, rather than throwing. The real, standalone
+# org.json:json JVM implementation is the standard Android-testing fix (same package/class names,
+# picked up ahead of the mockable android.jar stub on the unit-test classpath) — test-only,
+# resolvable, does not touch the module's release/runtime classpath or its dependency-light
+# public-API contract.
+json = "20250107"
+
 # D-12 / Obstacle 2: binary-compatibility-validator gives :stt apiDump/apiCheck, which freezes the
 # public surface. It is in maintenance mode upstream (fixes + new Kotlin versions only) — acceptable,
 # since the tool's whole job is a byte-diff of a text file.
@@ -57,6 +73,12 @@ coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-androi
 okhttp             = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 # JVM suite — runTest drives the restart ladder and dedup suites deterministically.
 coroutines-test    = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+# Phase 136 (HUB-01): :transcription's wire-level MockWebServer3 test suite (D-02). Test-scope
+# only — never a runtime dependency of the published module.
+mockwebserver3     = { module = "com.squareup.okhttp3:mockwebserver3", version.ref = "mockwebserver" }
+# Task 1 execution-time finding: the real org.json JVM implementation, test-only — see the
+# [versions] block comment above `json = "..."` for why this is needed.
+json               = { module = "org.json:json", version.ref = "json" }
 junit              = { module = "junit:junit", version.ref = "junit" }
 # JVM-host Android runtime, for the thin platform adapter only — the engine core is tested behind
 # the RecognizerHandle seam with plain JUnit and no Robolectric.
