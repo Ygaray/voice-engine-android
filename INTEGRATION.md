@@ -41,6 +41,18 @@ means the bytes you tested and the bytes your users run are not the same bytes, 
 to tell after the fact which is which. The artifact id is `voice-engine-android`: it equals the mirror
 repository name, not the Gradle module name (`:stt`).
 
+> **What this coordinate actually installs.** Live-probed (`137-01-SUMMARY.md`): this exact coordinate's
+> POM resolves at HTTP 200, but it is JitPack's synthesized **root/aggregator** POM for the whole
+> multi-module repo — its own dependency list pulls in `voice-engine-android` (the real `:stt` AAR, under
+> a *different* groupId), `-recorder`, `-transcription` and `-voicenotes` as `<type>aar</type>`
+> dependencies. Declaring `implementation("com.github.Ygaray:voice-engine-android:v0.3.0")` therefore
+> transitively links **all four modules**, not `:stt` alone. If you want `:stt`'s recognition code with
+> zero Recorder/VoiceNotes/Transcription bytes pulled in, depend on the real standalone artifact instead:
+> `implementation("com.github.Ygaray.voice-engine-android:voice-engine-android:v0.3.0")` — note the
+> `.voice-engine-android` suffix on the **groupId**, matching the pattern the three secondary modules use
+> (§7–9 below). Both coordinates are live and immutable at `v0.3.0`; pick the aggregator only if you
+> genuinely want every module.
+
 ### Migrating from `stt-engine-android`
 
 This library was renamed from `stt-engine-android` to `voice-engine-android` to reflect its
@@ -209,8 +221,15 @@ record-only consumer. A record-only host depends on **only** this coordinate and
 recognition code (REC-05):
 
 ```kotlin
-implementation("com.github.Ygaray:voice-engine-android-recorder:v0.3.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-recorder:v0.3.0")   // immutable tag — NEVER a branch snapshot
 ```
+
+> **Groupid note.** Secondary modules carry a **different groupId prefix** than the plain
+> `com.github.Ygaray` shown for `:stt` in step 2 — JitPack derives each secondary artifact's groupId
+> from the mirror repository name (`com.github.Ygaray.voice-engine-android`), not from the custom
+> `groupId` override declared in this module's own publish block; the override does not take effect for
+> non-root artifacts on JitPack's platform (live-probed and recorded in `137-01-SUMMARY.md`; the
+> previously-documented `com.github.Ygaray:voice-engine-android-recorder:v0.3.0` coordinate 401s).
 
 Same rule as step 2: pin a tag or a commit SHA, never `main-SNAPSHOT` or any moving branch ref. This
 coordinate does not transitively pull in `:stt` — a consumer that only needs recording never links
@@ -254,8 +273,14 @@ taxonomy and the documented PEAK-vs-RMS amplitude asymmetry against the web Reco
 above with a durable Room-backed queue and the Phase 7 batch endpoint:
 
 ```kotlin
-implementation("com.github.Ygaray:voice-engine-android-voicenotes:v0.3.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-voicenotes:v0.3.0")   // immutable tag — NEVER a branch snapshot
 ```
+
+> **Groupid note.** Same wrinkle as `:recorder` (step 7): the groupId prefix is
+> `com.github.Ygaray.voice-engine-android`, not the plain `com.github.Ygaray` shown for `:stt` — JitPack
+> derives it from the mirror repository name for every secondary module (live-probed and recorded in
+> `137-01-SUMMARY.md`; the previously-documented `com.github.Ygaray:voice-engine-android-voicenotes:v0.3.0`
+> coordinate 401s).
 
 Same pinning rule as steps 2 and 7. This module depends on `:recorder` internally (a voice note is a
 recording plus persistence and drain), so a consumer of `:voicenotes` gets Recorder capability
@@ -306,8 +331,14 @@ drain timing. See `API.md`'s Voice Notes section for the full `NoteRecord`/`Note
 plus `GET /jobs/{id}`), with zero `:stt`/`:recorder`/`:voicenotes`/Room/`WorkManager` coupling:
 
 ```kotlin
-implementation("com.github.Ygaray:voice-engine-android-transcription:v0.3.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-transcription:v0.3.0")   // immutable tag — NEVER a branch snapshot
 ```
+
+> **Groupid note.** Same wrinkle as `:recorder`/`:voicenotes` (steps 7–8): the groupId prefix is
+> `com.github.Ygaray.voice-engine-android`, not the plain `com.github.Ygaray` shown for `:stt` — JitPack
+> derives it from the mirror repository name for every secondary module (live-probed and recorded in
+> `137-01-SUMMARY.md`; the previously-documented
+> `com.github.Ygaray:voice-engine-android-transcription:v0.3.0` coordinate 401s).
 
 Same pinning rule as steps 2, 7, and 8: pin a tag or a commit SHA, never `main-SNAPSHOT` or any moving
 branch ref.
