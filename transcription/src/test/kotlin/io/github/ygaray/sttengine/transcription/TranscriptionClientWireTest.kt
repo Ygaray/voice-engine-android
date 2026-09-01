@@ -44,6 +44,55 @@ class TranscriptionClientWireTest {
         assertEquals("job-abc", (outcome as SubmitOutcome.Accepted).jobId)
     }
 
+    @Test
+    fun `400 maps to Rejected UPLOAD_REJECTED`() = runTest {
+        server.enqueue(MockResponse.Builder().code(400).body("""{"error":"malformed-upload"}""").build())
+        val outcome = client.submitJob(tempAudioFile(), "audio/mp4")
+        assertTrue(outcome is SubmitOutcome.Rejected)
+        assertEquals(TranscriptionErrorCode.UPLOAD_REJECTED, (outcome as SubmitOutcome.Rejected).code)
+        // Message-parity (cross-AI review finding, cycle 1): errorMessageOrDefault parses the
+        // response body's "error" JSON field, not the raw body string — assert the exact parsed
+        // value, matching Task 1's actual implementation.
+        assertEquals("malformed-upload", outcome.message)
+    }
+
+    @Test
+    fun `413 maps to Rejected UPLOAD_TOO_LARGE`() = runTest {
+        server.enqueue(MockResponse.Builder().code(413).body("""{"error":"payload-too-large"}""").build())
+        val outcome = client.submitJob(tempAudioFile(), "audio/mp4")
+        assertTrue(outcome is SubmitOutcome.Rejected)
+        assertEquals(TranscriptionErrorCode.UPLOAD_TOO_LARGE, (outcome as SubmitOutcome.Rejected).code)
+        assertEquals("payload-too-large", outcome.message)
+    }
+
+    @Test
+    fun `200 processing maps to Pending`() = runTest {
+        server.enqueue(MockResponse.Builder().code(200).body("""{"status":"processing"}""").build())
+        assertTrue(client.getJobStatus("job-abc") is JobStatusOutcome.Pending)
+    }
+
+    @Test
+    fun `200 done parses transcript`() = runTest {
+        server.enqueue(MockResponse.Builder().code(200).body("""{"status":"done","transcript":"hello"}""").build())
+        val outcome = client.getJobStatus("job-abc")
+        assertTrue(outcome is JobStatusOutcome.Done)
+        assertEquals("hello", (outcome as JobStatusOutcome.Done).transcript)
+    }
+
+    @Test
+    fun `200 failed parses error message`() = runTest {
+        server.enqueue(MockResponse.Builder().code(200).body("""{"status":"failed","error":"transcription failed"}""").build())
+        val outcome = client.getJobStatus("job-abc")
+        assertTrue(outcome is JobStatusOutcome.Failed)
+        assertEquals("transcription failed", (outcome as JobStatusOutcome.Failed).message)
+    }
+
+    @Test
+    fun `404 maps to NotFound`() = runTest {
+        server.enqueue(MockResponse.Builder().code(404).body("""{"error":"not-found"}""").build())
+        assertTrue(client.getJobStatus("job-abc") is JobStatusOutcome.NotFound)
+    }
+
     private fun tempAudioFile(): File =
         File.createTempFile("clip", ".m4a").apply { writeBytes(byteArrayOf(0, 1, 2, 3)) }
 }
