@@ -105,6 +105,91 @@ dependencies {
     testImplementation(libs.json)
 }
 
+// ---------------------------------------------------------------------------------------------
+// verifyIndependentModule (HUB-01) — THE PRIMARY structural isolation proof.
+//
+// Inspects the RESOLVED dependency graph of this module's own release configurations — not just
+// this file's source text (that's verify-no-cross-module-dependency.sh's job, a fast static
+// pre-flight belt-and-suspenders layer) — and fails loudly if :stt/:recorder/:voicenotes (or their
+// published coordinates) or any androidx.room/androidx.work artifact is anywhere in it. Wired into
+// `check`, so every `./gradlew :transcription:check` re-proves the boundary automatically.
+//
+// Mirrors :recorder's verifyNoRecognitionDependency, widened to 3 forbidden project paths + 2
+// forbidden group prefixes (Room/WorkManager) — :recorder never risked that particular coupling,
+// but HUB-01 explicitly names "NO Recorder/Room/WorkManager coupling" as its own acceptance
+// criterion.
+tasks.register("verifyIndependentModule") {
+    group = "verification"
+    description = "Fails if :transcription's resolved release classpath names :stt, :recorder, " +
+        ":voicenotes, or any androidx.room/androidx.work artifact (HUB-01's isolation contract)."
+
+    doLast {
+        // WR-02: release-only scope is DELIBERATE, not an oversight — only the release variant is
+        // ever published (see `publishing { singleVariant("release") }` above), so that is the
+        // only classpath this compile-time guarantee needs to cover.
+        val configurationsToCheck = listOf("releaseRuntimeClasspath", "releaseCompileClasspath")
+        val forbiddenProjectPaths = setOf(":stt", ":recorder", ":voicenotes")
+        val forbiddenModuleNames = setOf(
+            "voice-engine-android",            // :stt's own published artifact name
+            "voice-engine-android-recorder",
+            "voice-engine-android-voicenotes",
+        )
+        val forbiddenGroupPrefixes = listOf("androidx.room", "androidx.work")
+        // Vacuous-pass-prevention target (mirrors verifyNoRecognitionDependency's discipline):
+        // assert the SAME resolved set genuinely contains something expected BEFORE asserting the
+        // absence of something forbidden.
+        val expectedModuleName = "kotlinx-coroutines-android"
+
+        for (configurationName in configurationsToCheck) {
+            val configuration = configurations.findByName(configurationName)
+                ?: throw org.gradle.api.GradleException(
+                    "verifyIndependentModule: configuration '$configurationName' does not exist " +
+                        "on :transcription. This check proves nothing without a real resolved " +
+                        "configuration to inspect.",
+                )
+
+            val resolutionResult = configuration.incoming.resolutionResult
+            val allComponents = resolutionResult.allComponents
+
+            val expectedFound = allComponents.any { component ->
+                val id = component.id
+                id is org.gradle.api.artifacts.component.ModuleComponentIdentifier &&
+                    id.module == expectedModuleName
+            }
+            if (!expectedFound) {
+                throw org.gradle.api.GradleException(
+                    "verifyIndependentModule: '$expectedModuleName' not found in " +
+                        "'$configurationName' — resolution looks empty or broken, this check " +
+                        "proves nothing on an unverifiable classpath. Found components: " +
+                        allComponents.joinToString { it.id.toString() },
+                )
+            }
+
+            for (component in allComponents) {
+                val id = component.id
+                val isForbiddenProject = id is org.gradle.api.artifacts.component.ProjectComponentIdentifier &&
+                    id.projectPath in forbiddenProjectPaths
+                val isForbiddenModule = id is org.gradle.api.artifacts.component.ModuleComponentIdentifier &&
+                    id.module in forbiddenModuleNames
+                val isForbiddenGroup = id is org.gradle.api.artifacts.component.ModuleComponentIdentifier &&
+                    forbiddenGroupPrefixes.any { id.group.startsWith(it) }
+
+                if (isForbiddenProject || isForbiddenModule || isForbiddenGroup) {
+                    throw org.gradle.api.GradleException(
+                        "verifyIndependentModule: FAIL — '$configurationName' resolves a " +
+                            "forbidden dependency: $id. :transcription must depend on nothing " +
+                            "but coroutines-android + okhttp (HUB-01).",
+                    )
+                }
+            }
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn("verifyIndependentModule")
+}
+
 // JitPack android-example publishing form, mirrors every sibling module's exactly.
 // `from(components["release"])` MUST be inside afterEvaluate — the "release" software component
 // does not exist at configuration time (it is created by the AGP singleVariant("release") opt-in

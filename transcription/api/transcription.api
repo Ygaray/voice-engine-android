@@ -1,0 +1,96 @@
+public abstract interface class io/github/ygaray/sttengine/transcription/JobStatusOutcome {
+}
+
+public final class io/github/ygaray/sttengine/transcription/JobStatusOutcome$Done : io/github/ygaray/sttengine/transcription/JobStatusOutcome {
+	public fun <init> (Ljava/lang/String;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getTranscript ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/transcription/JobStatusOutcome$Failed : io/github/ygaray/sttengine/transcription/JobStatusOutcome {
+	public fun <init> (Ljava/lang/String;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMessage ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/transcription/JobStatusOutcome$NotFound : io/github/ygaray/sttengine/transcription/JobStatusOutcome {
+	public static final field INSTANCE Lio/github/ygaray/sttengine/transcription/JobStatusOutcome$NotFound;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/transcription/JobStatusOutcome$Pending : io/github/ygaray/sttengine/transcription/JobStatusOutcome {
+	public static final field INSTANCE Lio/github/ygaray/sttengine/transcription/JobStatusOutcome$Pending;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/transcription/JobStatusOutcome$Transient : io/github/ygaray/sttengine/transcription/JobStatusOutcome {
+	public static final field INSTANCE Lio/github/ygaray/sttengine/transcription/JobStatusOutcome$Transient;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class io/github/ygaray/sttengine/transcription/SubmitOutcome {
+}
+
+public final class io/github/ygaray/sttengine/transcription/SubmitOutcome$Accepted : io/github/ygaray/sttengine/transcription/SubmitOutcome {
+	public fun <init> (Ljava/lang/String;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getJobId ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/transcription/SubmitOutcome$Rejected : io/github/ygaray/sttengine/transcription/SubmitOutcome {
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode-gTOC4U0 ()Ljava/lang/String;
+	public final fun getMessage ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/transcription/SubmitOutcome$Transient : io/github/ygaray/sttengine/transcription/SubmitOutcome {
+	public static final field INSTANCE Lio/github/ygaray/sttengine/transcription/SubmitOutcome$Transient;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class io/github/ygaray/sttengine/transcription/TranscriptionClient {
+	public abstract fun getJobStatus (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun submitJob (Ljava/io/File;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class io/github/ygaray/sttengine/transcription/TranscriptionClientFactoryKt {
+	public static final fun createTranscriptionClient (Ljava/lang/String;)Lio/github/ygaray/sttengine/transcription/TranscriptionClient;
+}
+
+public final class io/github/ygaray/sttengine/transcription/TranscriptionErrorCode {
+	public static final field Companion Lio/github/ygaray/sttengine/transcription/TranscriptionErrorCode$Companion;
+	public static final synthetic fun box-impl (Ljava/lang/String;)Lio/github/ygaray/sttengine/transcription/TranscriptionErrorCode;
+	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
+	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public static fun hashCode-impl (Ljava/lang/String;)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (Ljava/lang/String;)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/transcription/TranscriptionErrorCode$Companion {
+	public final fun getUPLOAD_REJECTED-gTOC4U0 ()Ljava/lang/String;
+	public final fun getUPLOAD_TOO_LARGE-gTOC4U0 ()Ljava/lang/String;
+}
+
