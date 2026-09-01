@@ -144,6 +144,20 @@ DECLARED_VERSION="$(
 [ "${DECLARED_VERSION}" = "${VERSION}" ] || abort \
   "stt/build.gradle.kts declares publication version '${DECLARED_VERSION}' but VERSION=${VERSION}"
 
+# WR-02 (136-REVIEW.md / T-136-05): :stt's own literal agreeing with VERSION is not enough — all
+# four published modules must agree with each other, or GATE 1-3 above would build/test/publish
+# each module at whatever version its OWN build.gradle.kts declares (no cross-module check) and tag
+# successfully, shipping four artifacts under one immutable tag at inconsistent internal versions.
+# This used to be closed only by a human re-grepping by hand; close it at the tooling level instead.
+for module in recorder voicenotes transcription; do
+  module_version="$(
+    grep -oE '^[[:space:]]*version = "[0-9]+\.[0-9]+\.[0-9]+"' "${ANDROID_DIR}/${module}/build.gradle.kts" \
+      | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true
+  )"
+  [ "${module_version}" = "${VERSION}" ] || abort \
+    "${module}/build.gradle.kts declares publication version '${module_version}' but VERSION=${VERSION}"
+done
+
 # --- temp state, removed on EVERY exit path including failure and interrupt --------------------
 TMP=""
 cleanup() {
