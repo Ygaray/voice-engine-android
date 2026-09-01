@@ -162,28 +162,30 @@ echo "release-android: coordinate will be ${GROUP_ID}:${MIRROR_REPO}:${TAG}"
 # --- GATE 1: all three libraries build and their public surfaces are frozen --------------------
 # Covers :stt/:recorder/:voicenotes, not just :stt (RESEARCH.md Pitfall 3: the script used to gate
 # only the first module ever published, silently shipping the other two with zero pre-tag proof).
-echo "release-android: GATE 1 — :stt/:recorder/:voicenotes assembleRelease + apiCheck …"
+echo "release-android: GATE 1 — :stt/:recorder/:voicenotes/:transcription assembleRelease + apiCheck …"
 ( cd "${ANDROID_DIR}" && ./gradlew --no-daemon \
     :stt:assembleRelease :stt:apiCheck \
     :recorder:assembleRelease :recorder:apiCheck \
-    :voicenotes:assembleRelease :voicenotes:apiCheck ) \
-  || abort "GATE 1 failed — one of :stt/:recorder/:voicenotes does not build, or a frozen API \
-surface changed without a deliberate ./gradlew <module>:apiDump. Read the apiCheck diff before \
-regenerating the dump"
+    :voicenotes:assembleRelease :voicenotes:apiCheck \
+    :transcription:assembleRelease :transcription:apiCheck ) \
+  || abort "GATE 1 failed — one of :stt/:recorder/:voicenotes/:transcription does not build, or a \
+frozen API surface changed without a deliberate ./gradlew <module>:apiDump. Read the apiCheck diff \
+before regenerating the dump"
 
 # --- GATE 2: JVM suite green across all three modules, parity in HARD mode on :stt, plus the ----
 # three-way repo-root gate. The parity flag applies ONLY to :stt (ErrorCodeParityTest lives there);
 # :recorder/:voicenotes carry no parity test of their own, so it is not added to their invocations.
 echo "release-android: GATE 2 — :stt:testDebugUnitTest -Pstt.requireWebParity=true, \
-:recorder:testDebugUnitTest, :voicenotes:testDebugUnitTest …"
+:recorder:testDebugUnitTest, :voicenotes:testDebugUnitTest, :transcription:testDebugUnitTest …"
 ( cd "${ANDROID_DIR}" && ./gradlew --no-daemon \
     :stt:testDebugUnitTest -Pstt.requireWebParity=true \
     :recorder:testDebugUnitTest \
-    :voicenotes:testDebugUnitTest ) \
-  || abort "GATE 2 failed — the JVM suite is not green across :stt/:recorder/:voicenotes with \
-parity in hard mode on :stt. If the failure is ErrorCodeParityTest reporting a MISSING \
-web/src/errors.ts, this script is being run from somewhere that is not the mono-repo; a release \
-cannot be cut from the mirror"
+    :voicenotes:testDebugUnitTest \
+    :transcription:testDebugUnitTest ) \
+  || abort "GATE 2 failed — the JVM suite is not green across :stt/:recorder/:voicenotes/ \
+:transcription with parity in hard mode on :stt. If the failure is ErrorCodeParityTest reporting a \
+MISSING web/src/errors.ts, this script is being run from somewhere that is not the mono-repo; a \
+release cannot be cut from the mirror"
 
 echo "release-android: GATE 2 — scripts/check-error-code-parity.sh (three-way, repo root) …"
 ( cd "${REPO_ROOT}" && bash scripts/check-error-code-parity.sh ) \
@@ -279,11 +281,12 @@ printf '%s\n' "${JITPACK_CMDS[@]}" \
 than the one JitPack will run. Found: ${JITPACK_CMDS[*]}"
 
 # Each published module's artifactId is the mirror repo name plus its own suffix (:stt == the
-# mirror name itself; :recorder/:voicenotes append "-recorder"/"-voicenotes" — the same
-# artifactId-derived-from-mirror-name rule the header comment documents, now applied to all three
-# published modules instead of just the first). Computed here so GATE 3's existence assertions
-# below can loop instead of hardcoding a single path (RESEARCH.md Pitfall 3).
-ARTIFACT_IDS=("${MIRROR_REPO}" "${MIRROR_REPO}-recorder" "${MIRROR_REPO}-voicenotes")
+# mirror name itself; :recorder/:voicenotes/:transcription append
+# "-recorder"/"-voicenotes"/"-transcription" — the same artifactId-derived-from-mirror-name rule the
+# header comment documents, now applied to all four published modules instead of just the first).
+# Computed here so GATE 3's existence assertions below can loop instead of hardcoding a single path
+# (RESEARCH.md Pitfall 3).
+ARTIFACT_IDS=("${MIRROR_REPO}" "${MIRROR_REPO}-recorder" "${MIRROR_REPO}-voicenotes" "${MIRROR_REPO}-transcription")
 
 # Publish into the REAL local maven repository, with no extra flags, because that is exactly what
 # JitPack does — fidelity here is the whole point of the gate. Each coordinate directory is a cache
