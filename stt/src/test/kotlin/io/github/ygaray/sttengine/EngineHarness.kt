@@ -14,6 +14,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import java.util.Locale
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -59,6 +60,7 @@ internal class EngineHarness(
     supportsSegmented: Boolean = false,
     supportsRawAudio: Boolean = false,
     private val audioPipeOpenFails: Boolean = false,
+    deviceLocale: Locale = Locale.US,
 ) {
 
     /** The seam the engine actually talks to. Fire callbacks into it to drive the engine. */
@@ -109,6 +111,7 @@ internal class EngineHarness(
             ).also { audioPipes += it }
         },
         mainDispatcher = dispatcher,
+        deviceLocale = deviceLocale,
     )
 
     // --- recorded output ------------------------------------------------------------------------

@@ -11,6 +11,7 @@ import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttEngine
 import io.github.ygaray.sttengine.SttError
 import io.github.ygaray.sttengine.SttEvent
+import java.util.Locale
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -99,9 +100,23 @@ internal class SttEngineImpl(
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
     private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000L },
     private val restartPolicy: RestartPolicy = RestartPolicy(),
+    private val deviceLocale: Locale = Locale.getDefault(),
 ) : SttEngine {
 
     private val scope = CoroutineScope(SupervisorJob() + mainDispatcher)
+
+    /**
+     * [config] with its [SttConfig.language] region-qualified for the platform recognizer (see
+     * [LanguageTags]). This is the ONLY language the native preflight and the recognition intent
+     * ever see — a bare `en` reaches SODA as `en-US` instead of being rejected with code 12. The
+     * public [config] is left untouched so the host still observes exactly what it passed.
+     */
+    private val resolvedConfig: SttConfig =
+        SttConfig(
+            language = LanguageTags.regionQualified(config.language, deviceLocale),
+            prefer = config.prefer,
+            serverUrl = config.serverUrl,
+        )
 
     // --- the public surface (D-07/D-08) -----------------------------------------------------------
 
@@ -268,19 +283,19 @@ internal class SttEngineImpl(
         handle = created
 
         // 3. The language. Every outcome routes through the same D-18 preflight table.
-        when (created.languageAvailability(config.language)) {
+        when (created.languageAvailability(resolvedConfig.language)) {
             LanguageAvailability.SUPPORTED_NOT_INSTALLED -> {
-                fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotInstalled(config.language)))
+                fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotInstalled(resolvedConfig.language)))
                 return
             }
 
             LanguageAvailability.DOWNLOAD_PENDING -> {
-                fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageDownloadPending(config.language)))
+                fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageDownloadPending(resolvedConfig.language)))
                 return
             }
 
             LanguageAvailability.NOT_SUPPORTED -> {
-                fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotSupported(config.language)))
+                fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotSupported(resolvedConfig.language)))
                 return
             }
 
@@ -354,7 +369,7 @@ internal class SttEngineImpl(
 
         log.rung(currentRung)
         val intent =
-            RecognizerIntents.forRung(currentRung, config, appContext, audioSource = pipe?.readDescriptor)
+            RecognizerIntents.forRung(currentRung, resolvedConfig, appContext, audioSource = pipe?.readDescriptor)
         withContext(mainDispatcher) {
             active.setListener(listenerFor(boundEpoch))
             active.startListening(intent)
