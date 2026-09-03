@@ -260,6 +260,12 @@ internal class RecorderImpl(
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (readFailure: Throwable) {
+                    mutableErrors.emit(
+                        RecorderError(
+                            RecorderErrorCode.METERING_FAILED,
+                            readFailure.message ?: "amplitude read failed",
+                        ),
+                    )
                     return@launch
                 }
                 val normalized = (amplitude.toFloat() / MAX_AMPLITUDE_FULLSCALE).coerceIn(0f, 1f)

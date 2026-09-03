@@ -32,6 +32,16 @@ public value class RecorderErrorCode(public val value: String) {
          * `uri`.
          */
         public val INVALID_STATE: RecorderErrorCode = RecorderErrorCode("invalid-state")
+
+        /**
+         * The amplitude-poll loop's read of the underlying `MediaRecorder.getMaxAmplitude()` failed —
+         * most plausibly an already-released session throwing `IllegalStateException` from native
+         * code. The poll loop stops iterating rather than retrying (REVIEW-OLLAMA-01, T-142-13), which
+         * silently ends [Recorder.level] ticks; this code exists so a host that relies on `level` for
+         * liveness can tell "metering died" apart from "the room is quiet". The recording itself is
+         * unaffected — this is the metering side-channel only, not the actual audio capture.
+         */
+        public val METERING_FAILED: RecorderErrorCode = RecorderErrorCode("metering-failed")
     }
 }
 

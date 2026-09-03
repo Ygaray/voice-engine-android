@@ -52,7 +52,7 @@ import org.robolectric.annotation.Config
  * | 11 | The service is destroyed by the platform on the last unbind, killing a live recording across a configuration change (REVIEW-OC-02, the phase's #2 blocker) |
  * | 12 | Double-attach tears the service down instead of replacing the attachment |
  * | 13 | An external `stop()` leaks a bound service, or a late `detach()` double-tears-down |
- * | 14 | `RecorderNotificationConfig` accepts a zero id, a blank string, or a mutable `PendingIntent` |
+ * | 14 | `RecorderNotificationConfig` accepts a zero id, a blank string, an out-of-range `channelImportance` (IN-01), or a mutable `PendingIntent` |
  * | 15 | `attach` half-promotes the service before discovering a bad icon id |
  * | 16 | An unarmed `Idle → Error` (a failed `start()`) is left running with a false "recording" notification (NEW-MEDIUM-1) |
  * | 17 | Attaching to a recorder already at `Error` is left running the same way |
@@ -437,6 +437,20 @@ class RecorderForegroundServiceTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             RecorderNotificationConfig(smallIconResId = validIcon, contentTitle = "t", channelName = " ")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RecorderNotificationConfig(
+                smallIconResId = validIcon,
+                contentTitle = "t",
+                channelImportance = NotificationManager.IMPORTANCE_MAX + 1,
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RecorderNotificationConfig(
+                smallIconResId = validIcon,
+                contentTitle = "t",
+                channelImportance = NotificationManager.IMPORTANCE_NONE - 1,
+            )
         }
 
         val mutableIntent = PendingIntent.getActivity(

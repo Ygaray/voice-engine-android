@@ -54,7 +54,7 @@ import org.robolectric.annotation.Config
  * | RecorderConfig defaults reproduce tag v0.3.1 behavior (Test B) | A default RecorderConfig silently changes cadence or encoding behavior for an existing consumer (D-01) |
  * | RecorderConfig rejects non-positive/below-floor levelIntervalMs and non-positive encoding fields (Test C) | A host can configure a busy-spin cadence or a nonsensical encoding parameter (T-142-07) |
  * | stop cancels and joins the poll loop so no read follows release, even at the floor cadence (Test F) | A poll iteration reads from an already-released session (REVIEW-OLLAMA-01, T-142-13) |
- * | a failing amplitude read ends the poll loop without escaping the coroutine (Test G) | An uncaught read failure reaches the thread's default handler and crashes the host process (REVIEW-OLLAMA-01, T-142-13) |
+ * | a failing amplitude read ends the poll loop without escaping the coroutine, and emits METERING_FAILED (Test G) | An uncaught read failure reaches the thread's default handler and crashes the host process (REVIEW-OLLAMA-01, T-142-13), or the host is left with no signal that metering silently died (WR-02) |
  * | RecorderConfig encoding fields reach the session-open call unchanged (Test D) | A host-supplied encoding parameter is lost or mutated before it reaches the session seam (AUDIO-02) |
  * | default RecorderConfig reaches the session-open call carrying three nulls (Test E) | A default config silently starts calling an encoding setter it never called before (D-01) |
  * | encoding parameters reach the real MediaRecorder, proven via ShadowMediaRecorder (Test S) | The seam hands the config to `RecorderImpl`/the factory but the platform adapter never actually calls the MediaRecorder setters (REVIEW-OC-06) |
@@ -406,6 +406,11 @@ class RecorderTest {
         // contained it rather than letting it escape to the thread's default handler.
         advanceTimeBy(200)
         runCurrent()
+
+        // WR-02: the host must learn metering died, not just observe level going silent — a typed
+        // METERING_FAILED error must land on `errors` before the loop returns.
+        val error = recorder.errors.first()
+        assertEquals(RecorderErrorCode.METERING_FAILED, error.code)
 
         // stop() must still succeed normally afterward — the failed poll loop must not have left
         // the Recorder in a broken state.

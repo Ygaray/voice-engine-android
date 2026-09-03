@@ -330,7 +330,12 @@ is opt-in — skip this subsection entirely for a host that only ever records in
    service does not close on its own — it closes every other case by itself: a failed `start()`, any
    other transition into `Error`, a recording that ends normally, and an external `stop()` on the
    `Recorder` all tear this service down without host involvement.
-5. **The threading contract.** `attach` and `detach` are **main-thread-only**, and the service is
+5. **Recovering from a failed `start()`.** Because armed-rule teardown fires on *any* `Error`
+   (armed or not), and `Recorder.start()` can be re-called from `Error`, call `start()` on the
+   recorder BEFORE re-attaching it to the service — re-attaching to a recorder still sitting at
+   `Error` tears the service back down immediately, and a `start()` that later succeeds would then
+   have no foreground service watching it.
+6. **The threading contract.** `attach` and `detach` are **main-thread-only**, and the service is
    **not** thread-safe against concurrent binder calls from arbitrary threads. A local binder does
    not marshal calls across threads, so this is a stated contract the host must honor, not a
    framework guarantee the service enforces on the host's behalf.

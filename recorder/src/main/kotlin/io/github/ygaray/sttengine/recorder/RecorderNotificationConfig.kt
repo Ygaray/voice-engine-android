@@ -82,6 +82,10 @@ public class RecorderNotificationConfig(
         require(contentTitle.isNotBlank()) { "contentTitle must not be blank" }
         require(channelId.isNotBlank()) { "channelId must not be blank" }
         require(channelName.isNotBlank()) { "channelName must not be blank" }
+        require(channelImportance in NotificationManager.IMPORTANCE_NONE..NotificationManager.IMPORTANCE_MAX) {
+            "channelImportance must be a valid NotificationManager.IMPORTANCE_* value " +
+                "(IMPORTANCE_NONE..IMPORTANCE_MAX) — an out-of-range value is rejected by the platform"
+        }
         contentIntent?.let { intent ->
             require(intent.isImmutable) {
                 "contentIntent must be immutable (built with PendingIntent.FLAG_IMMUTABLE) — a " +
