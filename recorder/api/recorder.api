@@ -20,6 +20,24 @@ public abstract interface class io/github/ygaray/sttengine/recorder/Recorder {
 	public abstract fun stop (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
+public final class io/github/ygaray/sttengine/recorder/RecorderConfig {
+	public static final field Companion Lio/github/ygaray/sttengine/recorder/RecorderConfig$Companion;
+	public static final field MIN_LEVEL_INTERVAL_MS J
+	public fun <init> ()V
+	public fun <init> (JLjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;)V
+	public synthetic fun <init> (JLjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getChannelCount ()Ljava/lang/Integer;
+	public final fun getEncodingBitRate ()Ljava/lang/Integer;
+	public final fun getLevelIntervalMs ()J
+	public final fun getSampleRateHz ()Ljava/lang/Integer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/recorder/RecorderConfig$Companion {
+}
+
 public final class io/github/ygaray/sttengine/recorder/RecorderError {
 	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun equals (Ljava/lang/Object;)Z
@@ -53,6 +71,46 @@ public final class io/github/ygaray/sttengine/recorder/RecorderErrorCode$Compani
 
 public final class io/github/ygaray/sttengine/recorder/RecorderFactoryKt {
 	public static final fun createRecorder (Landroid/content/Context;)Lio/github/ygaray/sttengine/recorder/Recorder;
+	public static final fun createRecorder (Landroid/content/Context;Lio/github/ygaray/sttengine/recorder/RecorderConfig;)Lio/github/ygaray/sttengine/recorder/Recorder;
+	public static synthetic fun createRecorder$default (Landroid/content/Context;Lio/github/ygaray/sttengine/recorder/RecorderConfig;ILjava/lang/Object;)Lio/github/ygaray/sttengine/recorder/Recorder;
+}
+
+public final class io/github/ygaray/sttengine/recorder/RecorderForegroundService : android/app/Service {
+	public fun <init> ()V
+	public fun onBind (Landroid/content/Intent;)Landroid/os/IBinder;
+	public fun onCreate ()V
+	public fun onDestroy ()V
+	public fun onStartCommand (Landroid/content/Intent;II)I
+	public fun onTaskRemoved (Landroid/content/Intent;)V
+	public fun onUnbind (Landroid/content/Intent;)Z
+}
+
+public final class io/github/ygaray/sttengine/recorder/RecorderForegroundService$RecorderBinder : android/os/Binder {
+	public final fun attach (Lio/github/ygaray/sttengine/recorder/Recorder;Lio/github/ygaray/sttengine/recorder/RecorderNotificationConfig;)V
+	public final fun detach ()V
+}
+
+public final class io/github/ygaray/sttengine/recorder/RecorderNotificationConfig {
+	public static final field Companion Lio/github/ygaray/sttengine/recorder/RecorderNotificationConfig$Companion;
+	public static final field DEFAULT_CHANNEL_ID Ljava/lang/String;
+	public static final field DEFAULT_CHANNEL_NAME Ljava/lang/String;
+	public static final field DEFAULT_NOTIFICATION_ID I
+	public fun <init> (ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IILandroid/app/PendingIntent;)V
+	public synthetic fun <init> (ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IILandroid/app/PendingIntent;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getChannelId ()Ljava/lang/String;
+	public final fun getChannelImportance ()I
+	public final fun getChannelName ()Ljava/lang/String;
+	public final fun getContentIntent ()Landroid/app/PendingIntent;
+	public final fun getContentText ()Ljava/lang/String;
+	public final fun getContentTitle ()Ljava/lang/String;
+	public final fun getNotificationId ()I
+	public final fun getSmallIconResId ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/recorder/RecorderNotificationConfig$Companion {
 }
 
 public final class io/github/ygaray/sttengine/recorder/RecorderState : java/lang/Enum {

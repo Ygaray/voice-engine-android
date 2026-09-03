@@ -22,11 +22,18 @@ file ever disagree, the file is right and this document is a bug.
 | `SttErrorCode` | value class + companion | the error taxonomy; 14 constants, two named sets |
 | `SttWarning` | class | non-fatal transient warning — **never emitted on this backend** |
 | `SttEvent` | sealed interface (7 members) | the same seven events as one union, for a shared `when` |
+| `RecorderConfig` | class (`:recorder`) | host-configurable level cadence + MediaRecorder encoding params — see [Recorder](#recorder) |
+| `RecorderForegroundService` | `Service` + binder (`:recorder`) | binder-only bound/started foreground-service seam, host-supplied notification via `RecorderNotificationConfig` — see [Recorder](#recorder) |
 
 Nothing else is public. Every implementation type — the recognizer seam, the segment accumulator,
 the session epoch, the capability ladder, the restart policy, the error mapper, the session log — is
 `internal`, and `explicitApi()` plus the frozen dump is what makes that mechanical rather than a
 convention.
+
+_(This index covers `:stt`'s own surface plus the two symbols this release adds to `:recorder`. The
+rest of `:recorder`/`:voicenotes`/`:transcription`'s public surface is documented in their own
+sections below without a top-level index entry — a pre-existing gap in this table predating this
+release, not something this phase's growth introduced or is scoped to close.)_
 
 ---
 
@@ -312,16 +319,47 @@ record-only consumer with zero dependency on recognition (REC-05, mechanically e
 module and never touches `SttEngine`.
 
 ```kotlin
-public fun createRecorder(context: Context): Recorder
+@JvmOverloads
+public fun createRecorder(context: Context, config: RecorderConfig = RecorderConfig()): Recorder
 ```
 
 | Parameter | Meaning |
 |---|---|
 | `context` | any context — the application context is taken from it and retained, so passing an Activity leaks nothing |
+| `config` | host-configurable level cadence + MediaRecorder encoding parameters; defaults reproduce the library's pre-`RecorderConfig` behavior exactly (see `RecorderConfig` below) |
+
+`@JvmOverloads` keeps the pre-existing one-argument Java entry point on the ABI alongside the new
+two-argument one — a Java caller that only ever wrote `createRecorder(context)` keeps compiling
+unchanged.
 
 **The host must already hold `RECORD_AUDIO`** — this module has no Activity, so it cannot request a
 runtime permission, the same asymmetry `SttEngine` documents above. `INTEGRATION.md` §7 has the
 worked snippet.
+
+### `RecorderConfig`
+
+A plain class, **not** a `data class` (`CLAUDE.md` invariant #2) — a future optional field must be
+addable without breaking every already-published consumer's resolved `copy()`/constructor ABI.
+
+`RecorderConfig(levelIntervalMs: Long = 150L, sampleRateHz: Int? = null, encodingBitRate: Int? = null, channelCount: Int? = null)`:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `levelIntervalMs` | `150L` | the `level` amplitude-poll cadence in milliseconds. Must be `>= MIN_LEVEL_INTERVAL_MS` (a constructor `require`), enforced at construction so an invalid config fails immediately rather than producing a silently-too-fast poll loop. |
+| `sampleRateHz` | `null` | forwarded to `MediaRecorder.setAudioSamplingRate` when non-null; `null` leaves the platform default untouched. |
+| `encodingBitRate` | `null` | forwarded to `MediaRecorder.setAudioEncodingBitRate` when non-null; `null` leaves the platform default untouched. |
+| `channelCount` | `null` | forwarded to `MediaRecorder.setAudioChannels` when non-null; `null` leaves the platform default untouched. |
+
+`RecorderConfig.MIN_LEVEL_INTERVAL_MS` (`10L`, on the companion) is the floor for `levelIntervalMs` —
+comfortably below any perceptible meter refresh rate.
+
+**The default `RecorderConfig()` reproduces this library's behavior exactly as of the previous
+release**: a 150ms level cadence and no encoding setters applied at all (the three encoding fields
+default `null`, so `AndroidMediaRecorderSession` calls none of the three `MediaRecorder` setters and
+the platform's own defaults for `MediaRecorder.OutputFormat.MPEG_4` + `MediaRecorder.AudioEncoder.AAC`
+apply exactly as they did before `RecorderConfig` existed). Passing a default-constructed
+`RecorderConfig` is therefore always behavior-neutral — no caller is forced to reason about the new
+fields just to keep existing behavior.
 
 ### `Recorder` — the contract
 
@@ -404,6 +442,81 @@ exist exclusively for the frozen 11-code recognition contract, unrelated to reco
 
 `RecorderError(code: RecorderErrorCode, message: String)` — **deliberately NOT a `data class`**
 (`CLAUDE.md` invariant #2), for the same binary-compatibility reason as every other model type here.
+
+### The foreground-service seam — `RecorderForegroundService` / `RecorderNotificationConfig`
+
+An optional, **binder-only** public `android.app.Service` subclass that hosts a `Recorder` behind a
+foreground service, so a recording keeps running while the host app is backgrounded. Using it is
+opt-in: a consumer that never binds this service still gets the plain `Recorder` contract above with
+no foreground-service behavior at all.
+
+```kotlin
+public final class RecorderForegroundService : Service() {
+    public inner class RecorderBinder : Binder() {
+        public fun attach(recorder: Recorder, notification: RecorderNotificationConfig)
+        public fun detach()
+    }
+}
+```
+
+The binder exposes exactly two calls. `onBind` returns a `RecorderBinder`; there is no other public
+entry point on the service.
+
+| Call | Meaning |
+|---|---|
+| `attach(recorder, notification)` | begin managing `recorder` under this service: `startForeground()` is called with the host-supplied notification, then the service self-starts (so it is both *started* and *bound* — see the lifecycle contract below). |
+| `detach()` | end the managed session: stop foreground, cancel the notification, and stop the service. |
+
+**The service is bound rather than started from the host's own call site** — the host never calls
+`Context.startService`/`startForegroundService` itself; `attach()` does that internally. The host
+supplies **all** notification content through `RecorderNotificationConfig`; the service has no
+built-in notification copy or icon of its own.
+
+**Lifecycle contract (read this before adopting):** on `attach()`, the service enters the *started*
+state in addition to being bound, so a recording **survives every client unbinding** — including an
+Activity destroyed and recreated by a configuration change. Only `detach()` (or the recorder reaching
+a terminal state on its own — see the host obligation below) ends the managed session. Unbinding a UI
+client alone does **not** end a recording; teardown is explicit by design.
+
+**The host detach obligation.** A host that calls `attach` and then abandons the recorder without ever
+calling `start()` keeps the notification and the started state indefinitely — no library-side timeout
+can safely resolve this (it would freeze a policy constant into an immutable tag and kill the
+legitimate slow-start case). **A host that attaches MUST call `detach` if recording never starts**,
+wired to its own lifecycle teardown. This is the only leak path this service does not close on its
+own — it closes every other case by itself: a failed `start()`, any other transition into `Error`, a
+recording that ends normally, and an external `stop()` on the `Recorder` all tear this service down
+without host involvement.
+
+**The threading contract.** `attach` and `detach` are **main-thread-only**, and the service is **not**
+thread-safe against concurrent binder calls from arbitrary threads. A local binder does not marshal
+calls across threads, so this is a stated contract the host must honor, not a framework guarantee the
+service enforces on your behalf.
+
+**The inherited-permission consequence.** Any consumer that depends on `:recorder` — even one that
+never binds `RecorderForegroundService` — inherits the `FOREGROUND_SERVICE` and
+`FOREGROUND_SERVICE_MICROPHONE` manifest permissions by manifest merge, because the service
+declaration lives in this module's own manifest. This was accepted rather than split into a separate
+artifact: a second `:recorder-service` module would double the published-module count and the
+release-gate surface for two permission lines that Android already treats as ordinary
+(non-dangerous, no runtime prompt) declarations.
+
+`RecorderNotificationConfig(smallIconResId: Int, contentTitle: String, contentText: String? = null, channelId: String = DEFAULT_CHANNEL_ID, channelName: String = DEFAULT_CHANNEL_NAME, channelImportance: Int = NotificationManager.IMPORTANCE_LOW, notificationId: Int = DEFAULT_NOTIFICATION_ID, contentIntent: PendingIntent? = null)`
+— a plain class, **not** a `data class` (`CLAUDE.md` invariant #2):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `smallIconResId` | *(required)* | must be non-zero — validated at construction. |
+| `contentTitle` | *(required)* | must be non-blank — validated at construction. |
+| `contentText` | `null` | optional notification body text. |
+| `channelId` | `DEFAULT_CHANNEL_ID` (`"sttengine_recorder_recording"`) | must be non-blank — validated at construction. |
+| `channelName` | `DEFAULT_CHANNEL_NAME` (`"Recording"`) | must be non-blank — validated at construction. |
+| `channelImportance` | `NotificationManager.IMPORTANCE_LOW` | passed straight through to the notification channel. |
+| `notificationId` | `DEFAULT_NOTIFICATION_ID` (`481210`) | must be non-zero — validated at construction. |
+| `contentIntent` | `null` | if supplied, **must** be an immutable `PendingIntent` (`PendingIntent.FLAG_IMMUTABLE`) — validated at construction and rejected otherwise. |
+
+Every validation failure above throws `IllegalArgumentException` at construction time, before
+`attach()` is ever called — a host cannot bind a broken notification config and discover it only when
+the platform later rejects it.
 
 ---
 

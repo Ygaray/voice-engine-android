@@ -221,7 +221,7 @@ record-only consumer. A record-only host depends on **only** this coordinate and
 recognition code (REC-05):
 
 ```kotlin
-implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-recorder:v0.3.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-recorder:v0.4.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 > **Groupid note.** Secondary modules carry a **different groupId prefix** than the plain
@@ -263,6 +263,88 @@ scope.launch {
 The host must already hold `RECORD_AUDIO` (see step 3) — `createRecorder()` has no Activity and
 cannot request it. See `API.md`'s Recorder section for the full `RecorderState`/`RecorderError`
 taxonomy and the documented PEAK-vs-RMS amplitude asymmetry against the web Recorder.
+
+### 7a. Override the level cadence or encoding parameters (optional)
+
+Pass a `RecorderConfig` to override the amplitude-poll cadence or any of the three MediaRecorder
+encoding parameters. The default `RecorderConfig()` is behavior-neutral — passing it explicitly
+changes nothing:
+
+```kotlin
+val recorder = createRecorder(
+    context = getApplication(),
+    config = RecorderConfig(levelIntervalMs = 100L, sampleRateHz = 44100),
+)
+```
+
+See `API.md`'s `RecorderConfig` subsection for every field's default and validation rule.
+
+### 7b. Adopt the foreground-service seam (optional, separate from Recorder itself)
+
+`RecorderForegroundService` keeps a recording running while the host app is backgrounded. Adopting it
+is opt-in — skip this subsection entirely for a host that only ever records in the foreground.
+
+1. **Declare and request the runtime microphone permission the same as step 3/7 above.** The service
+   declares the foreground-service permissions itself by manifest merge (see the inherited-permission
+   note below), but a host still requests `RECORD_AUDIO` at runtime exactly as for the plain
+   `Recorder` — the service adds no shortcut around that.
+2. **Bind the service and call `attach` to begin a managed session; call `detach` explicitly to end
+   it:**
+
+   ```kotlin
+   val connection = object : ServiceConnection {
+       override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+           val recorderBinder = binder as RecorderForegroundService.RecorderBinder
+           recorderBinder.attach(
+               recorder = recorder,
+               notification = RecorderNotificationConfig(
+                   smallIconResId = R.drawable.ic_recording,
+                   contentTitle = "Recording",
+               ),
+           )
+       }
+       override fun onServiceDisconnected(name: ComponentName?) = Unit
+   }
+   applicationContext.bindService(
+       Intent(applicationContext, RecorderForegroundService::class.java),
+       connection,
+       Context.BIND_AUTO_CREATE,
+   )
+   ```
+
+   Binding from the **application context** is the recommendation here — it keeps the connection
+   alive across an Activity recreation without extra wiring — but it is a recommendation, not the
+   survival mechanism: the lifecycle contract below is what actually keeps a recording alive across
+   every client unbinding, independent of which context bound the service.
+
+3. **The lifecycle contract, exactly as implemented:** on `attach()`, the service enters the
+   *started* state in addition to being bound, so a recording **survives every client
+   unbinding** — including an Activity destroyed and recreated by a configuration change. Only
+   `detach()` (or the recorder reaching a terminal state on its own — see the next point) ends the
+   managed session. Unbinding a UI client alone does **not** end a recording.
+4. **The host detach obligation.** A host that calls `attach` and then abandons the recorder without
+   ever calling `start()` keeps the notification and the started state indefinitely — no
+   library-side timeout can safely resolve this (it would freeze a policy constant into an immutable
+   tag and kill the legitimate slow-start case). **A host that attaches MUST call `detach` if
+   recording never starts**, wired to its own lifecycle teardown. This is the only leak path this
+   service does not close on its own — it closes every other case by itself: a failed `start()`, any
+   other transition into `Error`, a recording that ends normally, and an external `stop()` on the
+   `Recorder` all tear this service down without host involvement.
+5. **The threading contract.** `attach` and `detach` are **main-thread-only**, and the service is
+   **not** thread-safe against concurrent binder calls from arbitrary threads. A local binder does
+   not marshal calls across threads, so this is a stated contract the host must honor, not a
+   framework guarantee the service enforces on the host's behalf.
+
+**The inherited-permission consequence.** Any consumer that depends on `:recorder` — even one that
+never binds `RecorderForegroundService` — inherits the `FOREGROUND_SERVICE` and
+`FOREGROUND_SERVICE_MICROPHONE` manifest permissions by manifest merge, because the service
+declaration lives inside `:recorder`'s own manifest. This was accepted rather than split into a
+separate artifact: a second `:recorder-service` module would double the published-module count and
+the release-gate surface for two permission lines Android already treats as ordinary
+(non-dangerous, no runtime prompt) declarations.
+
+See `API.md`'s foreground-service-seam subsection for `RecorderNotificationConfig`'s full field list
+and validation rules.
 
 ---
 
