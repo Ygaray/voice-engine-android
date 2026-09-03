@@ -139,7 +139,7 @@ publishing {
             // voice-engine-android-recorder): module :voicenotes -> artifact
             // voice-engine-android-voicenotes.
             artifactId = "voice-engine-android-voicenotes"
-            version = "0.4.0"
+            version = "0.4.1"
             afterEvaluate {
                 from(components["release"])
             }

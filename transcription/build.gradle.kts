@@ -205,7 +205,7 @@ publishing {
             artifactId = "voice-engine-android-transcription"
             // D-03: 0.3.0 — Claude's-discretion-confirmed version, consistent with Plan 02's tag
             // cut (all four modules bump together). Set correctly from creation; no bump needed.
-            version = "0.4.0"
+            version = "0.4.1"
             afterEvaluate {
                 from(components["release"])
             }
