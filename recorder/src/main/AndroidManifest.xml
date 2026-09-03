@@ -1,12 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     :recorder library manifest. Under AGP 8 the namespace comes from build.gradle.kts, so no
-    package attribute is needed here. There is no <application> element — this library contributes
-    no components, only a permission declaration.
+    package attribute is needed here.
 
     RECORD_AUDIO is declared here so it merges into every consumer. D-11: the library only CHECKS
     the permission (Context.checkSelfPermission); the HOST app requests it, because a library has
     no Activity to request from — the same contract asymmetry :stt documents.
+
+    FOREGROUND_SERVICE and FOREGROUND_SERVICE_MICROPHONE are declared here for RecorderForegroundService
+    (D-02 Arm A, AUDIO-03), which the <application>/<service> element below declares.
+    CONSEQUENCE, STATED PLAINLY (design decision 11, REVIEW-OC-07): every consumer of :recorder
+    inherits BOTH foreground-service permissions by manifest merge, whether or not it ever binds
+    RecorderForegroundService — a record-only consumer that never touches the service still gets
+    these two permissions merged into its manifest. The alternative — publishing the service as a
+    separate opt-in artifact so a record-only consumer inherits nothing — was considered and
+    rejected: it would add a fifth publishable module to the release script's cross-module
+    version-agreement gate, force a consumer to pin two coordinates instead of one, and double the
+    surface an immutable tag freezes, all to spare a consumer two permissions that grant it no
+    capability beyond the RECORD_AUDIO it already needs to record. Accepted, and stated here rather
+    than left for a consumer to discover in a merged-manifest diff.
+
+    The service is declared non-exported below — no other app on the device may bind to it
+    (T-142-06). See RecorderForegroundService's own KDoc for the binder-only API contract, the
+    armed-teardown rule, and the threading contract.
 
     DELIBERATELY WITHOUT :stt's <queries> entry for android.speech.RecognitionService. Recorder
     never touches recognition, so it has no need to query for a recognizer package. This is a
@@ -19,5 +35,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+    <application>
+        <service
+            android:name=".RecorderForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+    </application>
 
 </manifest>
