@@ -3,6 +3,7 @@ package io.github.ygaray.sttengine.recorder.internal
 import android.content.Context
 import io.github.ygaray.sttengine.recorder.RecordedFile
 import io.github.ygaray.sttengine.recorder.Recorder
+import io.github.ygaray.sttengine.recorder.RecorderConfig
 import io.github.ygaray.sttengine.recorder.RecorderError
 import io.github.ygaray.sttengine.recorder.RecorderErrorCode
 import io.github.ygaray.sttengine.recorder.RecorderState
@@ -10,10 +11,13 @@ import java.io.File
 import java.io.IOException
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -33,10 +37,19 @@ import kotlinx.coroutines.launch
  * Constructed directly with an injected [sessionFactory] by `RecorderTest.kt`, mirroring
  * `AudioSourcePipeTest`'s convention of testing the internal class directly rather than through the
  * public [io.github.ygaray.sttengine.recorder.createRecorder] factory.
+ *
+ * @param config host-configurable poll cadence (AUDIO-02/D-03). Encoding parameters are threaded
+ *   through [sessionFactory] separately, not read directly here.
+ * @param pollDispatcher backs the amplitude poll [scope]. `internal` and defaulted so it never
+ *   surfaces on the public ABI or in [io.github.ygaray.sttengine.recorder.createRecorder]'s
+ *   signature — its sole purpose is the determinism seam that lets `RecorderTest.kt` drive the poll
+ *   loop from a `TestScheduler`-backed dispatcher instead of racing a wall clock.
  */
 internal class RecorderImpl(
     private val context: Context,
     private val sessionFactory: RecorderSessionFactory = AndroidMediaRecorderSession,
+    private val config: RecorderConfig = RecorderConfig(),
+    private val pollDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : Recorder {
 
     private val mutableState = MutableStateFlow(RecorderState.Idle)
@@ -67,8 +80,14 @@ internal class RecorderImpl(
     private var pausedAccumMs: Long = 0L
     private var pausedAtMs: Long = 0L
 
-    /** Backs the amplitude poll loop (REC-06). `SupervisorJob` so one failed tick cannot cancel the rest. */
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /**
+     * Backs the amplitude poll loop (REC-06). `SupervisorJob` so one failed tick cannot cancel the
+     * rest — but note a `SupervisorJob` does NOT catch a `launch` child's exception, it only stops
+     * that exception from cancelling siblings; the amplitude read inside [startPolling] is guarded
+     * separately for that reason (REVIEW-OLLAMA-01). [pollDispatcher] defaults to
+     * [Dispatchers.Default] but is overridable for deterministic virtual-time testing.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + pollDispatcher)
     private var pollJob: Job? = null
 
     override suspend fun start() {
@@ -214,30 +233,59 @@ internal class RecorderImpl(
     internal fun currentUriForTest(): String? = outputFile?.absolutePath
 
     /**
-     * Poll [RecorderSession.maxAmplitude] every [POLL_INTERVAL_MS] and emit a normalized `[0,1]`
-     * tick on [level] — PEAK amplitude, not RMS; there is no RMS variant exposed by the platform
-     * API (REC-06's documented, intentional cross-platform asymmetry against the web Recorder).
+     * Poll [RecorderSession.maxAmplitude] every [config]'s [RecorderConfig.levelIntervalMs] and emit
+     * a normalized `[0,1]` tick on [level] — PEAK amplitude, not RMS; there is no RMS variant exposed
+     * by the platform API (REC-06's documented, intentional cross-platform asymmetry against the web
+     * Recorder).
+     *
+     * The pre-emptive `pollJob?.cancel()` below is fire-and-forget deliberately, unlike
+     * [stopPolling]: it only ever replaces a job polling the SAME session (a defensive guard against
+     * [startPolling] somehow being invoked twice for one session) and is never followed by a
+     * [RecorderSession.release] call, so there is no read-after-release race to close here.
      */
     private fun startPolling(activeSession: RecorderSession) {
         pollJob?.cancel()
         pollJob = scope.launch {
             while (isActive) {
-                val normalized = (activeSession.maxAmplitude().toFloat() / MAX_AMPLITUDE_FULLSCALE)
-                    .coerceIn(0f, 1f)
+                // A failed amplitude read means the session is no longer readable — most plausibly
+                // an already-released `MediaRecorder` throwing `IllegalStateException` from native
+                // code. This scope installs no `CoroutineExceptionHandler`, and a `SupervisorJob`
+                // does NOT catch a `launch` child's exception, it only stops that exception from
+                // cancelling siblings — so letting this escape would reach the thread's default
+                // uncaught-exception handler and, on Android, crash the host process over a single
+                // meter frame. Stop iterating instead of retrying: once a read has failed, the
+                // session is not expected to become readable again (REVIEW-OLLAMA-01, T-142-13).
+                val amplitude = try {
+                    activeSession.maxAmplitude()
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (readFailure: Throwable) {
+                    return@launch
+                }
+                val normalized = (amplitude.toFloat() / MAX_AMPLITUDE_FULLSCALE).coerceIn(0f, 1f)
                 mutableLevel.emit(normalized)
-                delay(POLL_INTERVAL_MS)
+                delay(config.levelIntervalMs)
             }
         }
     }
 
-    /** Stops emitting ticks — called on [pause] and [stop] so the amplitude channel goes quiet. */
-    private fun stopPolling() {
-        pollJob?.cancel()
+    /**
+     * Stops emitting ticks — called on [pause] and [stop] so the amplitude channel goes quiet.
+     *
+     * Cancels AND JOINS the poll job. A bare `cancel()` is cooperative and asynchronous — it returns
+     * immediately, while the coroutine may still be mid-[RecorderSession.maxAmplitude]. [stop] calls
+     * [RecorderSession.release] a few lines after this returns, so without the join a poll iteration
+     * could read from an already-released session. Joining makes "the poll loop has finished" a fact
+     * the caller can rely on rather than a likelihood — and a host-lowered
+     * [RecorderConfig.levelIntervalMs] makes that race MORE probable, not less, since it raises the
+     * fraction of wall-clock time the loop spends inside the read (REVIEW-OLLAMA-01, T-142-13).
+     */
+    private suspend fun stopPolling() {
+        pollJob?.cancelAndJoin()
         pollJob = null
     }
 
     private companion object {
-        const val POLL_INTERVAL_MS = 150L
         const val MAX_AMPLITUDE_FULLSCALE = 32767f
     }
 }

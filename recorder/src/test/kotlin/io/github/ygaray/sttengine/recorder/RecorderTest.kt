@@ -7,14 +7,20 @@ import io.github.ygaray.sttengine.recorder.internal.RecorderSession
 import io.github.ygaray.sttengine.recorder.internal.RecorderSessionFactory
 import java.io.File
 import java.io.IOException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -42,7 +48,13 @@ import org.robolectric.annotation.Config
  * | the level flow ticks only while Recording, normalized from maxAmplitude | The meter free-runs before `start()`/while `Idle`, or leaks ticks while `Paused` (REC-06) |
  * | a RuntimeException from open maps to MIC_DENIED | A mic-denial crashes instead of surfacing a typed error (REC-02) |
  * | an IOException from open maps to NO_STORAGE | A disk-full/permission failure crashes instead of surfacing a typed error (REC-02) |
+ * | level poll cadence is driven by RecorderConfig, exact counts on virtual time (Test A) | The cadence silently stays fixed at 150ms once host-configurable, or the proof itself is a flaky wall-clock race (AUDIO-02/D-03, REVIEW-OC-04) |
+ * | RecorderConfig defaults reproduce tag v0.3.1 behavior (Test B) | A default RecorderConfig silently changes cadence or encoding behavior for an existing consumer (D-01) |
+ * | RecorderConfig rejects non-positive/below-floor levelIntervalMs and non-positive encoding fields (Test C) | A host can configure a busy-spin cadence or a nonsensical encoding parameter (T-142-07) |
+ * | stop cancels and joins the poll loop so no read follows release, even at the floor cadence (Test F) | A poll iteration reads from an already-released session (REVIEW-OLLAMA-01, T-142-13) |
+ * | a failing amplitude read ends the poll loop without escaping the coroutine (Test G) | An uncaught read failure reaches the thread's default handler and crashes the host process (REVIEW-OLLAMA-01, T-142-13) |
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class RecorderTest {
@@ -254,6 +266,147 @@ class RecorderTest {
         assertEquals(RecorderState.Error, recorder.state.value)
     }
 
+    // --- Task 1: RecorderConfig — level cadence, defaults, validation, poll-teardown ordering -----
+
+    @Test
+    fun `level poll cadence is driven by RecorderConfig, exact counts on virtual time`() = runTest {
+        // A StandardTestDispatcher sharing runTest's own testScheduler: both RecorderImpls' poll
+        // scopes advance on the SAME virtual clock this test drives with advanceTimeBy below, so
+        // the assertion is deterministic rather than a wall-clock race (REVIEW-OC-04).
+        val dispatcher = StandardTestDispatcher(testScheduler)
+
+        val fastSession = FakeRecorderSession()
+        val fastRecorder = RecorderImpl(
+            context = context,
+            sessionFactory = FakeRecorderSessionFactory { fastSession },
+            config = RecorderConfig(levelIntervalMs = 50L),
+            pollDispatcher = dispatcher,
+        )
+
+        val defaultSession = FakeRecorderSession()
+        val defaultRecorder = RecorderImpl(
+            context = context,
+            sessionFactory = FakeRecorderSessionFactory { defaultSession },
+            pollDispatcher = dispatcher,
+        )
+
+        fastRecorder.start()
+        defaultRecorder.start()
+
+        // 610ms is deliberately NOT a multiple of 50 or 150, so the scheduler's boundary-inclusion
+        // rule (tasks scheduled exactly at the new time are not run by advanceTimeBy alone) cannot
+        // shift either count — the last poll for each cadence lands comfortably before 610.
+        advanceTimeBy(610)
+        runCurrent()
+
+        // Asserted on the fake's maxAmplitudeCalls counter, NOT on collected level ticks:
+        // mutableLevel is a DROP_OLDEST conflated MutableSharedFlow and can legitimately drop an
+        // emission, which would corrupt a tick-count assertion for a reason unrelated to cadence.
+        assertEquals(
+            "50ms cadence over a 610ms window must poll at exactly t=0,50,...,600",
+            13,
+            fastSession.maxAmplitudeCalls,
+        )
+        assertEquals(
+            "150ms (default) cadence over a 610ms window must poll at exactly t=0,150,...,600",
+            5,
+            defaultSession.maxAmplitudeCalls,
+        )
+
+        // Exercises the joined teardown (Test F covers the ordering guarantee in depth).
+        fastRecorder.stop()
+        defaultRecorder.stop()
+    }
+
+    @Test
+    fun `RecorderConfig defaults reproduce tag v0-3-1 behavior`() {
+        val config = RecorderConfig()
+
+        assertEquals(150L, config.levelIntervalMs)
+        assertNull("a default config must call no sampleRate setter at all", config.sampleRateHz)
+        assertNull("a default config must call no encodingBitRate setter at all", config.encodingBitRate)
+        assertNull("a default config must call no channelCount setter at all", config.channelCount)
+    }
+
+    @Test
+    fun `RecorderConfig rejects non-positive or below-floor levelIntervalMs and non-positive encoding fields`() {
+        assertThrows(IllegalArgumentException::class.java) { RecorderConfig(levelIntervalMs = 0L) }
+        assertThrows(IllegalArgumentException::class.java) { RecorderConfig(levelIntervalMs = -1L) }
+        assertThrows(IllegalArgumentException::class.java) { RecorderConfig(levelIntervalMs = 1L) }
+
+        // Exactly the floor constructs successfully.
+        RecorderConfig(levelIntervalMs = RecorderConfig.MIN_LEVEL_INTERVAL_MS)
+
+        assertThrows(IllegalArgumentException::class.java) { RecorderConfig(sampleRateHz = 0) }
+        assertThrows(IllegalArgumentException::class.java) { RecorderConfig(sampleRateHz = -1) }
+        assertThrows(IllegalArgumentException::class.java) { RecorderConfig(encodingBitRate = 0) }
+        assertThrows(IllegalArgumentException::class.java) { RecorderConfig(encodingBitRate = -128000) }
+        assertThrows(IllegalArgumentException::class.java) { RecorderConfig(channelCount = 0) }
+        assertThrows(IllegalArgumentException::class.java) { RecorderConfig(channelCount = -1) }
+    }
+
+    @Test
+    fun `stop cancels and joins the poll loop so no read follows release, even at the floor cadence`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val session = FakeRecorderSession()
+        val recorder = RecorderImpl(
+            context = context,
+            sessionFactory = FakeRecorderSessionFactory { session },
+            config = RecorderConfig(levelIntervalMs = RecorderConfig.MIN_LEVEL_INTERVAL_MS),
+            pollDispatcher = dispatcher,
+        )
+
+        recorder.start()
+        advanceTimeBy(105) // several 10ms poll cycles at the floor cadence
+        runCurrent()
+
+        recorder.stop()
+
+        val callsAtStop = session.maxAmplitudeCalls
+
+        // If stopPolling were fire-and-forget, a poll iteration mid-flight at stop() time could
+        // still land a read here. cancelAndJoin() must have already ended it.
+        advanceTimeBy(1000)
+        runCurrent()
+
+        assertEquals(
+            "no amplitude read may occur after stop() has returned, at any cadence including the floor",
+            callsAtStop,
+            session.maxAmplitudeCalls,
+        )
+
+        val releaseIndex = session.callLog.indexOf("release")
+        val lastAmplitudeIndex = session.callLog.lastIndexOf("maxAmplitude")
+        assertTrue("release() must have been called by stop()", releaseIndex >= 0)
+        assertTrue(
+            "no maxAmplitude entry may appear at or after the release entry in the ordered call log",
+            lastAmplitudeIndex < releaseIndex,
+        )
+    }
+
+    @Test
+    fun `a failing amplitude read ends the poll loop without escaping the coroutine`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val session = ThrowingAmplitudeSession()
+        val recorder = RecorderImpl(
+            context = context,
+            sessionFactory = FakeRecorderSessionFactory { session },
+            pollDispatcher = dispatcher,
+        )
+
+        recorder.start()
+
+        // The poll loop's first iteration throws immediately. A SupervisorJob alone does not catch
+        // this — reaching the assertions below without the test aborting IS the proof the guard
+        // contained it rather than letting it escape to the thread's default handler.
+        advanceTimeBy(200)
+        runCurrent()
+
+        // stop() must still succeed normally afterward — the failed poll loop must not have left
+        // the Recorder in a broken state.
+        recorder.stop()
+    }
+
     // --- fakes ------------------------------------------------------------------------------------
 
     /**
@@ -270,6 +423,23 @@ class RecorderTest {
             private set
         var releaseCalls = 0
             private set
+
+        /**
+         * Total number of times [maxAmplitude] has been invoked — a conflation-proof tick count,
+         * unlike collected [io.github.ygaray.sttengine.recorder.Recorder.level] ticks (`mutableLevel`
+         * is a `DROP_OLDEST` conflated `MutableSharedFlow` and can legitimately drop an emission,
+         * corrupting a count for a reason unrelated to cadence). Asserted exactly by Test A.
+         */
+        var maxAmplitudeCalls = 0
+            private set
+
+        /**
+         * Ordered log of `maxAmplitude`/`stop`/`release` invocations, in invocation order — what
+         * Test F asserts the release-versus-read ordering on.
+         */
+        val callLog: List<String> get() = mutableCallLog
+        private val mutableCallLog = mutableListOf<String>()
+
         private val amplitudeQueue: ArrayDeque<Int> = ArrayDeque()
 
         fun queueAmplitudes(vararg values: Int) {
@@ -286,13 +456,28 @@ class RecorderTest {
 
         override fun stop() {
             stopCalls++
+            mutableCallLog.add("stop")
         }
 
         override fun release() {
             releaseCalls++
+            mutableCallLog.add("release")
         }
 
-        override fun maxAmplitude(): Int = amplitudeQueue.removeFirstOrNull() ?: 0
+        override fun maxAmplitude(): Int {
+            maxAmplitudeCalls++
+            mutableCallLog.add("maxAmplitude")
+            return amplitudeQueue.removeFirstOrNull() ?: 0
+        }
+    }
+
+    /**
+     * A [FakeRecorderSession] whose [maxAmplitude] always throws — the shape a released
+     * `MediaRecorder` throws. Deliberately does NOT call `super.maxAmplitude()`, since Test G does
+     * not need the call counted; it only needs the throw to be contained by [RecorderImpl]'s guard.
+     */
+    private class ThrowingAmplitudeSession : FakeRecorderSession() {
+        override fun maxAmplitude(): Int = throw IllegalStateException("released")
     }
 
     /** Opens a fresh [FakeRecorderSession] per call by default; [opener] can throw to simulate REC-02. */

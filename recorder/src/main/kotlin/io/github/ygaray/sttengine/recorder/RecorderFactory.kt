@@ -15,11 +15,20 @@ import io.github.ygaray.sttengine.recorder.internal.RecorderImpl
  *
  * @param context any context — the application context is taken from it and retained, so passing an
  *   Activity leaks nothing.
+ * @param config host-configurable poll cadence and encoding parameters (D-01/D-03, AUDIO-02).
+ *   Defaults to a [RecorderConfig] that reproduces this module's behavior as of tag `v0.3.1`.
+ *   The `JvmOverloads` annotation on this function is load-bearing, not cosmetic: without it
+ *   Kotlin would replace the published one-argument JVM method with a two-argument method plus a
+ *   synthetic default-dispatcher, which is an ABI REMOVAL for every consumer already resolved
+ *   against `v0.3.1`. With it, both the pre-existing one-argument entry point and this new
+ *   two-argument one exist on the ABI, so widening the surface is purely additive.
  */
-public fun createRecorder(context: Context): Recorder {
+@JvmOverloads
+public fun createRecorder(context: Context, config: RecorderConfig = RecorderConfig()): Recorder {
     val applicationContext = context.applicationContext ?: context
     return RecorderImpl(
         context = applicationContext,
         sessionFactory = AndroidMediaRecorderSession,
+        config = config,
     )
 }
