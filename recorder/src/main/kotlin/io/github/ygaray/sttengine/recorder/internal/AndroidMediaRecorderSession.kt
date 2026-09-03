@@ -2,6 +2,7 @@ package io.github.ygaray.sttengine.recorder.internal
 
 import android.content.Context
 import android.media.MediaRecorder
+import io.github.ygaray.sttengine.recorder.RecorderConfig
 import java.io.File
 
 /**
@@ -29,9 +30,12 @@ internal interface RecorderSession {
     fun maxAmplitude(): Int
 }
 
-/** Opens a [RecorderSession] against [outputFile]. Throws when the platform will not give us one. */
+/**
+ * Opens a [RecorderSession] against [outputFile], configured per [config]. Throws when the platform
+ * will not give us one.
+ */
 internal fun interface RecorderSessionFactory {
-    fun open(context: Context, outputFile: File): RecorderSession
+    fun open(context: Context, outputFile: File, config: RecorderConfig): RecorderSession
 }
 
 /**
@@ -61,15 +65,33 @@ internal class AndroidMediaRecorderSession private constructor(
 
     override fun maxAmplitude(): Int = recorder.maxAmplitude
 
+    /**
+     * Test-only accessor for the underlying platform recorder — lets `RecorderTest.kt` inspect
+     * `ShadowMediaRecorder`'s state directly, proving the encoding setters actually reached
+     * `android.media.MediaRecorder` and not merely the session-open seam (REVIEW-OC-06).
+     */
+    internal fun mediaRecorderForTest(): MediaRecorder = recorder
+
     companion object : RecorderSessionFactory {
 
-        override fun open(context: Context, outputFile: File): RecorderSession {
+        override fun open(context: Context, outputFile: File, config: RecorderConfig): RecorderSession {
             @Suppress("DEPRECATION") // API 31+ constructor form; :stt minSdk 33 clears this.
             val recorder = MediaRecorder(context)
             try {
                 recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
                 recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                // Each field is applied ONLY when non-null, so a default RecorderConfig() executes
+                // the identical instruction sequence this module executed before RecorderConfig
+                // existed, and the platform keeps choosing its own defaults (D-01 hub-neutrality).
+                // No literal fallback value is introduced here for any of the three fields — that
+                // would silently change recorded-audio characteristics for every existing consumer
+                // that never asked for one. Positioned between setAudioEncoder and setOutputFile:
+                // both MediaRecorder's documented required call order and the exact ordering
+                // SecondBrain's own shipped, device-proven RecordingManager uses.
+                config.sampleRateHz?.let { recorder.setAudioSamplingRate(it) }
+                config.encodingBitRate?.let { recorder.setAudioEncodingBitRate(it) }
+                config.channelCount?.let { recorder.setAudioChannels(it) }
                 recorder.setOutputFile(outputFile.absolutePath)
                 // Can throw IOException — disk-full/permission (REC-02's NO_STORAGE mapping).
                 recorder.prepare()

@@ -102,7 +102,7 @@ internal class RecorderImpl(
         pausedAccumMs = 0L
 
         val opened = try {
-            sessionFactory.open(context, file)
+            sessionFactory.open(context, file, config)
         } catch (diskFailure: IOException) {
             // prepare()'s failure mode: disk-full or a permission error (REC-02).
             mutableState.value = RecorderState.Error

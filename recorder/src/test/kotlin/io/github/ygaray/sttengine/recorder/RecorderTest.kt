@@ -2,6 +2,7 @@ package io.github.ygaray.sttengine.recorder
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import io.github.ygaray.sttengine.recorder.internal.AndroidMediaRecorderSession
 import io.github.ygaray.sttengine.recorder.internal.RecorderImpl
 import io.github.ygaray.sttengine.recorder.internal.RecorderSession
 import io.github.ygaray.sttengine.recorder.internal.RecorderSessionFactory
@@ -26,6 +27,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
@@ -53,6 +55,9 @@ import org.robolectric.annotation.Config
  * | RecorderConfig rejects non-positive/below-floor levelIntervalMs and non-positive encoding fields (Test C) | A host can configure a busy-spin cadence or a nonsensical encoding parameter (T-142-07) |
  * | stop cancels and joins the poll loop so no read follows release, even at the floor cadence (Test F) | A poll iteration reads from an already-released session (REVIEW-OLLAMA-01, T-142-13) |
  * | a failing amplitude read ends the poll loop without escaping the coroutine (Test G) | An uncaught read failure reaches the thread's default handler and crashes the host process (REVIEW-OLLAMA-01, T-142-13) |
+ * | RecorderConfig encoding fields reach the session-open call unchanged (Test D) | A host-supplied encoding parameter is lost or mutated before it reaches the session seam (AUDIO-02) |
+ * | default RecorderConfig reaches the session-open call carrying three nulls (Test E) | A default config silently starts calling an encoding setter it never called before (D-01) |
+ * | encoding parameters reach the real MediaRecorder, proven via ShadowMediaRecorder (Test S) | The seam hands the config to `RecorderImpl`/the factory but the platform adapter never actually calls the MediaRecorder setters (REVIEW-OC-06) |
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -407,6 +412,62 @@ class RecorderTest {
         recorder.stop()
     }
 
+    // --- Task 2: encoding parameters reach the session-open call (AUDIO-02) -----------------------
+
+    @Test
+    fun `RecorderConfig encoding fields reach the session-open call unchanged`() = runTest {
+        val factory = FakeRecorderSessionFactory()
+        val config = RecorderConfig(sampleRateHz = 44_100, encodingBitRate = 128_000, channelCount = 1)
+        val recorder = RecorderImpl(context, factory, config)
+
+        recorder.start()
+
+        val openedConfig = requireNotNull(factory.lastOpenedConfig)
+        assertEquals(44_100, openedConfig.sampleRateHz)
+        assertEquals(128_000, openedConfig.encodingBitRate)
+        assertEquals(1, openedConfig.channelCount)
+
+        recorder.stop()
+    }
+
+    @Test
+    fun `default RecorderConfig reaches the session-open call carrying three nulls`() = runTest {
+        val factory = FakeRecorderSessionFactory()
+        val recorder = RecorderImpl(context, factory)
+
+        recorder.start()
+
+        val openedConfig = requireNotNull(factory.lastOpenedConfig)
+        assertNull("a default config must reach the session seam calling no sampleRate setter", openedConfig.sampleRateHz)
+        assertNull(
+            "a default config must reach the session seam calling no encodingBitRate setter",
+            openedConfig.encodingBitRate,
+        )
+        assertNull("a default config must reach the session seam calling no channelCount setter", openedConfig.channelCount)
+
+        recorder.stop()
+    }
+
+    @Test
+    fun `encoding parameters reach the real MediaRecorder, proven via ShadowMediaRecorder (Test S)`() {
+        // Robolectric 4.16.1's ShadowMediaRecorder exposes getAudioSamplingRate/
+        // getAudioEncodingBitRate/getAudioChannels accessors (probed directly against the jar in
+        // ~/.gradle/caches before writing this test) — a positive probe, so this proves the
+        // PLATFORM adapter itself, not merely the session-open seam Tests D/E already cover
+        // (REVIEW-OC-06).
+        val outputFile = File(context.filesDir, "shadow-probe.m4a")
+        val config = RecorderConfig(sampleRateHz = 44_100, encodingBitRate = 128_000, channelCount = 1)
+
+        val session = AndroidMediaRecorderSession.open(context, outputFile, config) as AndroidMediaRecorderSession
+        val shadowRecorder = shadowOf(session.mediaRecorderForTest())
+
+        assertEquals(44_100, shadowRecorder.audioSamplingRate)
+        assertEquals(128_000, shadowRecorder.audioEncodingBitRate)
+        assertEquals(1, shadowRecorder.audioChannels)
+
+        session.release()
+    }
+
     // --- fakes ------------------------------------------------------------------------------------
 
     /**
@@ -488,8 +549,13 @@ class RecorderTest {
             private set
         val openedSessions = mutableListOf<FakeRecorderSession>()
 
-        override fun open(context: Context, outputFile: File): RecorderSession {
+        /** The [RecorderConfig] passed to the most recent [open] call — what Tests D and E assert on. */
+        var lastOpenedConfig: RecorderConfig? = null
+            private set
+
+        override fun open(context: Context, outputFile: File, config: RecorderConfig): RecorderSession {
             openCallCount++
+            lastOpenedConfig = config
             val session = opener()
             if (session is FakeRecorderSession) openedSessions.add(session)
             return session
