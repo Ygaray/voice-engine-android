@@ -120,7 +120,7 @@ publishing {
             // Mirrors the sibling backup-engine naming convention (module :backup -> artifact
             // backup-engine): module :recorder -> artifact voice-engine-android-recorder.
             artifactId = "voice-engine-android-recorder"
-            version = "0.3.1"
+            version = "0.4.0"
             afterEvaluate {
                 from(components["release"])
             }

@@ -182,7 +182,7 @@ publishing {
             // == the MIRROR REPO NAME, not the module name (:stt). Same rule the sibling follows:
             // its module is :backup and its artifactId is backup-engine.
             artifactId = "voice-engine-android"
-            version = "0.3.1"
+            version = "0.4.0"
             afterEvaluate {
                 from(components["release"])
             }
