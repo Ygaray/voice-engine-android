@@ -65,6 +65,7 @@ public final class io/github/ygaray/sttengine/recorder/RecorderErrorCode {
 public final class io/github/ygaray/sttengine/recorder/RecorderErrorCode$Companion {
 	public final fun getALREADY_RECORDING-Gw9Qm6U ()Ljava/lang/String;
 	public final fun getINVALID_STATE-Gw9Qm6U ()Ljava/lang/String;
+	public final fun getMETERING_FAILED-Gw9Qm6U ()Ljava/lang/String;
 	public final fun getMIC_DENIED-Gw9Qm6U ()Ljava/lang/String;
 	public final fun getNO_STORAGE-Gw9Qm6U ()Ljava/lang/String;
 }
