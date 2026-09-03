@@ -10,6 +10,7 @@ import android.os.Binder
 import android.os.IBinder
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -295,7 +296,20 @@ public class RecorderForegroundService : Service() {
 
         // Step 8 (design decision 7 v2, 12): the armed-rule observer, generation-guarded on
         // teardown. See the class KDoc's armed-teardown-rule section for the branch rationale.
-        observerJob = serviceScope.launch {
+        //
+        // CoroutineStart.LAZY + an explicit start() below is REQUIRED, not stylistic. Because the
+        // service scope runs on Dispatchers.Main.immediate, a recorder that is ALREADY at Error when
+        // attached (e.g. Test 17) drives this coroutine's body SYNCHRONOUSLY and REENTRANTLY inside
+        // this very `attach` call, before a plain `launch { ... }` would otherwise return — and that
+        // reentrant path calls teardown(), which reads and clears the [observerJob] field. If the
+        // job were assigned the ordinary way (`observerJob = serviceScope.launch { ... }`), the
+        // right-hand side's synchronous execution would run teardown() (setting observerJob = null)
+        // BEFORE the assignment happened, and the assignment would then immediately clobber that
+        // null with a stale-but-still-running job reference — leaving the observer looking "active"
+        // after a teardown that already happened. Assigning the job to observerJob BEFORE calling
+        // start() means a reentrant teardown() cancels the correct (self-same) job, and no later
+        // assignment can clobber the null it leaves behind.
+        val observer = serviceScope.launch(start = CoroutineStart.LAZY) {
             recorder.state.collect { recorderState ->
                 when (recorderState) {
                     RecorderState.Recording, RecorderState.Paused -> {
@@ -314,6 +328,8 @@ public class RecorderForegroundService : Service() {
                 }
             }
         }
+        observerJob = observer
+        observer.start()
     }
 
     /**
