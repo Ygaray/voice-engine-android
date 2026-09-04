@@ -203,9 +203,10 @@ publishing {
             // -> artifact voice-engine-android-recorder): module :transcription -> artifact
             // voice-engine-android-transcription.
             artifactId = "voice-engine-android-transcription"
-            // D-03: 0.3.0 — Claude's-discretion-confirmed version, consistent with Plan 02's tag
-            // cut (all four modules bump together). Set correctly from creation; no bump needed.
-            version = "0.4.1"
+            // D-03 (147): 0.5.0 — locked release literal for the language-widening minor bump
+            // (additive submitJob(file, mimeType, language) parameter). All four modules bump
+            // together via Plan 05's release cut.
+            version = "0.5.0"
             afterEvaluate {
                 from(components["release"])
             }
