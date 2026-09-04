@@ -658,8 +658,15 @@ public fun createTranscriptionClient(serverUrl: String): TranscriptionClient
 
 | Member | Type | Notes |
 |---|---|---|
-| `submitJob(file: File, mimeType: String)` | `suspend fun` returning `SubmitOutcome` | `POST /jobs` — submit a recorded file for transcription |
+| `submitJob(file: File, mimeType: String, language: String = "en")` | `suspend fun` returning `SubmitOutcome` | `POST /jobs` — submit a recorded file for transcription |
 | `getJobStatus(jobId: String)` | `suspend fun` returning `JobStatusOutcome` | `GET /jobs/{id}` — poll a previously submitted job |
+
+`language` defaults to `"en"`, reproducing the previously published tag's behavior exactly when a
+caller omits it. The server validates the value against its own allow-list and rejects anything else
+with a typed `SubmitOutcome.Rejected` — the two codes supported at this tag are English (`"en"`) and
+Spanish (`"es"`). An unrecognized code does **not** mint a new `TranscriptionErrorCode` constant; it
+surfaces through the existing `Rejected` outcome, carrying the server's own taxonomy string in its
+`message`. A consumer that wants to detect this case matches on the message rather than a code.
 
 ### `SubmitOutcome`
 

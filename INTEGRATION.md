@@ -440,6 +440,13 @@ val outcome = client.submitJob(file, mimeType)
 val status = client.getJobStatus(jobId)
 ```
 
+To pass the caller's chosen language, supply the third argument (`"en"` or `"es"` at this tag); omit
+it to keep the previous English-only behavior unchanged:
+
+```kotlin
+val outcome = client.submitJob(file, mimeType, language = spec.language)
+```
+
 See `API.md`'s Transcription section for the full `SubmitOutcome`/`JobStatusOutcome`/
 `TranscriptionErrorCode` taxonomy.
 
