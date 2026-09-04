@@ -131,10 +131,19 @@ class TranscriptionClientWireTest {
         // The exact two-argument form both live SecondBrain call sites use.
         client.submitJob(tempAudioFile(), "audio/mp4")
         val requestBody = server.takeRequest().body!!.utf8()
-        assertTrue(
-            "expected the request body to always carry a form part named \"language\" with the " +
-                "English default \"en\" even when the caller omits the argument",
-            requestBody.contains("name=\"language\"") && requestBody.contains("en"),
+        // WR-02 (147-REVIEW.md): a loose requestBody.contains("en") passes trivially because the
+        // file part's Content-Disposition always contains "filename" (which itself contains
+        // "en"), so this couldn't actually catch a default-language regression. Pin the exact
+        // value of the "language" form part instead, the way the "language part precedes the
+        // file part" test below extracts indices.
+        val languagePartIndex = requestBody.indexOf("name=\"language\"")
+        assertTrue("expected the request body to carry a form part named \"language\"", languagePartIndex >= 0)
+        val valueStart = requestBody.indexOf("\r\n\r\n", languagePartIndex) + 4
+        val valueEnd = requestBody.indexOf("\r\n", valueStart)
+        assertEquals(
+            "expected the English default \"en\" as the language part's value when the caller omits the argument",
+            "en",
+            requestBody.substring(valueStart, valueEnd),
         )
     }
 
