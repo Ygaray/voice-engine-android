@@ -22,9 +22,13 @@ internal class OkHttpTranscriptionClient(
     private val client: OkHttpClient = OkHttpClient(),
 ) : TranscriptionClient {
 
-    override suspend fun submitJob(file: File, mimeType: String): SubmitOutcome {
+    override suspend fun submitJob(file: File, mimeType: String, language: String): SubmitOutcome {
+        // HUB-03 (147-02): the language part is added BEFORE the file part — load-bearing interop
+        // ordering with the Plan 01 server, whose pre-file scan stops as soon as it sees the file
+        // part. See TranscriptionClient.submitJob's KDoc for the full behavior contract.
         val body = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
+            .addFormDataPart("language", language)
             .addFormDataPart("file", file.name, file.asRequestBody(mimeType.toMediaType()))
             .build()
         val request = Request.Builder().url("$serverUrl/jobs").post(body).build()

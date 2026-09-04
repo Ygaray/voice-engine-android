@@ -9,7 +9,15 @@ import java.io.File
  * authoritative wire contract this client implements.
  */
 public interface TranscriptionClient {
-    public suspend fun submitJob(file: File, mimeType: String): SubmitOutcome
+    /**
+     * Submits [file] (declared as [mimeType]) to `POST /jobs` for batch transcription.
+     *
+     * [language] defaults to `"en"`, which reproduces the behavior of the previously published tag
+     * exactly — a caller that never passes it sees no change. The server validates the value against
+     * its own allow-list and rejects anything else with a typed [SubmitOutcome.Rejected]; the two
+     * codes supported at this tag are English (`"en"`) and Spanish (`"es"`).
+     */
+    public suspend fun submitJob(file: File, mimeType: String, language: String = "en"): SubmitOutcome
     public suspend fun getJobStatus(jobId: String): JobStatusOutcome
 }
 

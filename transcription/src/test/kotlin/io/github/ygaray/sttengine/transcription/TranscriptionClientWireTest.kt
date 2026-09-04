@@ -111,6 +111,50 @@ class TranscriptionClientWireTest {
         assertTrue(outcome is JobStatusOutcome.Transient)
     }
 
+    // HUB-03 (147-02): the language widening's wire-level proof. Test A is the tracer's
+    // end-to-end assertion, B pins the default-on-the-wire guarantee both live SecondBrain call
+    // sites depend on, and C pins the part-ordering interop guarantee with the Plan 01 server.
+    @Test
+    fun `explicit language reaches the wire as a form part`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        client.submitJob(tempAudioFile(), "audio/mp4", "es")
+        val requestBody = server.takeRequest().body!!.utf8()
+        assertTrue(
+            "expected the request body to carry a form part named \"language\" with value \"es\"",
+            requestBody.contains("name=\"language\"") && requestBody.contains("es"),
+        )
+    }
+
+    @Test
+    fun `default language reaches the wire when omitted`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        // The exact two-argument form both live SecondBrain call sites use.
+        client.submitJob(tempAudioFile(), "audio/mp4")
+        val requestBody = server.takeRequest().body!!.utf8()
+        assertTrue(
+            "expected the request body to always carry a form part named \"language\" with the " +
+                "English default \"en\" even when the caller omits the argument",
+            requestBody.contains("name=\"language\"") && requestBody.contains("en"),
+        )
+    }
+
+    @Test
+    fun `language part precedes the file part in the request body`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        client.submitJob(tempAudioFile(), "audio/mp4", "es")
+        val requestBody = server.takeRequest().body!!.utf8()
+        val languageIndex = requestBody.indexOf("name=\"language\"")
+        val fileIndex = requestBody.indexOf("name=\"file\"")
+        assertTrue("expected the language part to be present", languageIndex >= 0)
+        assertTrue("expected the file part to be present", fileIndex >= 0)
+        assertTrue(
+            "expected the language part (index $languageIndex) to appear before the file part " +
+                "(index $fileIndex) so a server whose pre-file scan stops at the file part still " +
+                "sees it",
+            languageIndex < fileIndex,
+        )
+    }
+
     private fun tempAudioFile(): File =
         File.createTempFile("clip", ".m4a").apply {
             deleteOnExit() // IN-02 (136-REVIEW.md): avoid leaking stray clip*.m4a files per test run
