@@ -155,6 +155,52 @@ class TranscriptionClientWireTest {
         )
     }
 
+    // Compile-shape guards (147-02, Task 2). Task 1 already proved the wire; the value of these
+    // three is that they stop COMPILING — not merely running red — the moment someone later makes
+    // `language` required, reorders the parameters, or splits submitJob into ambiguous overloads.
+    // That failure would otherwise surface for the first time at a consumer's repin, one repo and
+    // one phase away from its cause, after an immutable tag had already frozen it. D and E reuse
+    // this class's own mock-server fixture (they need a real executed outcome, not just a compile),
+    // and F is grouped alongside them rather than in TranscriptionModuleBoundaryTest so the whole
+    // language-widening compile-shape guarantee lives in one place next to the wire tests it backs.
+    //
+    // - Test D makes impossible: a future change requiring `language` (removing its default),
+    //   which would break both live SecondBrain call sites (both pass exactly file + mimeType).
+    // - Test E makes impossible: a future change that drops or reorders the third parameter in a
+    //   way that breaks an explicit three-argument caller.
+    // - Test F makes impossible: a future change that leaves the interface implementable for
+    //   callers but not for implementors (a real hazard when a defaulted parameter lands on an
+    //   abstract member) — an implementor written against the widened signature must still satisfy
+    //   the interface and be callable with the two-argument shape.
+
+    @Test
+    fun `two-argument call shape still compiles and is accepted`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        val outcome = client.submitJob(tempAudioFile(), "audio/mp4")
+        assertTrue(outcome is SubmitOutcome.Accepted)
+    }
+
+    @Test
+    fun `three-argument call shape compiles and is accepted`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        val outcome = client.submitJob(tempAudioFile(), "audio/mp4", "es")
+        assertTrue(outcome is SubmitOutcome.Accepted)
+    }
+
+    @Test
+    fun `an anonymous implementor still satisfies the widened interface`() = runTest {
+        val fakeClient = object : TranscriptionClient {
+            override suspend fun submitJob(file: File, mimeType: String, language: String): SubmitOutcome =
+                SubmitOutcome.Accepted("fake-job")
+
+            override suspend fun getJobStatus(jobId: String): JobStatusOutcome =
+                JobStatusOutcome.Pending
+        }
+        val outcome = fakeClient.submitJob(tempAudioFile(), "audio/mp4")
+        assertTrue(outcome is SubmitOutcome.Accepted)
+        assertEquals("fake-job", (outcome as SubmitOutcome.Accepted).jobId)
+    }
+
     private fun tempAudioFile(): File =
         File.createTempFile("clip", ".m4a").apply {
             deleteOnExit() // IN-02 (136-REVIEW.md): avoid leaking stray clip*.m4a files per test run
