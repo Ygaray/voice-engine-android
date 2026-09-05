@@ -119,6 +119,10 @@ class LanguageSwitchProbeTest {
             report.put("supportedOnDeviceLanguages", precondition.supported)
             report.put("pendingOnDeviceLanguages", precondition.pending)
             report.put("esPackInstalled", precondition.esInstalled)
+            report.put(
+                "checkRecognitionSupportErrorCode",
+                precondition.errorCode?.let { it as Any } ?: JSONObject.NULL,
+            )
             if (precondition.timedOut) {
                 incompleteMeasurement = "checkRecognitionSupport did not call back within " +
                     "$SUPPORT_TIMEOUT_SECONDS s for es-US — the installed-pack precondition is " +
@@ -185,6 +189,7 @@ class LanguageSwitchProbeTest {
         val pending: JSONArray,
         val esInstalled: Boolean,
         val timedOut: Boolean,
+        val errorCode: Int? = null,
     )
 
     private fun checkPrecondition(recognizer: SpeechRecognizer): Precondition {
@@ -215,7 +220,10 @@ class LanguageSwitchProbeTest {
                 Precondition(JSONArray(), JSONArray(), JSONArray(), esInstalled = false, timedOut = true)
             } else if (support == null) {
                 // Answered with an error, not a timeout — a complete (negative) measurement.
-                Precondition(JSONArray(), JSONArray(), JSONArray(), esInstalled = false, timedOut = false)
+                Precondition(
+                    JSONArray(), JSONArray(), JSONArray(),
+                    esInstalled = false, timedOut = false, errorCode = errorCode.get(),
+                )
             } else {
                 val installed = support.installedOnDeviceLanguages
                 Precondition(
