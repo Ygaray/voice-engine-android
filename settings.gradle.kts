@@ -43,6 +43,13 @@ include(":voicenotes")
 // Room/WorkManager coupling. Must ALSO be added to android/jitpack.yml (Plan 02's job, D-23,
 // Pitfall 8: a mismatch here is unrecoverable after a tag).
 include(":transcription")
+// The FIFTH publishable library module (Phase 12, CORPUS-01). The append-only correction/corpus
+// revision contract (`CorrectionRevision`) — a plain-class twin of the web `@voice-engine/web`
+// `CorrectionRevision` interface, apiCheck-frozen from its first commit. Deliberately NOT yet added
+// to android/jitpack.yml — that is Phase 17's job (REL-03, the human-gated tag-cut); this module is
+// scaffolded and locally buildable/checkable now so Phase 13's correction-layer functions have a
+// module to land in, per the human-gated shipping discipline every prior module already follows.
+include(":corrections")
 // The reference host app (D-27/D-28). It is NEVER named in jitpack.yml and carries no
 // `maven-publish`, so it is outside the published module set (D-23) — the mirror ships the library
 // and the worked example of how to consume it, never the example as an artifact.
