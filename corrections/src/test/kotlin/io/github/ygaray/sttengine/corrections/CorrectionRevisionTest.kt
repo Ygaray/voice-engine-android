@@ -18,7 +18,7 @@ public class CorrectionRevisionTest {
         corrected: String = "hello world",
         audioUri: String? = "opaque://host-issued-locator",
         createdAt: String = "2026-09-06T00:00:00.000Z",
-    ): CorrectionRevision = CorrectionRevision(recognized, corrected, audioUri, createdAt)
+    ): CorrectionRevision = CorrectionRevision(recognized, corrected, createdAt, audioUri)
 
     @Test
     public fun `identical field values are equal and share hashCode`() {

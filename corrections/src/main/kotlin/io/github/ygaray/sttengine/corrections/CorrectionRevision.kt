@@ -16,36 +16,36 @@ package io.github.ygaray.sttengine.corrections
  *
  * @property recognized What the engine originally recognized.
  * @property corrected What the host/user corrected it to.
+ * @property createdAt ISO-8601 UTC timestamp of when this revision was recorded.
  * @property audioUri An opaque, host-issued reference to the audio this revision was corrected
  *   against — embedded exactly as the host supplies it. Never validated, parsed, or dereferenced
  *   by the engine (mirrors [io.github.ygaray.sttengine.voicenotes.NoteRecord.uri]'s opaque-locator
  *   framing).
- * @property createdAt ISO-8601 UTC timestamp of when this revision was recorded.
  */
 public class CorrectionRevision(
     public val recognized: String,
     public val corrected: String,
-    public val audioUri: String? = null,
     public val createdAt: String,
+    public val audioUri: String? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is CorrectionRevision) return false
         return recognized == other.recognized &&
             corrected == other.corrected &&
-            audioUri == other.audioUri &&
-            createdAt == other.createdAt
+            createdAt == other.createdAt &&
+            audioUri == other.audioUri
     }
 
     override fun hashCode(): Int {
         var result = recognized.hashCode()
         result = 31 * result + corrected.hashCode()
-        result = 31 * result + (audioUri?.hashCode() ?: 0)
         result = 31 * result + createdAt.hashCode()
+        result = 31 * result + (audioUri?.hashCode() ?: 0)
         return result
     }
 
     override fun toString(): String =
-        "CorrectionRevision(recognized=$recognized, corrected=$corrected, audioUri=$audioUri, " +
-            "createdAt=$createdAt)"
+        "CorrectionRevision(recognized=$recognized, corrected=$corrected, createdAt=$createdAt, " +
+            "audioUri=$audioUri)"
 }
