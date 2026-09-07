@@ -50,8 +50,10 @@ public final class io/github/ygaray/sttengine/SttConfig {
 	public fun <init> (Ljava/lang/String;)V
 	public fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;)V
 	public fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;)V
-	public synthetic fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;Ljava/util/List;)V
+	public synthetic fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;Ljava/util/List;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCorrections ()Ljava/util/List;
 	public final fun getLanguage ()Ljava/lang/String;
 	public final fun getPrefer ()Lio/github/ygaray/sttengine/BackendPreference;
 	public final fun getServerUrl ()Ljava/lang/String;

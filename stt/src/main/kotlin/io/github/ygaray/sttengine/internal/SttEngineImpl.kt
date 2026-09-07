@@ -11,6 +11,7 @@ import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttEngine
 import io.github.ygaray.sttengine.SttError
 import io.github.ygaray.sttengine.SttEvent
+import io.github.ygaray.sttengine.corrections.Corrections
 import java.util.Locale
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -643,8 +644,18 @@ internal class SttEngineImpl(
         emitFinal(accumulator.commitLivePartialAsFinal() ?: return)
     }
 
-    private fun emitFinal(segment: FinalSegment) {
+    private fun emitFinal(rawSegment: FinalSegment) {
         _partial.value = ""
+        // Android origin point 1 of 3 (RESEARCH.md Pitfall 1) — the on-device-only path. Correction
+        // is applied here BEFORE any emission, constructing a new FinalSegment with the SAME
+        // segmentId (mirrors web's D-01 exactly). ServerBackend's final branch and
+        // BackendSelector's handoff-commit are the other two real origin points (13-02) — do NOT
+        // re-apply at BackendSelector's forwarding sites, which would double-apply already-corrected
+        // segments.
+        val segment =
+            config.corrections?.takeIf { it.isNotEmpty() }
+                ?.let { FinalSegment(Corrections.apply(rawSegment.text, it), rawSegment.segmentId) }
+                ?: rawSegment
         finalsChannel.trySend(segment)
         _events.tryEmit(SttEvent.Final(segment))
         log.final(segment)

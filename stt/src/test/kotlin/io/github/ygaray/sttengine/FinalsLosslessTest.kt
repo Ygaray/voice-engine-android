@@ -1,5 +1,6 @@
 package io.github.ygaray.sttengine
 
+import io.github.ygaray.sttengine.corrections.CorrectionPair
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -106,6 +107,40 @@ class FinalsLosslessTest {
             seen.map { it.code },
         )
     }
+
+    @Test
+    fun `a configured correction ruleset corrects the committed final's text (Phase 13, CORR-01, D-01 origin point 1)`() =
+        runTest {
+            val h =
+                EngineHarness(
+                    testScheduler,
+                    config = SttConfig(corrections = listOf(CorrectionPair("teh", "the"))),
+                )
+            val seen = mutableListOf<FinalSegment>()
+            collect(h, seen)
+            h.reachListening()
+
+            h.fake.fireResults("teh cat sat")
+            runCurrent()
+
+            assertEquals(listOf(FinalSegment("the cat sat", 0)), seen.toList())
+        }
+
+    @Test
+    fun `partial text stays byte-identical to the raw recognizer output even with a non-empty corrections ruleset configured (CORR-03)`() =
+        runTest {
+            val h =
+                EngineHarness(
+                    testScheduler,
+                    config = SttConfig(corrections = listOf(CorrectionPair("teh", "the"))),
+                )
+            h.reachListening(withSpeech = false)
+
+            h.fake.firePartial("teh cat")
+            runCurrent()
+
+            assertEquals("teh cat", h.engine.partial.value)
+        }
 
     // --- helpers ------------------------------------------------------------------------------------
 

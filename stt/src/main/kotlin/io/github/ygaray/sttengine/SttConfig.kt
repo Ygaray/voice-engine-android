@@ -1,5 +1,7 @@
 package io.github.ygaray.sttengine
 
+import io.github.ygaray.sttengine.corrections.CorrectionRuleset
+
 /**
  * Options for creating an engine. Translated from `web/src/types.ts:32-39`
  * (`SttEngineOptions`), with one field kept and two re-added in Phase 9.
@@ -30,25 +32,34 @@ package io.github.ygaray.sttengine
  *   `null` `serverUrl` always runs native, byte-identical to the v1.0 default path, regardless of
  *   [prefer]. There is no safe default hostname on Android the way `location.hostname` exists in a
  *   browser (Phase 9 RESEARCH.md Open Question 3), so the host must supply this explicitly to opt in.
+ * @property corrections The active correction ruleset (Phase 13, CORR-01/D-05)
+ *   [io.github.ygaray.sttengine.corrections.Corrections.apply] replays against every committed
+ *   final at each real emit-origin point; partials are never corrected (CORR-03). `null` (the
+ *   default) is a zero-cost no-op — a host that never builds a ruleset pays nothing.
  */
 public class SttConfig @JvmOverloads constructor(
     public val language: String = "en",
     public val prefer: BackendPreference = BackendPreference.Auto,
     public val serverUrl: String? = null,
+    public val corrections: CorrectionRuleset? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is SttConfig) return false
-        return language == other.language && prefer == other.prefer && serverUrl == other.serverUrl
+        return language == other.language &&
+            prefer == other.prefer &&
+            serverUrl == other.serverUrl &&
+            corrections == other.corrections
     }
 
     override fun hashCode(): Int {
         var result = language.hashCode()
         result = 31 * result + prefer.hashCode()
         result = 31 * result + (serverUrl?.hashCode() ?: 0)
+        result = 31 * result + (corrections?.hashCode() ?: 0)
         return result
     }
 
     override fun toString(): String =
-        "SttConfig(language=$language, prefer=$prefer, serverUrl=$serverUrl)"
+        "SttConfig(language=$language, prefer=$prefer, serverUrl=$serverUrl, corrections=$corrections)"
 }

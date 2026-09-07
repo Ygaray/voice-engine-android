@@ -142,6 +142,12 @@ dependencies {
     // at `compile` scope, which is what an exported type requires.
     api(libs.coroutines.android)
 
+    // Phase 13 (CORR-01/D-05): CorrectionRuleset/CorrectionPair now appear on SttConfig's PUBLIC
+    // constructor signature, so :stt must expose them via `api`, not `implementation`, or a
+    // consumer resolving the published AAR cannot name the type (same rationale as
+    // `libs.coroutines.android` above).
+    api(project(":corrections"))
+
     // Phase 9 (D-02): the ServerBackend's WS transport. `implementation`, NOT `api` — no OkHttp
     // type may ever reach the public SttEngine surface (mirrors the RecognizerHandle-seam
     // precedent); consumers must not need OkHttp on their compile classpath to use this library.
