@@ -60,7 +60,7 @@ public object Corrections {
     public const val DEFAULT_RULESET_CAP: Int = 200
 
     /**
-     * The explicit, hand-enumerated separator set (D-02) — the SAME 16-character literal set as the
+     * The explicit, hand-enumerated separator set (D-02) — the SAME 17-character literal set as the
      * TS twin's `SEPARATORS`, hand-transcribed, never derived from either runtime's Unicode tables.
      * `¿`/`¡` are included because real captured ES output contains them (confirmed against
      * `server/fixtures/bilingual_en_es/intersentence_es_en_01.ref.txt`).
