@@ -7,6 +7,7 @@ import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.PreflightHandle
 import io.github.ygaray.sttengine.SttConfig
+import io.github.ygaray.sttengine.corrections.CorrectionPair
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -64,9 +65,10 @@ class HandoffOrderingTest {
         fakeHandle: FakeRecognizerHandle,
         dispatcher: CoroutineDispatcher,
         sharedLog: MutableList<String>,
+        config: SttConfig = SttConfig(serverUrl = "wss://example.ts.net:8444/"),
     ): BackendSelector = BackendSelector(
         appContext = context(),
-        config = SttConfig(serverUrl = "wss://example.ts.net:8444/"),
+        config = config,
         handleFactory = RecognizerHandleFactory {
             PreflightHandle(fakeHandle, LanguageAvailability.INSTALLED)
         },
@@ -207,5 +209,36 @@ class HandoffOrderingTest {
         )
         assertEquals(Backend.Native, selector.backend.value)
         assertEquals(EngineState.Listening, selector.state.value)
+    }
+
+    // --- Phase 13-02: the handoff-commit applies the configured correction ruleset -----------------
+
+    @Test
+    fun `the synthetic handoff final is corrected when a ruleset is configured`() = runTest {
+        val fakeWs = FakeWebSocketFactory()
+        val fakeHandle = FakeRecognizerHandle()
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val config = SttConfig(
+            serverUrl = "wss://example.ts.net:8444/",
+            corrections = listOf(CorrectionPair(wrong = "kubernetes", right = "Kubernetes")),
+        )
+        val selector = buildSelector(fakeWs, fakeHandle, dispatcher, fakeHandle.calls, config)
+        val finals = mutableListOf<FinalSegment>()
+        backgroundScope.launch(dispatcher) { selector.finals.collect { finals += it } }
+
+        val started = launch(dispatcher) { selector.start() }
+        fakeWs.fireOpen()
+        fakeWs.fireMessage("""{"type":"ready"}""")
+        started.join()
+
+        fakeWs.fireMessage("""{"type":"partial","text":"deploy kubernetes now","segmentId":0}""")
+        advanceUntilIdle()
+
+        fakeWs.fireFailure(IOException("connection reset"))
+        advanceUntilIdle()
+        fakeHandle.reachListening()
+        advanceUntilIdle()
+
+        assertEquals(listOf(FinalSegment("deploy Kubernetes now", 0)), finals.toList())
     }
 }

@@ -10,6 +10,7 @@ import io.github.ygaray.sttengine.SttEngine
 import io.github.ygaray.sttengine.SttError
 import io.github.ygaray.sttengine.SttErrorCode
 import io.github.ygaray.sttengine.SttEvent
+import io.github.ygaray.sttengine.corrections.Corrections
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -94,6 +95,7 @@ internal class BackendSelector(
             serverUrl = url,
             language = config.language,
             mainDispatcher = mainDispatcher,
+            corrections = config.corrections,
         )
     },
 ) : SttEngine {
@@ -320,7 +322,9 @@ internal class BackendSelector(
         // 1. commit the live partial BEFORE any teardown.
         val partialText = serverBackend.partial.value
         if (partialText.isNotBlank()) {
-            val segment = FinalSegment(partialText, HANDOFF_SEGMENT_ID)
+            val text = config.corrections?.takeIf { it.isNotEmpty() }
+                ?.let { Corrections.apply(partialText, it) } ?: partialText
+            val segment = FinalSegment(text, HANDOFF_SEGMENT_ID)
             finalsChannel.trySend(segment)
             _events.tryEmit(SttEvent.Final(segment))
         }
