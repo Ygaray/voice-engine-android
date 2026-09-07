@@ -279,4 +279,88 @@ public object Corrections {
 
         return pairs
     }
+
+    /**
+     * The hand-enumerated common-word anti-list (CORR-05, `13-04-PLAN.md` Task 1 Step 5) — the
+     * over-correction guard STATE.md's carried-forward Phase-13 blocker calls for ("keep an
+     * anti-list of ambiguous common tokens"). `internal` (not on the public ABI): a host does not
+     * configure it in v1. Checked against `pair.wrong` only, lowercased via the locale-independent
+     * no-arg `lowercase()` (never `pair.right` — a common word can legitimately be the CORRECTED
+     * form).
+     *
+     * Byte-parity note (CORR-04): the SAME literal word set as the TS twin's
+     * `COMMON_WORD_ANTI_LIST` in `web/src/corrections.ts` — any change here must be mirrored there.
+     */
+    internal val COMMON_WORD_ANTI_LIST: Set<String> =
+        setOf(
+            // EN
+            "a", "i", "the", "to", "is", "in", "and", "of", "it", "that",
+            // ES
+            "a", "el", "la", "de", "que", "y", "en", "un", "una", "lo",
+        )
+
+    /** One tallied candidate pair mined while scanning `revisions` — kept alongside its observed
+     *  count until the frequency gate, sort, and anti-list filter below have all run. */
+    private class TalliedPair(val pair: CorrectionPair, var count: Int)
+
+    /**
+     * Build a bounded, frequency-gated, anti-list-filtered [CorrectionRuleset] from a
+     * host-supplied, append-only [CorrectionRevision] corpus (Phase 12's landed shape) — the
+     * CORR-05 promotion + bounding transform. Pure and synchronous (D-04): re-running this over
+     * the identical `revisions` list always returns byte-identical output; there is no persisted
+     * counter or other module-level mutable state.
+     *
+     * Byte-parity note (CORR-04): hand-ported line-for-line from the TS twin's `buildRuleset`
+     * (`web/src/corrections.ts`) from the SAME steps — any change here must be mirrored there.
+     *
+     * @param revisions The host's own stored corpus, in list (chronological, append-only) order —
+     *   never re-sorted here, since list order is the one deterministic input order both
+     *   platforms share.
+     * @param thresholdN Minimum observation count for promotion. Defaults to
+     *   [DEFAULT_PROMOTION_THRESHOLD].
+     * @param maxRulesetSize Maximum returned ruleset size, enforced inside this function
+     *   (Security Domain T-13-02). Defaults to [DEFAULT_RULESET_CAP].
+     */
+    public fun buildRuleset(
+        revisions: List<CorrectionRevision>,
+        thresholdN: Int = DEFAULT_PROMOTION_THRESHOLD,
+        maxRulesetSize: Int = DEFAULT_RULESET_CAP,
+    ): CorrectionRuleset {
+        // Tally each mined pair, keyed by a NUL-joined composite (never comma/pipe-joined, which
+        // could collide with real text content) — list order preserved (no re-sort of
+        // `revisions` itself).
+        val tally = LinkedHashMap<String, TalliedPair>()
+        for (revision in revisions) {
+            val mined = deriveCorrections(revision.recognized, revision.corrected)
+            for (pair in mined) {
+                val key = "${pair.wrong} ${pair.right}"
+                val existing = tally[key]
+                if (existing != null) {
+                    existing.count += 1
+                } else {
+                    tally[key] = TalliedPair(pair, 1)
+                }
+            }
+        }
+
+        // Frequency gate.
+        val qualifying = tally.values.filter { it.count >= thresholdN }
+
+        // Sort by count DESCENDING, tie-break by `wrong` ascending, then `right` ascending —
+        // extends the CORR-01/ordering discipline to ruleset construction.
+        val sorted =
+            qualifying.sortedWith(
+                compareByDescending<TalliedPair> { it.count }
+                    .thenBy { it.pair.wrong }
+                    .thenBy { it.pair.right },
+            )
+
+        // Anti-list safeguard: drop any entry whose `wrong` side (lowercased) is a common EN/ES
+        // function word, regardless of observed count.
+        val filtered = sorted.filter { it.pair.wrong.lowercase() !in COMMON_WORD_ANTI_LIST }
+
+        // Bounded cap, enforced INSIDE this function (T-13-02), never left to the host/config
+        // layer.
+        return filtered.take(maxRulesetSize).map { it.pair }
+    }
 }
