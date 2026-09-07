@@ -5,6 +5,8 @@ import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.SttError
 import io.github.ygaray.sttengine.SttErrorCode
 import io.github.ygaray.sttengine.SttWarning
+import io.github.ygaray.sttengine.corrections.Corrections
+import io.github.ygaray.sttengine.corrections.CorrectionRuleset
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -100,6 +102,7 @@ internal class ServerBackend(
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
     private val pcmSourceFactory: PcmSourceFactory = AudioRecordPcmSource,
     private val backpressureGate: ServerBackpressureGate = ServerBackpressureGate(),
+    private val corrections: CorrectionRuleset? = null,
     private val monotonicMs: () -> Long = { System.currentTimeMillis() },
 ) {
 
@@ -434,7 +437,9 @@ internal class ServerBackend(
 
                 is ServerFrame.Final -> {
                     _partial.value = ""
-                    finalsChannel.trySend(FinalSegment(frame.text, frame.segmentId))
+                    val text = corrections?.takeIf { it.isNotEmpty() }
+                        ?.let { Corrections.apply(frame.text, it) } ?: frame.text
+                    finalsChannel.trySend(FinalSegment(text, frame.segmentId))
                 }
 
                 // Carries the server's taxonomy code verbatim (mirrors protocol.ts) — this client

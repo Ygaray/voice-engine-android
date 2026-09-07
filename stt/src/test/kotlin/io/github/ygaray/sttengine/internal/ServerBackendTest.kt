@@ -4,6 +4,7 @@ import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.SttError
 import io.github.ygaray.sttengine.SttErrorCode
+import io.github.ygaray.sttengine.corrections.CorrectionPair
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -209,6 +210,52 @@ class ServerBackendTest {
             assertEquals(1, errors.size)
             assertEquals(SttErrorCode.PROTOCOL_VIOLATION, errors.single().code)
             assertEquals(EngineState.Error, backend.state.value)
+        }
+
+    // --- Phase 13-02: ServerFrame.Final applies the configured correction ruleset ------------------
+
+    @Test
+    fun `a Final frame containing the ruleset's wrong text is corrected before reaching finals`() =
+        runTest {
+            val dispatcher = UnconfinedTestDispatcher(testScheduler)
+            val fakeWs = FakeWebSocketFactory()
+            val backend = ServerBackend(
+                webSocketFactory = fakeWs,
+                serverUrl = "wss://example.ts.net:8444/",
+                language = "en",
+                mainDispatcher = dispatcher,
+                corrections = listOf(CorrectionPair(wrong = "kubernetes", right = "Kubernetes")),
+            )
+            val finals = mutableListOf<FinalSegment>()
+            backgroundScope.launch(dispatcher) { backend.finals.collect { finals += it } }
+
+            backgroundScope.launch(dispatcher) { backend.connect() }
+            fakeWs.fireOpen()
+            fakeWs.fireMessage("""{"type":"final","text":"deploy kubernetes now","segmentId":1}""")
+
+            assertEquals(listOf(FinalSegment("deploy Kubernetes now", 1)), finals)
+        }
+
+    @Test
+    fun `a Final frame with no configured corrections passes frame text through unchanged`() =
+        runTest {
+            val dispatcher = UnconfinedTestDispatcher(testScheduler)
+            val fakeWs = FakeWebSocketFactory()
+            val backend = ServerBackend(
+                webSocketFactory = fakeWs,
+                serverUrl = "wss://example.ts.net:8444/",
+                language = "en",
+                mainDispatcher = dispatcher,
+                corrections = null,
+            )
+            val finals = mutableListOf<FinalSegment>()
+            backgroundScope.launch(dispatcher) { backend.finals.collect { finals += it } }
+
+            backgroundScope.launch(dispatcher) { backend.connect() }
+            fakeWs.fireOpen()
+            fakeWs.fireMessage("""{"type":"final","text":"deploy kubernetes now","segmentId":1}""")
+
+            assertEquals(listOf(FinalSegment("deploy kubernetes now", 1)), finals)
         }
 
     // --- CR-01: abandon() must release an already-opened server-path mic ---------------------------
