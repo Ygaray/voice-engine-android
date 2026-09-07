@@ -206,7 +206,7 @@ publishing {
             // D-03 (147): 0.5.0 — locked release literal for the language-widening minor bump
             // (additive submitJob(file, mimeType, language) parameter). All four modules bump
             // together via Plan 05's release cut.
-            version = "0.5.0"
+            version = "0.6.0"
             afterEvaluate {
                 from(components["release"])
             }
