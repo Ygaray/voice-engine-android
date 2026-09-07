@@ -117,6 +117,13 @@ internal class SttEngineImpl(
             language = LanguageTags.regionQualified(config.language, deviceLocale),
             prefer = config.prefer,
             serverUrl = config.serverUrl,
+            // IN-02 (13-REVIEW.md): forwarded for consistency with `config` — a future reader who
+            // reasonably assumes `resolvedConfig` is simply "`config` with a region-qualified
+            // language" would otherwise silently read back `null` here regardless of what the host
+            // configured. Harmless today (only `.language` is read off `resolvedConfig`; `emitFinal`
+            // already reads `config.corrections` directly, never `resolvedConfig.corrections`), but
+            // forwarding it removes the trap.
+            corrections = config.corrections,
         )
 
     // --- the public surface (D-07/D-08) -----------------------------------------------------------
