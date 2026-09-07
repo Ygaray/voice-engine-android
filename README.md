@@ -70,10 +70,10 @@ implementation("com.github.Ygaray:voice-engine-android:<tag>")
 ```
 
 > **This is the multi-module "install everything" aggregator** — it transitively pulls in `:stt`,
-> `:recorder`, `:voicenotes` and `:transcription` together. For `:stt` alone, with no Recorder/
-> VoiceNotes/Transcription bytes pulled in, depend on
+> `:recorder`, `:voicenotes`, `:transcription` and `:corrections` together. For `:stt` alone, with no
+> Recorder/VoiceNotes/Transcription/Corrections bytes pulled in, depend on
 > `com.github.Ygaray.voice-engine-android:voice-engine-android:<tag>` instead (note the
-> `.voice-engine-android` groupId suffix). See `INTEGRATION.md` step 2 and §7–9 for the secondary
+> `.voice-engine-android` groupId suffix). See `INTEGRATION.md` step 2 and §7–10 for the secondary
 > modules' own coordinates, which all share that same groupId suffix.
 
 ## Quick start
