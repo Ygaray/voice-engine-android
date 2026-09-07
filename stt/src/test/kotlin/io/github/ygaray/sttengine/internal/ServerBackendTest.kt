@@ -10,6 +10,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -311,4 +312,61 @@ class ServerBackendTest {
 
         assertTrue("abandon() must release an already-opened mic", recordingSource.released)
     }
+
+    // --- WR-01 (17-REVIEW.md): the vocabulary constructor param reaches the real sent config frame --
+    //
+    // WsProtocolTest already unit-tests buildConfigFrame(language, vocabulary) in isolation. This is
+    // the missing end-to-end proof that ServerBackend's own `vocabulary` parameter actually reaches
+    // that call — mirrors web/tests/engine.test.ts's "vocabulary wiring on the real sent config frame"
+    // test, including its mutation-immunity assertion for the constructor's immutable snapshot
+    // (`vocabulary?.toList()`).
+
+    @Test
+    fun `vocabulary constructor param reaches the real sent config frame`() = runTest {
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val fakeWs = FakeWebSocketFactory()
+        val backend = ServerBackend(
+            webSocketFactory = fakeWs,
+            serverUrl = "wss://example.ts.net:8444/",
+            language = "en",
+            mainDispatcher = dispatcher,
+            vocabulary = listOf("Yahir", "Tailscale"),
+        )
+
+        backgroundScope.launch(dispatcher) { backend.connect() }
+        fakeWs.fireOpen()
+
+        val sentConfigFrame = JSONObject(checkNotNull(fakeWs.lastSocket).sent.single())
+        val vocabulary = sentConfigFrame.getJSONArray("vocabulary")
+        assertEquals(2, vocabulary.length())
+        assertEquals("Yahir", vocabulary.getString(0))
+        assertEquals("Tailscale", vocabulary.getString(1))
+    }
+
+    @Test
+    fun `vocabulary constructor param is immune to a later mutation of the host's source list`() =
+        runTest {
+            val dispatcher = UnconfinedTestDispatcher(testScheduler)
+            val fakeWs = FakeWebSocketFactory()
+            val hostVocabulary = mutableListOf("Yahir", "SecondBrain")
+            val backend = ServerBackend(
+                webSocketFactory = fakeWs,
+                serverUrl = "wss://example.ts.net:8444/",
+                language = "en",
+                mainDispatcher = dispatcher,
+                vocabulary = hostVocabulary,
+            )
+            // Mutate AFTER construction but BEFORE connect()/onOpen — proving the constructor's
+            // `vocabulary?.toList()` snapshot was taken eagerly, not read lazily off the host's list.
+            hostVocabulary.add("Injected")
+
+            backgroundScope.launch(dispatcher) { backend.connect() }
+            fakeWs.fireOpen()
+
+            val sentConfigFrame = JSONObject(checkNotNull(fakeWs.lastSocket).sent.single())
+            val vocabulary = sentConfigFrame.getJSONArray("vocabulary")
+            assertEquals(2, vocabulary.length())
+            assertEquals("Yahir", vocabulary.getString(0))
+            assertEquals("SecondBrain", vocabulary.getString(1))
+        }
 }
