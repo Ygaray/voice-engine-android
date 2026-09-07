@@ -109,6 +109,18 @@
         { "wrong": "wordfour", "right": "wordfourfix" },
         { "wrong": "wordone", "right": "wordonefix" }
       ]
+    },
+    {
+      "description": "CR-01 regression (13-REVIEW.md): two revisions whose mined wrong/right pairs would collide under a naive space-joined tally key ('foo bar'+'baz' vs 'foo'+'bar baz' both stringify to 'foo bar baz' when space-joined) are tallied and promoted as two DISTINCT pairs, not merged into one",
+      "revisions": [
+        { "recognized": "foo bar", "corrected": "baz", "createdAt": "2026-01-01T00:00:00Z" },
+        { "recognized": "foo", "corrected": "bar baz", "createdAt": "2026-01-01T00:00:01Z" }
+      ],
+      "thresholdN": 1,
+      "expected": [
+        { "wrong": "foo", "right": "bar baz" },
+        { "wrong": "foo bar", "right": "baz" }
+      ]
     }
   ]
 }
