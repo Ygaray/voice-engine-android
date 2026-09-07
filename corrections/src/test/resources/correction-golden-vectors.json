@@ -1,0 +1,114 @@
+{
+  "applyCases": [
+    {
+      "description": "empty ruleset passthrough — apply returns text unchanged byte-for-byte when no rules are configured",
+      "ruleset": [],
+      "input": "hello world",
+      "expected": "hello world"
+    },
+    {
+      "description": "empty input — apply on an empty string with a configured (but non-matching) ruleset returns an empty string",
+      "ruleset": [{ "wrong": "cassa", "right": "casa" }],
+      "input": "",
+      "expected": ""
+    },
+    {
+      "description": "real captured accented-ES spike text (13-01-SUMMARY.md D-02 finding, faster-whisper/int8_float32/GTX 1070 GPU output against server/fixtures/es/cof_00610_00100787111.wav) — corrects an accent-dropped ASR mis-recognition ('esta') to the confirmed NFC-composed form ('está') inside the real captured sentence",
+      "ruleset": [{ "wrong": "esta", "right": "está" }],
+      "input": "¿Qué tan lejos esta usted de su carro?",
+      "expected": "¿Qué tan lejos está usted de su carro?"
+    },
+    {
+      "description": "multi-word phrase substitution (mirrors 13-03's 'dock tor' -> 'doctor' case)",
+      "ruleset": [{ "wrong": "dock tor", "right": "doctor" }],
+      "input": "el dock tor llego",
+      "expected": "el doctor llego"
+    },
+    {
+      "description": "two DIFFERENT ruleset entries matching two different tokens in the same input, back-to-back with a single space between them — each replaces independently with no boundary corruption",
+      "ruleset": [
+        { "wrong": "foo", "right": "quux" },
+        { "wrong": "bar", "right": "baz" }
+      ],
+      "input": "foo bar",
+      "expected": "quux baz"
+    }
+  ],
+  "deriveCases": [
+    {
+      "description": "single-word substitution mined from a recognized/corrected diff",
+      "recognized": "mi cassa",
+      "corrected": "mi casa",
+      "expected": [{ "wrong": "cassa", "right": "casa" }]
+    },
+    {
+      "description": "multi-word pair mined from an asymmetric word-count diff",
+      "recognized": "el dock tor llego",
+      "corrected": "el doctor llego",
+      "expected": [{ "wrong": "dock tor", "right": "doctor" }]
+    },
+    {
+      "description": "pure insertion yields no correction pair",
+      "recognized": "hola",
+      "corrected": "hola mundo",
+      "expected": []
+    },
+    {
+      "description": "pure deletion yields no correction pair",
+      "recognized": "mundo hola",
+      "corrected": "hola",
+      "expected": []
+    },
+    {
+      "description": "identical text yields no correction pair (no-op guard)",
+      "recognized": "mismo",
+      "corrected": "mismo",
+      "expected": []
+    }
+  ],
+  "buildRulesetCases": [
+    {
+      "description": "a pair observed one fewer time than the threshold is excluded (below threshold)",
+      "revisions": [
+        { "recognized": "mi cassa", "corrected": "mi casa", "createdAt": "2026-01-01T00:00:00Z" }
+      ],
+      "thresholdN": 2,
+      "expected": []
+    },
+    {
+      "description": "a pair observed exactly the threshold number of times is included (meets threshold exactly)",
+      "revisions": [
+        { "recognized": "mi cassa", "corrected": "mi casa", "createdAt": "2026-01-01T00:00:00Z" },
+        { "recognized": "mi cassa", "corrected": "mi casa", "createdAt": "2026-01-01T00:00:01Z" }
+      ],
+      "thresholdN": 2,
+      "expected": [{ "wrong": "cassa", "right": "casa" }]
+    },
+    {
+      "description": "a common EN function word ('a') never promotes regardless of observed count (anti-list overrides frequency-gating)",
+      "revisions": [
+        { "recognized": "a", "corrected": "uh", "createdAt": "2026-01-01T00:00:00Z" },
+        { "recognized": "a", "corrected": "uh", "createdAt": "2026-01-01T00:00:01Z" }
+      ],
+      "thresholdN": 2,
+      "expected": []
+    },
+    {
+      "description": "5 distinct qualifying pairs truncate to EXACTLY maxRulesetSize entries, sorted by count desc then wrong/right ascending before truncation (cap enforced inside the function)",
+      "revisions": [
+        { "recognized": "wordone", "corrected": "wordonefix", "createdAt": "2026-01-01T00:00:00Z" },
+        { "recognized": "wordtwo", "corrected": "wordtwofix", "createdAt": "2026-01-01T00:00:01Z" },
+        { "recognized": "wordthree", "corrected": "wordthreefix", "createdAt": "2026-01-01T00:00:02Z" },
+        { "recognized": "wordfour", "corrected": "wordfourfix", "createdAt": "2026-01-01T00:00:03Z" },
+        { "recognized": "wordfive", "corrected": "wordfivefix", "createdAt": "2026-01-01T00:00:04Z" }
+      ],
+      "thresholdN": 1,
+      "maxRulesetSize": 3,
+      "expected": [
+        { "wrong": "wordfive", "right": "wordfivefix" },
+        { "wrong": "wordfour", "right": "wordfourfix" },
+        { "wrong": "wordone", "right": "wordonefix" }
+      ]
+    }
+  ]
+}
