@@ -24,6 +24,7 @@ file ever disagree, the file is right and this document is a bug.
 | `SttEvent` | sealed interface (7 members) | the same seven events as one union, for a shared `when` |
 | `RecorderConfig` | class (`:recorder`) | host-configurable level cadence + MediaRecorder encoding params — see [Recorder](#recorder) |
 | `RecorderForegroundService` | `Service` + binder (`:recorder`) | binder-only bound/started foreground-service seam, host-supplied notification via `RecorderNotificationConfig` — see [Recorder](#recorder) |
+| `Corrections` | object (`:corrections`) | `deriveCorrections` / `apply` / `buildRuleset` — mine, apply, and build a bounded correction ruleset — see [Corrections](#corrections) |
 
 Nothing else is public. Every implementation type — the recognizer seam, the segment accumulator,
 the session epoch, the capability ladder, the restart policy, the error mapper, the session log — is
@@ -149,10 +150,13 @@ public class SttConfig @JvmOverloads constructor(
     public val language: String = "en",
     public val prefer: BackendPreference = BackendPreference.Auto,
     public val serverUrl: String? = null,
+    corrections: CorrectionRuleset? = null,
+    vocabulary: List<String>? = null,
 )
 ```
 
-Three fields (Phase 9, D-01). `prefer` (`BackendPreference`) selects which `Backend` to prefer —
+Five fields (Phase 9 D-01 for `prefer`/`serverUrl`; Phase 13 CORR-01/D-05 for `corrections`; Phase 17
+REL-03/BIAS-01 for `vocabulary`). `prefer` (`BackendPreference`) selects which `Backend` to prefer —
 `Auto` (default) tries the self-hosted server first with a bounded timeout and falls back to native
 silently; `Server` forces server-only (surfacing exactly one typed error on failure, no native
 fallback); `OnDevice` skips the server phase entirely, byte-identical to the v1.0 default path.
@@ -161,13 +165,29 @@ to disable the server backend entirely — a session with a `null` `serverUrl` a
 regardless of `prefer`. There is no safe default hostname on Android the way `location.hostname`
 exists in a browser, so the host must supply this explicitly to opt in.
 
+`corrections` is the active correction ruleset (see [Corrections](#corrections)) —
+`Corrections.apply` replays it against every committed final at each real emit-origin point;
+partials are never corrected (CORR-03). `null` (the default) is a zero-cost no-op — a host that
+never builds a ruleset pays nothing. The constructor takes an immutable snapshot
+(`corrections?.toList()`) of the host-supplied list rather than aliasing it directly, so a host that
+mutates its own live list afterward cannot tear a concurrent `apply()` call.
+
+`vocabulary` is the host's personal vocabulary/term list (BIAS-01) — biases the live server-backed
+session toward these names/jargon terms via the server's Whisper `hotwords`, the same live-path
+parity `TranscriptionClient.submitJob`'s batch `vocabulary` parameter already has (see
+[Transcription](#transcription)). `null` (the default) is a zero-cost no-op — the WS config frame's
+`vocabulary` key is omitted entirely, not sent empty. Takes the same immutable-snapshot treatment
+`corrections` gets, for the same concurrent-mutation reason, and is silently inert on a session that
+never reaches the server backend (native on-device recognition has no concept of biasing hotwords).
+
 `sampleRate` from the TypeScript options object stays **dropped, not stubbed**: the wire protocol's
 sample rate is fixed (`16_000`) and is never a host-settable knob on either backend.
 
-`@JvmOverloads` is required on this constructor — without it, adding `prefer`/`serverUrl` as two more
-trailing-defaulted parameters would silently drop the single-arg `SttConfig(String)` overload from the
-frozen `.api` dump (Kotlin's "every parameter has a default" special case only auto-generates the
-zero-arg and full-arg constructors, not every arity in between).
+`@JvmOverloads` is required on this constructor — without it, adding a new trailing-defaulted
+parameter would silently drop a shorter-arity overload (e.g. the single-arg `SttConfig(String)`) from
+the frozen `.api` dump (Kotlin's "every parameter has a default" special case only auto-generates the
+zero-arg and full-arg constructors, not every arity in between). This is why `corrections` and
+`vocabulary` were added as trailing, not inserted between existing parameters.
 
 `language` is passed straight through to `RecognizerIntent.EXTRA_LANGUAGE` and is checked against the
 device's installed on-device models before any audio is captured. It exists from day one so that v2
@@ -191,15 +211,23 @@ multilingual is **additive** rather than a breaking contract change.
 None of these is a `data class`. That is a binary-compatibility decision, not a style one — see
 `CLAUDE.md`.
 
-### `FinalSegment(text: String, segmentId: Int)`
+### `FinalSegment(text: String, segmentId: Int, language: String? = null)`
 
 A committed, immutable transcript segment. `equals` / `hashCode` / `toString` are hand-written.
+`@JvmOverloads` preserves the existing 2-arg `<init>(String, Int)` in the frozen `.api` dump
+alongside the new 3-arg overload, for the same reason `SttConfig` documents above.
 
 **`segmentId` starts at `0`, is library-owned and monotonic within a session, and is OPAQUE and
 PER-SESSION.** It is explicitly **not comparable across backends** and not a stable identifier
 outside the session that produced it — the server-backed client restarts its numbering on reconnect,
 and this backend owns its own counter. Treat it as an ordering key inside one session and nothing
 more.
+
+**`language` (Phase 17, LANG-02/LANG-03)** is the server-detected language label for a server-backed
+bilingual `"auto"` session — additive and `null` in every other case: always `null` on the native
+on-device backend (native never detects language), and `null` on the server backend unless the
+server frame actually carried a label. A host that never runs a bilingual server session sees `null`
+unconditionally and can ignore the field entirely.
 
 **Known seam (Phase 9): a mid-session server→native handoff resets the counter.** When a session
 starts on the server backend and later drops to the on-device fallback (SEL-04), the synthetic final
@@ -707,6 +735,122 @@ A fresh, `:transcription`-owned error taxonomy — 2 companion constants:
 `voicenotes.NoteErrorCode.UPLOAD_TOO_LARGE`/`.UPLOAD_REJECTED` but is **not the same type** — it is a
 genuinely separate, freshly-declared type, and depending on `:transcription` creates no dependency
 edge onto `:voicenotes` or vice versa.
+
+---
+
+## Corrections
+
+A fifth, independently publishable Gradle module (`:corrections`, JitPack artifact
+`voice-engine-android-corrections`) — the portable, zero-I/O correction/vocabulary-learning core:
+mine candidate correction pairs from a recognized→corrected diff, rewrite committed final text
+against an active ruleset, and build a bounded, frequency-gated active ruleset from a stored
+correction corpus. Hand-ported line-for-line from `web/src/corrections.ts` (Phase 13, CORR-01/
+CORR-02/CORR-04/CORR-05) for byte parity — no two independently-designed implementations in
+different languages are guaranteed to agree on tie-breaking behavior, so this module follows the
+SAME steps as the TypeScript twin rather than a fresh design; any change on one side must be
+mirrored on the other.
+
+```kotlin
+public class CorrectionRevision(
+    public val recognized: String,
+    public val corrected: String,
+    public val createdAt: String,
+    public val audioUri: String? = null,
+)
+
+public class CorrectionPair(
+    public val wrong: String,
+    public val right: String,
+)
+
+public typealias CorrectionRuleset = List<CorrectionPair>
+
+public object Corrections {
+    public const val DEFAULT_PROMOTION_THRESHOLD: Int = 2
+    public const val DEFAULT_RULESET_CAP: Int = 200
+
+    public fun deriveCorrections(recognized: String, corrected: String): List<CorrectionPair>
+    public fun apply(text: String, ruleset: CorrectionRuleset): String
+    public fun buildRuleset(
+        revisions: List<CorrectionRevision>,
+        thresholdN: Int = DEFAULT_PROMOTION_THRESHOLD,
+        maxRulesetSize: Int = DEFAULT_RULESET_CAP,
+    ): CorrectionRuleset
+}
+```
+
+None of `CorrectionRevision`/`CorrectionPair` is a `data class` (`CLAUDE.md` invariant #2) — the
+same binary-compatibility discipline as every other model type in this document: a future optional
+field must be addable without breaking every already-published consumer's resolved `copy()`/
+constructor ABI. Since these are plain classes they have no `copy()`; both hand-write
+`equals`/`hashCode`/`toString`.
+
+### `CorrectionRevision`
+
+An append-only correction/corpus revision — one immutable revision keyed to the same audio. A
+correction is always a NEW revision, never a mutation of a prior one; this type exports no
+`replace`/`update`/`copy`-like helper, and the absence of a mutation path is the append-only
+guarantee's actual enforcement mechanism (mechanically backed by `:corrections:apiCheck`).
+
+| Field | Meaning |
+|---|---|
+| `recognized` | What the engine originally recognized. |
+| `corrected` | What the host/user corrected it to. |
+| `createdAt` | ISO-8601 UTC timestamp of when this revision was recorded. |
+| `audioUri` | An opaque, host-issued locator for the audio this revision was corrected against — never validated, parsed, or dereferenced by the engine (mirrors `RecordedFile.uri`'s opaque-locator framing). `null` when not supplied. |
+
+The persistence contract a host's own datastore must follow to avoid silently destroying its own
+correction history is in `../docs/CORPUS-INTEGRITY.md` — read it before wiring a `CorrectionRevision`
+store, not after.
+
+### `CorrectionPair` / `CorrectionRuleset`
+
+`CorrectionPair(wrong, right)` is a single word/phrase substitution — a different granularity than
+`CorrectionRevision`'s whole-utterance `recognized`/`corrected`. `CorrectionRuleset` is a plain
+`List<CorrectionPair>` type alias, not its own class — an active ruleset is just an ordered list a
+host builds once (via `buildRuleset`, below) and hands to `apply()` or `SttConfig.corrections`.
+
+### `deriveCorrections(recognized, corrected)`
+
+Mines candidate `CorrectionPair`s from a single recognized→corrected diff via a word-level LCS
+alignment. Pure, synchronous, zero-I/O, and standalone — importable and usable without constructing
+an `SttEngine`, e.g. over a batch of corrected voice-note transcripts.
+
+### `Corrections.apply(text, ruleset)`
+
+Rewrites `text` by replacing every whole-token/whole-phrase match of a ruleset pair's `wrong` text
+with its `right` text. Matching is purely a literal, tokenized-array elementwise comparison — it
+never constructs a `Regex` from host-supplied text. An empty ruleset is a fast-path no-op: `text` is
+returned byte-for-byte unchanged. A non-empty ruleset NFC-normalizes the entire output, including
+unmatched spans — a documented, deliberate side effect distinct from "correction," relevant only to a
+host whose recognizer might ever emit non-NFC text.
+
+### `buildRuleset(revisions, thresholdN?, maxRulesetSize?)`
+
+Builds a bounded, frequency-gated, anti-list-filtered `CorrectionRuleset` from a host-supplied,
+append-only `CorrectionRevision` corpus. Pure and synchronous — re-running this over the identical
+`revisions` list always returns byte-identical output; there is no persisted counter or other
+module-level mutable state.
+
+**Note on shape:** unlike the TypeScript twin's `buildRuleset(revisions, options?)` (an optional
+`BuildRulesetOptions { thresholdN?, maxRulesetSize? }` bag), the Kotlin signature exposes
+`thresholdN`/`maxRulesetSize` as plain trailing-defaulted parameters directly on `buildRuleset`
+itself — the actual committed Kotlin idiom, not a ported options object. Both platforms accept and
+default the same two knobs; only the calling shape differs.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `revisions` | *(required)* | The host's own stored corpus, in list (chronological, append-only) order — never re-sorted, since list order is the one deterministic input order both platforms share. |
+| `thresholdN` | `Corrections.DEFAULT_PROMOTION_THRESHOLD` (`2`) | Minimum observation count before a mined pair is promoted into the returned ruleset. |
+| `maxRulesetSize` | `Corrections.DEFAULT_RULESET_CAP` (`200`) | Maximum returned ruleset size, enforced inside this function — never left to the host/config layer. Truncated in order of highest observed count first. |
+
+A hand-enumerated, non-configurable list of common EN/ES function words (`a`, `the`, `el`, `la`, …)
+is excluded from promotion regardless of how many times it was observed — a guard against a single
+ambiguous, high-frequency mis-hearing silently becoming a standing rule.
+
+See [`INTEGRATION.md`](INTEGRATION.md)'s "Adopt Corrections" step for the worked adoption snippet,
+and [`SttConfig`](#sttconfig) above for how a built ruleset reaches a live session via
+`SttConfig.corrections`.
 
 ---
 
