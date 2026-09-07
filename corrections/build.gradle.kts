@@ -88,6 +88,14 @@ dependencies {
     // :corrections is a pure data shape with no suspend functions, no I/O — unlike :transcription
     // (coroutines/OkHttp) this module needs neither.
     testImplementation(libs.junit)
+    // 13-05's fixture-driven CorrectionsTest reads the golden-vector JSON via org.json.JSONObject/
+    // JSONArray. org.json.* is an Android-platform stub on the host JVM — without Robolectric,
+    // AGP's unitTests.isReturnDefaultValues=true (set above) makes it silently return null/defaults
+    // instead of really parsing. The real, standalone org.json:json JVM implementation (same
+    // package/class names) is the standard Android-testing fix — test-only, never reaches the
+    // release/runtime classpath. Mirrors :transcription's existing testImplementation(libs.json)
+    // precedent.
+    testImplementation(libs.json)
 }
 
 // JitPack android-example publishing form, mirrors every sibling module's exactly.

@@ -1,5 +1,7 @@
 package io.github.ygaray.sttengine.corrections
 
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -128,5 +130,105 @@ class CorrectionsTest {
         val first = Corrections.buildRuleset(revs, thresholdN = Corrections.DEFAULT_PROMOTION_THRESHOLD)
         val second = Corrections.buildRuleset(revs, thresholdN = Corrections.DEFAULT_PROMOTION_THRESHOLD)
         assertEquals(first, second)
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // CORR-04 golden-vector fixture (Phase 13 Plan 05) — reads the SAME committed JSON that
+    // `web/tests/corrections.test.ts` reads (`web/tests/fixtures/correction-golden-vectors.json`),
+    // byte-identical to this module's own `src/test/resources/correction-golden-vectors.json`,
+    // diffed by `scripts/check-correction-fixture-parity.sh`. This is the cross-language parity
+    // proof; the hand-written cases above stay as targeted unit tests, not replaced by this
+    // fixture. Deliberately NO `Assume.assumeTrue` skip path (D-03): the fixture file is ALWAYS
+    // present, never optional, unlike `ErrorCodeParityTest`'s cross-repo skip pattern.
+    // -------------------------------------------------------------------------------------------
+
+    /** Classpath-root resource loading — `src/test/resources/` files are automatically on the test
+     *  runtime classpath root, so no path prefix and no CWD dependency. */
+    private fun loadFixture(): JSONObject {
+        val text =
+            object {}.javaClass.classLoader!!.getResourceAsStream("correction-golden-vectors.json")!!
+                .bufferedReader().readText()
+        return JSONObject(text)
+    }
+
+    private fun parsePairList(pairs: JSONArray): List<CorrectionPair> =
+        (0 until pairs.length()).map { i ->
+            val pair = pairs.getJSONObject(i)
+            CorrectionPair(pair.getString("wrong"), pair.getString("right"))
+        }
+
+    private fun parseRevisions(revisions: JSONArray): List<CorrectionRevision> =
+        (0 until revisions.length()).map { i ->
+            val rev = revisions.getJSONObject(i)
+            CorrectionRevision(
+                recognized = rev.getString("recognized"),
+                corrected = rev.getString("corrected"),
+                createdAt = rev.getString("createdAt"),
+                audioUri = if (rev.has("audioUri")) rev.getString("audioUri") else null,
+            )
+        }
+
+    @Test
+    fun `CORR-04 golden-vector fixture — apply cases match, including idempotency`() {
+        val cases = loadFixture().getJSONArray("applyCases")
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val description = case.getString("description")
+            val ruleset = parsePairList(case.getJSONArray("ruleset"))
+            val input = case.getString("input")
+            val expected = case.getString("expected")
+
+            assertEquals("apply case: $description", expected, Corrections.apply(input, ruleset))
+            // must_haves.truths idempotency guarantee, run against EVERY fixture case:
+            // apply(apply(input, ruleset), ruleset) === apply(input, ruleset).
+            assertEquals(
+                "apply case (idempotency): $description",
+                expected,
+                Corrections.apply(expected, ruleset),
+            )
+        }
+    }
+
+    @Test
+    fun `CORR-04 golden-vector fixture — deriveCorrections cases match`() {
+        val cases = loadFixture().getJSONArray("deriveCases")
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val description = case.getString("description")
+            val recognized = case.getString("recognized")
+            val corrected = case.getString("corrected")
+            val expected = parsePairList(case.getJSONArray("expected"))
+
+            assertEquals(
+                "deriveCorrections case: $description",
+                expected,
+                Corrections.deriveCorrections(recognized, corrected),
+            )
+        }
+    }
+
+    @Test
+    fun `CORR-04 golden-vector fixture — buildRuleset cases match`() {
+        val cases = loadFixture().getJSONArray("buildRulesetCases")
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val description = case.getString("description")
+            val revisions = parseRevisions(case.getJSONArray("revisions"))
+            val thresholdN =
+                if (case.has("thresholdN")) case.getInt("thresholdN") else Corrections.DEFAULT_PROMOTION_THRESHOLD
+            val maxRulesetSize =
+                if (case.has("maxRulesetSize")) {
+                    case.getInt("maxRulesetSize")
+                } else {
+                    Corrections.DEFAULT_RULESET_CAP
+                }
+            val expected = parsePairList(case.getJSONArray("expected"))
+
+            assertEquals(
+                "buildRuleset case: $description",
+                expected,
+                Corrections.buildRuleset(revisions, thresholdN = thresholdN, maxRulesetSize = maxRulesetSize),
+            )
+        }
     }
 }
