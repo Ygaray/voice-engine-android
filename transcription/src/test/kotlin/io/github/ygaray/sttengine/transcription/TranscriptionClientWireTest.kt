@@ -199,8 +199,12 @@ class TranscriptionClientWireTest {
     @Test
     fun `an anonymous implementor still satisfies the widened interface`() = runTest {
         val fakeClient = object : TranscriptionClient {
-            override suspend fun submitJob(file: File, mimeType: String, language: String): SubmitOutcome =
-                SubmitOutcome.Accepted("fake-job")
+            override suspend fun submitJob(
+                file: File,
+                mimeType: String,
+                language: String,
+                vocabulary: List<String>,
+            ): SubmitOutcome = SubmitOutcome.Accepted("fake-job")
 
             override suspend fun getJobStatus(jobId: String): JobStatusOutcome =
                 JobStatusOutcome.Pending

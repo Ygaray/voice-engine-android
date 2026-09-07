@@ -10,6 +10,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -22,13 +23,27 @@ internal class OkHttpTranscriptionClient(
     private val client: OkHttpClient = OkHttpClient(),
 ) : TranscriptionClient {
 
-    override suspend fun submitJob(file: File, mimeType: String, language: String): SubmitOutcome {
+    override suspend fun submitJob(
+        file: File,
+        mimeType: String,
+        language: String,
+        vocabulary: List<String>,
+    ): SubmitOutcome {
         // HUB-03 (147-02): the language part is added BEFORE the file part — load-bearing interop
         // ordering with the Plan 01 server, whose pre-file scan stops as soon as it sees the file
         // part. See TranscriptionClient.submitJob's KDoc for the full behavior contract.
-        val body = MultipartBody.Builder()
+        // BIAS-01 (15-05): vocabulary slots between language and file — mirrors the web client's
+        // "vocabulary before file" convention and keeps language's own load-bearing pre-file
+        // position exactly as HUB-03 established it. A single JSON-array-encoded part, never
+        // repeated parts; omitted entirely when the list is empty (the default), reproducing every
+        // previously published tag's wire shape byte-for-byte.
+        val bodyBuilder = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("language", language)
+        if (vocabulary.isNotEmpty()) {
+            bodyBuilder.addFormDataPart("vocabulary", JSONArray(vocabulary).toString())
+        }
+        val body = bodyBuilder
             .addFormDataPart("file", file.name, file.asRequestBody(mimeType.toMediaType()))
             .build()
         val request = Request.Builder().url("$serverUrl/jobs").post(body).build()

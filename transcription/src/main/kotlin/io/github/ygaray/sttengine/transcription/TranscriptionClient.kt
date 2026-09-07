@@ -16,8 +16,19 @@ public interface TranscriptionClient {
      * exactly — a caller that never passes it sees no change. The server validates the value against
      * its own allow-list and rejects anything else with a typed [SubmitOutcome.Rejected]; the two
      * codes supported at this tag are English (`"en"`) and Spanish (`"es"`).
+     *
+     * [vocabulary] (BIAS-01) is the host's personal vocabulary/term list, JSON-array-encoded into a
+     * single `vocabulary` multipart text part when non-empty (never repeated `vocabulary` parts — the
+     * locked wire contract, mirrored from the server's `_post_job` and the web client's `uploadJob`); an
+     * empty list (the default) omits the part entirely, reproducing every previously published tag's
+     * behavior byte-for-byte.
      */
-    public suspend fun submitJob(file: File, mimeType: String, language: String = "en"): SubmitOutcome
+    public suspend fun submitJob(
+        file: File,
+        mimeType: String,
+        language: String = "en",
+        vocabulary: List<String> = emptyList(),
+    ): SubmitOutcome
     public suspend fun getJobStatus(jobId: String): JobStatusOutcome
 }
 
