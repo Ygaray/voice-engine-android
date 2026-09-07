@@ -149,7 +149,7 @@ DECLARED_VERSION="$(
 # each module at whatever version its OWN build.gradle.kts declares (no cross-module check) and tag
 # successfully, shipping four artifacts under one immutable tag at inconsistent internal versions.
 # This used to be closed only by a human re-grepping by hand; close it at the tooling level instead.
-for module in recorder voicenotes transcription; do
+for module in recorder voicenotes transcription corrections; do
   module_version="$(
     grep -oE '^[[:space:]]*version = "[0-9]+\.[0-9]+\.[0-9]+"' "${ANDROID_DIR}/${module}/build.gradle.kts" \
       | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true
@@ -176,30 +176,33 @@ echo "release-android: coordinate will be ${GROUP_ID}:${MIRROR_REPO}:${TAG}"
 # --- GATE 1: all three libraries build and their public surfaces are frozen --------------------
 # Covers :stt/:recorder/:voicenotes, not just :stt (RESEARCH.md Pitfall 3: the script used to gate
 # only the first module ever published, silently shipping the other two with zero pre-tag proof).
-echo "release-android: GATE 1 — :stt/:recorder/:voicenotes/:transcription assembleRelease + apiCheck …"
+echo "release-android: GATE 1 — :stt/:recorder/:voicenotes/:transcription/:corrections assembleRelease + apiCheck …"
 ( cd "${ANDROID_DIR}" && ./gradlew --no-daemon \
     :stt:assembleRelease :stt:apiCheck \
     :recorder:assembleRelease :recorder:apiCheck \
     :voicenotes:assembleRelease :voicenotes:apiCheck \
-    :transcription:assembleRelease :transcription:apiCheck ) \
-  || abort "GATE 1 failed — one of :stt/:recorder/:voicenotes/:transcription does not build, or a \
-frozen API surface changed without a deliberate ./gradlew <module>:apiDump. Read the apiCheck diff \
-before regenerating the dump"
+    :transcription:assembleRelease :transcription:apiCheck \
+    :corrections:assembleRelease :corrections:apiCheck ) \
+  || abort "GATE 1 failed — one of :stt/:recorder/:voicenotes/:transcription/:corrections does not \
+build, or a frozen API surface changed without a deliberate ./gradlew <module>:apiDump. Read the \
+apiCheck diff before regenerating the dump"
 
 # --- GATE 2: JVM suite green across all three modules, parity in HARD mode on :stt, plus the ----
 # three-way repo-root gate. The parity flag applies ONLY to :stt (ErrorCodeParityTest lives there);
 # :recorder/:voicenotes carry no parity test of their own, so it is not added to their invocations.
 echo "release-android: GATE 2 — :stt:testDebugUnitTest -Pstt.requireWebParity=true, \
-:recorder:testDebugUnitTest, :voicenotes:testDebugUnitTest, :transcription:testDebugUnitTest …"
+:recorder:testDebugUnitTest, :voicenotes:testDebugUnitTest, :transcription:testDebugUnitTest, \
+:corrections:testDebugUnitTest …"
 ( cd "${ANDROID_DIR}" && ./gradlew --no-daemon \
     :stt:testDebugUnitTest -Pstt.requireWebParity=true \
     :recorder:testDebugUnitTest \
     :voicenotes:testDebugUnitTest \
-    :transcription:testDebugUnitTest ) \
+    :transcription:testDebugUnitTest \
+    :corrections:testDebugUnitTest ) \
   || abort "GATE 2 failed — the JVM suite is not green across :stt/:recorder/:voicenotes/ \
-:transcription with parity in hard mode on :stt. If the failure is ErrorCodeParityTest reporting a \
-MISSING web/src/errors.ts, this script is being run from somewhere that is not the mono-repo; a \
-release cannot be cut from the mirror"
+:transcription/:corrections with parity in hard mode on :stt. If the failure is ErrorCodeParityTest \
+reporting a MISSING web/src/errors.ts, this script is being run from somewhere that is not the \
+mono-repo; a release cannot be cut from the mirror"
 
 echo "release-android: GATE 2 — scripts/check-error-code-parity.sh (three-way, repo root) …"
 ( cd "${REPO_ROOT}" && bash scripts/check-error-code-parity.sh ) \
@@ -295,12 +298,12 @@ printf '%s\n' "${JITPACK_CMDS[@]}" \
 than the one JitPack will run. Found: ${JITPACK_CMDS[*]}"
 
 # Each published module's artifactId is the mirror repo name plus its own suffix (:stt == the
-# mirror name itself; :recorder/:voicenotes/:transcription append
-# "-recorder"/"-voicenotes"/"-transcription" — the same artifactId-derived-from-mirror-name rule the
-# header comment documents, now applied to all four published modules instead of just the first).
-# Computed here so GATE 3's existence assertions below can loop instead of hardcoding a single path
-# (RESEARCH.md Pitfall 3).
-ARTIFACT_IDS=("${MIRROR_REPO}" "${MIRROR_REPO}-recorder" "${MIRROR_REPO}-voicenotes" "${MIRROR_REPO}-transcription")
+# mirror name itself; :recorder/:voicenotes/:transcription/:corrections append
+# "-recorder"/"-voicenotes"/"-transcription"/"-corrections" — the same artifactId-derived-from-
+# mirror-name rule the header comment documents, now applied to all five published modules instead
+# of just the first). Computed here so GATE 3's existence assertions below can loop instead of
+# hardcoding a single path (RESEARCH.md Pitfall 3).
+ARTIFACT_IDS=("${MIRROR_REPO}" "${MIRROR_REPO}-recorder" "${MIRROR_REPO}-voicenotes" "${MIRROR_REPO}-transcription" "${MIRROR_REPO}-corrections")
 
 # Publish into the REAL local maven repository, with no extra flags, because that is exactly what
 # JitPack does — fidelity here is the whole point of the gate. Each coordinate directory is a cache
