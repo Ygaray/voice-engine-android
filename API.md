@@ -189,9 +189,20 @@ the frozen `.api` dump (Kotlin's "every parameter has a default" special case on
 zero-arg and full-arg constructors, not every arity in between). This is why `corrections` and
 `vocabulary` were added as trailing, not inserted between existing parameters.
 
-`language` is passed straight through to `RecognizerIntent.EXTRA_LANGUAGE` and is checked against the
-device's installed on-device models before any audio is captured. It exists from day one so that v2
+`language` is passed straight through to `RecognizerIntent.EXTRA_LANGUAGE` on the native backend, and
+into the server's config frame on the server backend, and is checked against the device's installed
+on-device models before any audio is captured (native path only). It exists from day one so that v2
 multilingual is **additive** rather than a breaking contract change.
+
+**Bilingual EN/ES (LANG-01) is server-backed only.** On the server backend, `language` accepts `"en"`
+or `"auto"` — `"auto"` opts into a server-detected-per-segment bilingual EN<->ES session; the server
+does not currently accept a bare `"es"` here. The detected language for each committed segment shows
+up on `FinalSegment.language` (see [Model types](#model-types) below). `"auto"` has **no meaning on
+the native backend**: it is passed straight through to `RecognizerIntent.EXTRA_LANGUAGE`, which is not
+a valid device locale, so a `prefer = Auto` session that silently falls back to native with
+`language = "auto"` set will fail native recognition rather than bilingual-switch. Set
+`prefer = BackendPreference.Server` (no silent native fallback) if bilingual dictation must not
+silently degrade.
 
 > **On the deferred multilingual path and API levels.** Earlier project notes stated that
 > `RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH` is available at API 33. It is not. Verified against

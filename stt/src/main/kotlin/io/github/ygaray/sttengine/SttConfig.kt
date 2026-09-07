@@ -22,9 +22,16 @@ import io.github.ygaray.sttengine.corrections.CorrectionRuleset
  * (`internal.WsProtocol.SAMPLE_RATE`) and is never a host-settable knob on either backend.
  *
  * @property language Passed straight through to `RecognizerIntent.EXTRA_LANGUAGE` on the native
- *   backend, and into the server's config frame on the server backend. v1 accepts `"en"`; the field
- *   exists from day one so v2 multilingual is ADDITIVE rather than a breaking contract change — the
- *   same day-one rationale `web/src/types.ts:37` records.
+ *   backend, and into the server's config frame on the server backend. Accepts `"en"` or `"auto"`
+ *   (LANG-01, bilingual EN<->ES code-switch) on the server backend — `"auto"` opts into a
+ *   server-detected-per-segment bilingual session (see [FinalSegment.language]); the server does not
+ *   currently accept a bare `"es"` here. `"auto"` has **no meaning on the native backend**: it is
+ *   passed straight through to `RecognizerIntent.EXTRA_LANGUAGE`, which is not a valid device locale,
+ *   so a `prefer = Auto` session that silently falls back to native with `language = "auto"` set will
+ *   fail native recognition rather than bilingual-switch — set [prefer] to [BackendPreference.Server]
+ *   (no silent native fallback) if bilingual dictation must not silently degrade. The field exists
+ *   from day one so v2 multilingual is ADDITIVE rather than a breaking contract change — the same
+ *   day-one rationale `web/src/types.ts:37` records.
  * @property prefer Which [Backend] to prefer (SEL-02). Defaults to [BackendPreference.Auto]: try the
  *   server first (bounded timeout), fall back to native silently on timeout/unreachable/busy.
  * @property serverUrl The self-hosted STT server's WebSocket URL (e.g.

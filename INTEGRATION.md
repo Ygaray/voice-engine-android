@@ -152,6 +152,16 @@ server's Whisper `hotwords` — the same biasing parity the batch `Transcription
 `vocabulary` parameter already has (step 9 below). It is a zero-cost no-op (`null` default, omitted
 from the WS config frame entirely) on a session that never reaches the server backend.
 
+**Bilingual EN/ES dictation is server-backed only (Phase 17, LANG-01).** Set
+`SttConfig(language = "auto")` to opt a server-backed session into per-segment EN<->ES language
+detection; each committed `FinalSegment.language` then carries the server-detected label
+(`"en"`/`"es"`, `null` if the frame didn't carry one). `"auto"` has no meaning on the on-device
+recognizer — it is passed straight through to `RecognizerIntent.EXTRA_LANGUAGE`, which is not a valid
+device locale — so if your host relies on `prefer = Auto`'s default silent server->native fallback,
+a bilingual `"auto"` session that drops to native will fail recognition rather than degrade to
+English-only. Use `prefer = BackendPreference.Server` (no silent fallback) for hosts where bilingual
+dictation must not silently degrade.
+
 Configuration is fixed at construction. A language change or a diagnostic run mints a **new** engine
 rather than mutating a live one, so if your host offers either, hold the engine in something the UI
 observes. Reference: `DictationViewModel.engine` is a `StateFlow<SttEngine>` for exactly this reason.
