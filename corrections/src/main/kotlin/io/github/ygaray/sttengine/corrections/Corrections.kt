@@ -188,11 +188,95 @@ public object Corrections {
         return out.joinToString(separator = "") { it.text }
     }
 
+    /** One step of the word-level LCS alignment between `recognized` and `corrected`'s word-token
+     *  lists (see [deriveCorrections]). */
+    private enum class OpKind { EQUAL, INSERT, DELETE }
+
+    private class DiffOp(val kind: OpKind, val text: String)
+
     /**
-     * Mine [CorrectionPair]s from a single recognized→corrected diff (CORR-02's literal signature).
-     * STUB for this task — always returns an empty list. 13-03 implements the real word-level diff
-     * on both platforms together; do not implement it here.
+     * Mine [CorrectionPair]s from a single recognized→corrected diff (CORR-02's literal signature)
+     * via a word-level LCS alignment — the SAME steps as the TS twin's `deriveCorrections`
+     * (`web/src/corrections.ts`), not an independently-designed reimplementation (CORR-04 byte
+     * parity): a host mines candidate correction pairs from its own corrected-transcript edits
+     * instead of hand-authoring rules.
      */
-    public fun deriveCorrections(recognized: String, corrected: String): List<CorrectionPair> =
-        emptyList()
+    public fun deriveCorrections(recognized: String, corrected: String): List<CorrectionPair> {
+        val a = tokenize(recognized).filter { it.isWord }.map { it.text }
+        val b = tokenize(corrected).filter { it.isWord }.map { it.text }
+
+        // Security Domain T-13-03 (Denial of Service): bound the O(n×m) LCS table's cost before
+        // building it — deriveCorrections is specified for single-final/single-utterance text, not
+        // arbitrary-length documents.
+        if (a.size > 500 || b.size > 500) return emptyList()
+
+        val m = a.size
+        val n = b.size
+
+        // Classic LCS dynamic-programming table: dp[i][j] = length of the LCS of a[0..i) and b[0..j).
+        val dp = Array(m + 1) { IntArray(n + 1) }
+        for (i in 1..m) {
+            for (j in 1..n) {
+                dp[i][j] =
+                    if (a[i - 1] == b[j - 1]) {
+                        dp[i - 1][j - 1] + 1
+                    } else {
+                        maxOf(dp[i - 1][j], dp[i][j - 1])
+                    }
+            }
+        }
+
+        // Backtrack from (m, n) to (0, 0), collecting ops end-to-start (reversed below). The `>=`
+        // tie-break at an insert/delete choice point is the documented, deterministic choice —
+        // identical on both platforms.
+        val ops = mutableListOf<DiffOp>()
+        var i = m
+        var j = n
+        while (i > 0 || j > 0) {
+            when {
+                i > 0 && j > 0 && a[i - 1] == b[j - 1] -> {
+                    ops.add(DiffOp(OpKind.EQUAL, a[i - 1]))
+                    i -= 1
+                    j -= 1
+                }
+                j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) -> {
+                    ops.add(DiffOp(OpKind.INSERT, b[j - 1]))
+                    j -= 1
+                }
+                else -> {
+                    ops.add(DiffOp(OpKind.DELETE, a[i - 1]))
+                    i -= 1
+                }
+            }
+        }
+        ops.reverse()
+
+        // Walk the ordered ops left to right, grouping maximal runs of consecutive non-EQUAL ops. A
+        // run may freely interleave delete/insert ops; only the two collected lists matter, not
+        // their interleaving order.
+        val pairs = mutableListOf<CorrectionPair>()
+        var deletedWords = mutableListOf<String>()
+        var insertedWords = mutableListOf<String>()
+
+        fun flushRun() {
+            if (deletedWords.isNotEmpty() && insertedWords.isNotEmpty()) {
+                val wrong = deletedWords.joinToString(" ")
+                val right = insertedWords.joinToString(" ")
+                if (wrong != right) pairs.add(CorrectionPair(wrong, right)) // no-op guard
+            }
+            deletedWords = mutableListOf()
+            insertedWords = mutableListOf()
+        }
+
+        for (op in ops) {
+            when (op.kind) {
+                OpKind.EQUAL -> flushRun()
+                OpKind.DELETE -> deletedWords.add(op.text)
+                OpKind.INSERT -> insertedWords.add(op.text)
+            }
+        }
+        flushRun()
+
+        return pairs
+    }
 }
