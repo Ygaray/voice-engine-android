@@ -67,12 +67,12 @@ public final class io/github/ygaray/sttengine/transcription/SubmitOutcome$Transi
 
 public abstract interface class io/github/ygaray/sttengine/transcription/TranscriptionClient {
 	public abstract fun getJobStatus (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public abstract fun submitJob (Ljava/io/File;Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public static synthetic fun submitJob$default (Lio/github/ygaray/sttengine/transcription/TranscriptionClient;Ljava/io/File;Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public abstract fun submitJob (Ljava/io/File;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun submitJob$default (Lio/github/ygaray/sttengine/transcription/TranscriptionClient;Ljava/io/File;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 }
 
 public final class io/github/ygaray/sttengine/transcription/TranscriptionClient$DefaultImpls {
-	public static synthetic fun submitJob$default (Lio/github/ygaray/sttengine/transcription/TranscriptionClient;Ljava/io/File;Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static synthetic fun submitJob$default (Lio/github/ygaray/sttengine/transcription/TranscriptionClient;Ljava/io/File;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 }
 
 public final class io/github/ygaray/sttengine/transcription/TranscriptionClientFactoryKt {
