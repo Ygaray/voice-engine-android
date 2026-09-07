@@ -69,7 +69,7 @@ internal sealed interface ServerFrame {
 
     data class Partial(val text: String, val segmentId: Int) : ServerFrame
 
-    data class Final(val text: String, val segmentId: Int) : ServerFrame
+    data class Final(val text: String, val segmentId: Int, val language: String? = null) : ServerFrame
 
     /** Carries the server's taxonomy code verbatim — this client does not reject an unknown code,
      *  mirroring `protocol.ts:132`'s "the server owns its taxonomy" comment. */
@@ -129,10 +129,13 @@ internal fun parseServerFrame(raw: String): ParseResult {
         "final" -> {
             val text = parsed.opt("text")
             val segmentId = parsed.opt("segmentId")
+            val language = parsed.opt("language")
             if (text !is String || !isInt(segmentId)) {
                 violation("malformed final frame (need string text + int segmentId)")
+            } else if (language != null && language !is String) {
+                violation("malformed final frame (language must be a string when present)")
             } else {
-                ParseResult.Ok(ServerFrame.Final(text, (segmentId as Number).toInt()))
+                ParseResult.Ok(ServerFrame.Final(text, (segmentId as Number).toInt(), language))
             }
         }
 

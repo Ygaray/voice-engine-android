@@ -58,6 +58,29 @@ class WsProtocolTest {
     }
 
     @Test
+    fun `parseServerFrame accepts a final frame with a language key and carries it through`() {
+        val result = parseServerFrame("""{"type":"final","text":"hola","segmentId":0,"language":"es"}""")
+
+        assertTrue(result is ParseResult.Ok)
+        assertEquals(ServerFrame.Final("hola", 0, "es"), (result as ParseResult.Ok).frame)
+    }
+
+    @Test
+    fun `parseServerFrame accepts a final frame with no language key — language is null`() {
+        val result = parseServerFrame("""{"type":"final","text":"hi","segmentId":0}""")
+
+        assertTrue(result is ParseResult.Ok)
+        assertEquals(ServerFrame.Final("hi", 0, null), (result as ParseResult.Ok).frame)
+    }
+
+    @Test
+    fun `parseServerFrame rejects a final frame with a non-string language, never coerces`() {
+        val result = parseServerFrame("""{"type":"final","text":"hi","segmentId":0,"language":123}""")
+
+        assertTrue(result is ParseResult.ProtocolViolation)
+    }
+
+    @Test
     fun `parseServerFrame accepts an error frame and carries the code verbatim`() {
         val result = parseServerFrame("""{"type":"error","code":"busy","message":"server busy"}""")
 

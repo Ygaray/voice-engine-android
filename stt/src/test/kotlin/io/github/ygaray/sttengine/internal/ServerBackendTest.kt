@@ -158,6 +158,21 @@ class ServerBackendTest {
     }
 
     @Test
+    fun `a Final frame's language reaches the emitted FinalSegment`() = runTest {
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val fakeWs = FakeWebSocketFactory()
+        val backend = newBackend(fakeWs, dispatcher)
+        val finals = mutableListOf<FinalSegment>()
+        backgroundScope.launch(dispatcher) { backend.finals.collect { finals += it } }
+
+        backgroundScope.launch(dispatcher) { backend.connect() }
+        fakeWs.fireOpen()
+        fakeWs.fireMessage("""{"type":"final","text":"hola","segmentId":0,"language":"es"}""")
+
+        assertEquals(listOf(FinalSegment("hola", 0, "es")), finals)
+    }
+
+    @Test
     fun `webSocket send() returning false routes to fail() with SEND_BACKPRESSURE`() = runTest {
         val dispatcher = UnconfinedTestDispatcher(testScheduler)
         val fakeWs = FakeWebSocketFactory()

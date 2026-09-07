@@ -443,7 +443,7 @@ internal class ServerBackend(
                     _partial.value = ""
                     val text = corrections?.takeIf { it.isNotEmpty() }
                         ?.let { Corrections.apply(frame.text, it) } ?: frame.text
-                    finalsChannel.trySend(FinalSegment(text, frame.segmentId))
+                    finalsChannel.trySend(FinalSegment(text, frame.segmentId, frame.language))
                 }
 
                 // Carries the server's taxonomy code verbatim (mirrors protocol.ts) — this client
