@@ -326,14 +326,21 @@ public object Corrections {
         thresholdN: Int = DEFAULT_PROMOTION_THRESHOLD,
         maxRulesetSize: Int = DEFAULT_RULESET_CAP,
     ): CorrectionRuleset {
-        // Tally each mined pair, keyed by a NUL-joined composite (never comma/pipe-joined, which
-        // could collide with real text content) — list order preserved (no re-sort of
-        // `revisions` itself).
+        // Tally each mined pair, keyed by a `\u0000`-joined composite — `\u0000` can never appear
+        // inside real `wrong`/`right` text (both are built by joining LCS-mined word tokens with a
+        // plain space), so unlike a comma/pipe/space join this key cannot collide with real text
+        // content. CR-01 (13-REVIEW.md): this line previously carried a literal embedded NUL
+        // control byte instead of the `\u0000` escape sequence written here — functionally
+        // identical at runtime (both are U+0000; Kotlin has no `\0` octal escape, unlike TS/JS —
+        // `\u0000` is the correct Kotlin spelling), but the raw control byte made this file
+        // binary-looking to `git diff`/`grep`/most editors. Never re-introduce a literal control
+        // byte here — always write the `\u0000` escape sequence — list order preserved (no
+        // re-sort of `revisions` itself).
         val tally = LinkedHashMap<String, TalliedPair>()
         for (revision in revisions) {
             val mined = deriveCorrections(revision.recognized, revision.corrected)
             for (pair in mined) {
-                val key = "${pair.wrong} ${pair.right}"
+                val key = "${pair.wrong}\u0000${pair.right}"
                 val existing = tally[key]
                 if (existing != null) {
                     existing.count += 1
