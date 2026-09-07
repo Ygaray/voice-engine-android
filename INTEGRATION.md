@@ -33,7 +33,7 @@ maven { url = uri("https://jitpack.io") }
 In your app module's **`build.gradle.kts`**:
 
 ```kotlin
-implementation("com.github.Ygaray:voice-engine-android:v0.3.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray:voice-engine-android:v0.6.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 Pin a tag or a commit SHA. **Never `main-SNAPSHOT` or any moving branch ref** — a moving coordinate
@@ -44,13 +44,14 @@ repository name, not the Gradle module name (`:stt`).
 > **What this coordinate actually installs.** Live-probed (`137-01-SUMMARY.md`): this exact coordinate's
 > POM resolves at HTTP 200, but it is JitPack's synthesized **root/aggregator** POM for the whole
 > multi-module repo — its own dependency list pulls in `voice-engine-android` (the real `:stt` AAR, under
-> a *different* groupId), `-recorder`, `-transcription` and `-voicenotes` as `<type>aar</type>`
-> dependencies. Declaring `implementation("com.github.Ygaray:voice-engine-android:v0.3.0")` therefore
-> transitively links **all four modules**, not `:stt` alone. If you want `:stt`'s recognition code with
-> zero Recorder/VoiceNotes/Transcription bytes pulled in, depend on the real standalone artifact instead:
-> `implementation("com.github.Ygaray.voice-engine-android:voice-engine-android:v0.3.0")` — note the
-> `.voice-engine-android` suffix on the **groupId**, matching the pattern the three secondary modules use
-> (§7–9 below). Both coordinates are live and immutable at `v0.3.0`; pick the aggregator only if you
+> a *different* groupId), `-recorder`, `-transcription`, `-voicenotes`, and `-corrections` as
+> `<type>aar</type>` dependencies. Declaring `implementation("com.github.Ygaray:voice-engine-android:v0.6.0")`
+> therefore transitively links **all five modules**, not `:stt` alone. If you want `:stt`'s recognition
+> code with zero Recorder/VoiceNotes/Transcription/Corrections bytes pulled in, depend on the real
+> standalone artifact instead:
+> `implementation("com.github.Ygaray.voice-engine-android:voice-engine-android:v0.6.0")` — note the
+> `.voice-engine-android` suffix on the **groupId**, matching the pattern the four secondary modules use
+> (§7–10 below). Both coordinates are live and immutable at `v0.6.0`; pick the aggregator only if you
 > genuinely want every module.
 
 ### Migrating from `stt-engine-android`
@@ -145,6 +146,12 @@ writes contains the user's dictated speech. The demo only reaches that argument 
 set, which is a structural separation rather than a runtime flag; copy that shape if you need
 diagnostic runs.
 
+**The live path also accepts `SttConfig(vocabulary = listOf(...))` (Phase 17, BIAS-01).** Supplying a
+personal vocabulary/term list biases a server-backed session toward those names/jargon terms via the
+server's Whisper `hotwords` — the same biasing parity the batch `TranscriptionClient.submitJob`'s
+`vocabulary` parameter already has (step 9 below). It is a zero-cost no-op (`null` default, omitted
+from the WS config frame entirely) on a session that never reaches the server backend.
+
 Configuration is fixed at construction. A language change or a diagnostic run mints a **new** engine
 rather than mutating a live one, so if your host offers either, hold the engine in something the UI
 observes. Reference: `DictationViewModel.engine` is a `StateFlow<SttEngine>` for exactly this reason.
@@ -221,7 +228,7 @@ record-only consumer. A record-only host depends on **only** this coordinate and
 recognition code (REC-05):
 
 ```kotlin
-implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-recorder:v0.4.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-recorder:v0.6.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 > **Groupid note.** Secondary modules carry a **different groupId prefix** than the plain
@@ -360,7 +367,7 @@ and validation rules.
 above with a durable Room-backed queue and the Phase 7 batch endpoint:
 
 ```kotlin
-implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-voicenotes:v0.3.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-voicenotes:v0.6.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 > **Groupid note.** Same wrinkle as `:recorder` (step 7): the groupId prefix is
@@ -418,7 +425,7 @@ drain timing. See `API.md`'s Voice Notes section for the full `NoteRecord`/`Note
 plus `GET /jobs/{id}`), with zero `:stt`/`:recorder`/`:voicenotes`/Room/`WorkManager` coupling:
 
 ```kotlin
-implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-transcription:v0.3.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-transcription:v0.6.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 > **Groupid note.** Same wrinkle as `:recorder`/`:voicenotes` (steps 7–8): the groupId prefix is
@@ -447,6 +454,15 @@ it to keep the previous English-only behavior unchanged:
 val outcome = client.submitJob(file, mimeType, language = spec.language)
 ```
 
+`submitJob` also accepts a fourth, `vocabulary` argument (Phase 15, BIAS-01) — the same personal
+vocabulary/term-list biasing `SttConfig.vocabulary` gives the live path (step 4 above). Defaults to
+an empty list, which omits the multipart part entirely and reproduces every previously published
+tag's behavior byte-for-byte:
+
+```kotlin
+val outcome = client.submitJob(file, mimeType, language = spec.language, vocabulary = listOf("Nintendo", "Kubernetes"))
+```
+
 See `API.md`'s Transcription section for the full `SubmitOutcome`/`JobStatusOutcome`/
 `TranscriptionErrorCode` taxonomy.
 
@@ -455,6 +471,55 @@ retry/polling/persistence entirely. This is the module-boundary contract, not an
 that wants durable, drain-on-a-schedule note tracking should adopt `:voicenotes` instead (step 8); a
 host that just needs the raw wire protocol against its own persistence layer adopts `:transcription`
 directly.
+
+---
+
+## 10. Adopt Corrections (optional, separate module)
+
+`:corrections` is a fifth, independently publishable Gradle module (JitPack artifact
+`voice-engine-android-corrections`) — the portable, zero-I/O correction/vocabulary-learning core:
+mine candidate corrections from a recognized→corrected diff, rewrite committed final text against an
+active ruleset, and build a bounded ruleset from a stored correction corpus. A consumer of this
+module pulls in only the pure correction primitives, with zero `:stt`/`:recorder`/`:voicenotes`/
+`:transcription` coupling:
+
+```kotlin
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-corrections:v0.6.0")   // immutable tag — NEVER a branch snapshot
+```
+
+> **Groupid note.** Same wrinkle as `:recorder`/`:voicenotes`/`:transcription` (steps 7–9): the
+> groupId prefix is `com.github.Ygaray.voice-engine-android`, not the plain `com.github.Ygaray` shown
+> for `:stt` in step 2 — JitPack derives it from the mirror repository name for every secondary
+> module.
+
+Same pinning rule as every other module above: pin a tag or a commit SHA, never `main-SNAPSHOT` or
+any moving branch ref.
+
+Mine a candidate correction from one recognized→corrected edit, apply an active ruleset against
+committed final text, and build a bounded ruleset from a stored corpus:
+
+```kotlin
+// mine a candidate pair from one user edit
+val mined = Corrections.deriveCorrections(recognized = "the meeting is at too", corrected = "the meeting is at two")
+
+// apply an active ruleset to a committed final
+val corrected = Corrections.apply(text = finalSegment.text, ruleset = activeRuleset)
+
+// build a bounded, frequency-gated ruleset from your own stored corpus
+val ruleset = Corrections.buildRuleset(revisions = storedRevisions)
+
+// feed the built ruleset into a live session — every committed final is corrected automatically
+val engine = createSttEngine(
+    context = getApplication(),
+    config = SttConfig(language = "en", corrections = ruleset),
+)
+```
+
+`CorrectionRevision(recognized, corrected, createdAt, audioUri?)` is the append-only record your own
+datastore persists per user edit — see `../docs/CORPUS-INTEGRITY.md` for the persistence contract a
+host's datastore must follow to avoid silently destroying its own correction history. See `API.md`'s
+Corrections section for the full `CorrectionPair`/`CorrectionRuleset` shapes and `buildRuleset`'s
+`thresholdN`/`maxRulesetSize` defaults.
 
 ---
 
