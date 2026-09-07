@@ -36,13 +36,24 @@ import io.github.ygaray.sttengine.corrections.CorrectionRuleset
  *   [io.github.ygaray.sttengine.corrections.Corrections.apply] replays against every committed
  *   final at each real emit-origin point; partials are never corrected (CORR-03). `null` (the
  *   default) is a zero-cost no-op — a host that never builds a ruleset pays nothing.
+ *
+ *   WR-03 (13-REVIEW.md): the constructor takes an immutable snapshot (`corrections?.toList()`) of
+ *   the host-supplied list rather than aliasing it directly — `CorrectionRuleset` is a plain
+ *   `List<CorrectionPair>` typealias with no runtime immutability guarantee, so without this
+ *   snapshot a host that reuses the same `MutableList<CorrectionPair>` across a live-updating
+ *   correction UI and this config could hand `apply()` a list that mutates out from under it
+ *   mid-iteration (`ConcurrentModificationException` or a torn read) — exactly the concurrent-
+ *   mutation hazard `Corrections`' own KDoc's "no shared/module-level mutable state" guarantee
+ *   (D-04) implicitly assumes does not happen to the ruleset itself.
  */
 public class SttConfig @JvmOverloads constructor(
     public val language: String = "en",
     public val prefer: BackendPreference = BackendPreference.Auto,
     public val serverUrl: String? = null,
-    public val corrections: CorrectionRuleset? = null,
+    corrections: CorrectionRuleset? = null,
 ) {
+    public val corrections: CorrectionRuleset? = corrections?.toList()
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is SttConfig) return false

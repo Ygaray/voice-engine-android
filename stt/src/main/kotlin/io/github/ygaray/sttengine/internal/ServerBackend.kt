@@ -102,9 +102,13 @@ internal class ServerBackend(
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
     private val pcmSourceFactory: PcmSourceFactory = AudioRecordPcmSource,
     private val backpressureGate: ServerBackpressureGate = ServerBackpressureGate(),
-    private val corrections: CorrectionRuleset? = null,
+    corrections: CorrectionRuleset? = null,
     private val monotonicMs: () -> Long = { System.currentTimeMillis() },
 ) {
+    // WR-03 (13-REVIEW.md): immutable snapshot of the host-supplied ruleset — see SttConfig's
+    // matching KDoc note; `CorrectionRuleset` carries no runtime immutability guarantee.
+    private val corrections: CorrectionRuleset? = corrections?.toList()
+
 
     private val scope = CoroutineScope(SupervisorJob() + mainDispatcher)
     private val epoch = SessionEpoch()
