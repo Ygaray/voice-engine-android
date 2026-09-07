@@ -139,9 +139,20 @@ public object Corrections {
      * (D-04). Never constructs a `Regex` from host-supplied text (Security Domain V5 / T-13-01):
      * matching is purely a literal, tokenized-array elementwise comparison.
      *
+     * WR-02 (13-REVIEW.md) — the passthrough guarantee below is NFC-relative, not byte-relative: an
+     * empty ruleset returns `text` completely untouched, but the moment a NON-empty ruleset is
+     * configured, EVERY unmatched region is still routed through [tokenize]'s
+     * `Normalizer.normalize(_, NFC)` and reassembled from the NFC-normalized token text — so for a
+     * host whose recognizer ever emits non-NFC text (e.g. NFD-decomposed combining marks;
+     * UNCONFIRMED for the Android `SpeechRecognizer` emitter specifically, see [tokenize]'s KDoc),
+     * configuring ANY non-empty ruleset silently NFC-canonicalizes every unmatched span too, as a
+     * documented, deliberate side effect distinct from "correction". This is only a true
+     * byte-identical passthrough when the input was already NFC-normalized.
+     *
      * @param text The final-segment text to correct.
      * @param ruleset The active correction pairs. An empty ruleset is a fast-path no-op — `apply`
-     *   tokenizes nothing and returns `text` unchanged (byte-for-byte).
+     *   tokenizes nothing and returns `text` unchanged (byte-for-byte). A non-empty ruleset
+     *   NFC-normalizes the entire output (see the NFC-relative passthrough note above).
      */
     public fun apply(text: String, ruleset: CorrectionRuleset): String {
         if (ruleset.isEmpty()) return text
@@ -180,7 +191,11 @@ public object Corrections {
                 }
             }
             // No pattern matched at this position — keep the token verbatim and advance by one.
-            // This guarantees byte-identical passthrough for every unmatched region of `text`.
+            // This guarantees passthrough for every unmatched region of `text` RELATIVE TO ITS
+            // NFC-NORMALIZED FORM (WR-02, 13-REVIEW.md) — `inputTokens` was already built from
+            // `tokenize(text)`'s NFC-normalized code points above, so this is byte-identical to the
+            // ORIGINAL `text` only when `text` was already NFC-normalized; see this function's
+            // KDoc for the non-NFC-input caveat.
             out.add(inputTokens[i])
             i += 1
         }
