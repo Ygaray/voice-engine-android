@@ -31,6 +31,25 @@ class WsProtocolTest {
         assertEquals(16_000, json.getInt("sampleRate"))
     }
 
+    @Test
+    fun `buildConfigFrame includes a vocabulary array when a non-empty list is supplied`() {
+        val json = JSONObject(buildConfigFrame("en", listOf("Yahir", "Tailscale")))
+
+        val vocabulary = json.getJSONArray("vocabulary")
+        assertEquals(2, vocabulary.length())
+        assertEquals("Yahir", vocabulary.getString(0))
+        assertEquals("Tailscale", vocabulary.getString(1))
+    }
+
+    @Test
+    fun `buildConfigFrame omits vocabulary entirely for a null or empty list`() {
+        val nullJson = JSONObject(buildConfigFrame("en", null))
+        val emptyJson = JSONObject(buildConfigFrame("en", emptyList()))
+
+        assertTrue(!nullJson.has("vocabulary"))
+        assertTrue(!emptyJson.has("vocabulary"))
+    }
+
     // --- parseServerFrame: the happy paths ------------------------------------------------------
 
     @Test

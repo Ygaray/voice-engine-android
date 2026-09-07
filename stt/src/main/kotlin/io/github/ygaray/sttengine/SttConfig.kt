@@ -45,14 +45,22 @@ import io.github.ygaray.sttengine.corrections.CorrectionRuleset
  *   mid-iteration (`ConcurrentModificationException` or a torn read) — exactly the concurrent-
  *   mutation hazard `Corrections`' own KDoc's "no shared/module-level mutable state" guarantee
  *   (D-04) implicitly assumes does not happen to the ruleset itself.
+ * @property vocabulary The host's personal vocabulary/term list (BIAS-01) — biases the live
+ *   server-backed session toward these names/jargon terms via the server's Whisper `hotwords`,
+ *   the same live-path parity `TranscriptionClient.submitJob`'s batch `vocabulary` param already
+ *   has. `null` (the default) is a zero-cost no-op — the WS config frame's `vocabulary` key is
+ *   omitted entirely, not sent empty. Takes the same immutable-snapshot treatment [corrections]
+ *   already gets, for the same concurrent-mutation reason.
  */
 public class SttConfig @JvmOverloads constructor(
     public val language: String = "en",
     public val prefer: BackendPreference = BackendPreference.Auto,
     public val serverUrl: String? = null,
     corrections: CorrectionRuleset? = null,
+    vocabulary: List<String>? = null,
 ) {
     public val corrections: CorrectionRuleset? = corrections?.toList()
+    public val vocabulary: List<String>? = vocabulary?.toList()
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -60,7 +68,8 @@ public class SttConfig @JvmOverloads constructor(
         return language == other.language &&
             prefer == other.prefer &&
             serverUrl == other.serverUrl &&
-            corrections == other.corrections
+            corrections == other.corrections &&
+            vocabulary == other.vocabulary
     }
 
     override fun hashCode(): Int {
@@ -68,9 +77,11 @@ public class SttConfig @JvmOverloads constructor(
         result = 31 * result + prefer.hashCode()
         result = 31 * result + (serverUrl?.hashCode() ?: 0)
         result = 31 * result + (corrections?.hashCode() ?: 0)
+        result = 31 * result + (vocabulary?.hashCode() ?: 0)
         return result
     }
 
     override fun toString(): String =
-        "SttConfig(language=$language, prefer=$prefer, serverUrl=$serverUrl, corrections=$corrections)"
+        "SttConfig(language=$language, prefer=$prefer, serverUrl=$serverUrl, " +
+            "corrections=$corrections, vocabulary=$vocabulary)"
 }

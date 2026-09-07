@@ -51,16 +51,23 @@ internal const val FRAME_SAMPLES: Int = 512
 internal const val WSS_PORT: Int = 8444
 
 /**
- * Build the first-frame session config. Carries ONLY these three fields — config never travels in
- * the WS URL query string (mirrors `protocol.ts:41-48`); the server rejects any non-empty query as
- * `protocol-violation`.
+ * Build the first-frame session config. Carries `version`/`language`/`sampleRate` always — config
+ * never travels in the WS URL query string (mirrors `protocol.ts:41-48`); the server rejects any
+ * non-empty query as `protocol-violation`. `vocabulary` (BIAS-01) is the one additive field:
+ * omitted entirely for a `null`/empty list (byte-identical to the pre-existing three-key shape),
+ * present only when the caller supplies a non-empty list — mirrors `protocol.ts`'s
+ * `buildConfigFrame` conditional-spread idiom exactly.
  */
-internal fun buildConfigFrame(language: String): String =
-    JSONObject()
+internal fun buildConfigFrame(language: String, vocabulary: List<String>? = null): String {
+    val json = JSONObject()
         .put("version", PROTOCOL_VERSION)
         .put("language", language)
         .put("sampleRate", SAMPLE_RATE)
-        .toString()
+    if (!vocabulary.isNullOrEmpty()) {
+        json.put("vocabulary", JSONArray(vocabulary))
+    }
+    return json.toString()
+}
 
 /** A validated, well-typed server frame — the accept path of [parseServerFrame]. */
 internal sealed interface ServerFrame {
