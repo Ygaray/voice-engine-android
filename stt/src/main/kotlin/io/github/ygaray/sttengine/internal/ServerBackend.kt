@@ -104,10 +104,14 @@ internal class ServerBackend(
     private val backpressureGate: ServerBackpressureGate = ServerBackpressureGate(),
     corrections: CorrectionRuleset? = null,
     private val monotonicMs: () -> Long = { System.currentTimeMillis() },
+    vocabulary: List<String>? = null,
 ) {
     // WR-03 (13-REVIEW.md): immutable snapshot of the host-supplied ruleset — see SttConfig's
     // matching KDoc note; `CorrectionRuleset` carries no runtime immutability guarantee.
     private val corrections: CorrectionRuleset? = corrections?.toList()
+
+    // Same immutable-snapshot treatment as `corrections` above, for the same reason (BIAS-01).
+    private val vocabulary: List<String>? = vocabulary?.toList()
 
 
     private val scope = CoroutineScope(SupervisorJob() + mainDispatcher)
@@ -403,7 +407,7 @@ internal class ServerBackend(
         // Pitfall 2: OkHttp's send() returns false rather than throwing on failure (an already
         // closing/closed/canceled socket, or the internal queue ceiling) — checked, unlike the web
         // port's un-checked `socket.send(...)` call sites (which cannot fail synchronously there).
-        val sent = socket.send(buildConfigFrame(language))
+        val sent = socket.send(buildConfigFrame(language, vocabulary))
         if (!sent) {
             fail(SttError(SttErrorCode.INTERNAL_ERROR, "failed to send the config frame"))
         }
@@ -443,7 +447,7 @@ internal class ServerBackend(
                     _partial.value = ""
                     val text = corrections?.takeIf { it.isNotEmpty() }
                         ?.let { Corrections.apply(frame.text, it) } ?: frame.text
-                    finalsChannel.trySend(FinalSegment(text, frame.segmentId))
+                    finalsChannel.trySend(FinalSegment(text, frame.segmentId, frame.language))
                 }
 
                 // Carries the server's taxonomy code verbatim (mirrors protocol.ts) — this client

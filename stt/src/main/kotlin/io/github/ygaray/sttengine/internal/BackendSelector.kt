@@ -96,6 +96,7 @@ internal class BackendSelector(
             language = config.language,
             mainDispatcher = mainDispatcher,
             corrections = config.corrections,
+            vocabulary = config.vocabulary,
         )
     },
 ) : SttEngine {

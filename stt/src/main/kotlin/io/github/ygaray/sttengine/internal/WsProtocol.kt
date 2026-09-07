@@ -51,16 +51,23 @@ internal const val FRAME_SAMPLES: Int = 512
 internal const val WSS_PORT: Int = 8444
 
 /**
- * Build the first-frame session config. Carries ONLY these three fields — config never travels in
- * the WS URL query string (mirrors `protocol.ts:41-48`); the server rejects any non-empty query as
- * `protocol-violation`.
+ * Build the first-frame session config. Carries `version`/`language`/`sampleRate` always — config
+ * never travels in the WS URL query string (mirrors `protocol.ts:41-48`); the server rejects any
+ * non-empty query as `protocol-violation`. `vocabulary` (BIAS-01) is the one additive field:
+ * omitted entirely for a `null`/empty list (byte-identical to the pre-existing three-key shape),
+ * present only when the caller supplies a non-empty list — mirrors `protocol.ts`'s
+ * `buildConfigFrame` conditional-spread idiom exactly.
  */
-internal fun buildConfigFrame(language: String): String =
-    JSONObject()
+internal fun buildConfigFrame(language: String, vocabulary: List<String>? = null): String {
+    val json = JSONObject()
         .put("version", PROTOCOL_VERSION)
         .put("language", language)
         .put("sampleRate", SAMPLE_RATE)
-        .toString()
+    if (!vocabulary.isNullOrEmpty()) {
+        json.put("vocabulary", JSONArray(vocabulary))
+    }
+    return json.toString()
+}
 
 /** A validated, well-typed server frame — the accept path of [parseServerFrame]. */
 internal sealed interface ServerFrame {
@@ -69,7 +76,7 @@ internal sealed interface ServerFrame {
 
     data class Partial(val text: String, val segmentId: Int) : ServerFrame
 
-    data class Final(val text: String, val segmentId: Int) : ServerFrame
+    data class Final(val text: String, val segmentId: Int, val language: String? = null) : ServerFrame
 
     /** Carries the server's taxonomy code verbatim — this client does not reject an unknown code,
      *  mirroring `protocol.ts:132`'s "the server owns its taxonomy" comment. */
@@ -129,10 +136,13 @@ internal fun parseServerFrame(raw: String): ParseResult {
         "final" -> {
             val text = parsed.opt("text")
             val segmentId = parsed.opt("segmentId")
+            val language = parsed.opt("language")
             if (text !is String || !isInt(segmentId)) {
                 violation("malformed final frame (need string text + int segmentId)")
+            } else if (language != null && language !is String) {
+                violation("malformed final frame (language must be a string when present)")
             } else {
-                ParseResult.Ok(ServerFrame.Final(text, (segmentId as Number).toInt()))
+                ParseResult.Ok(ServerFrame.Final(text, (segmentId as Number).toInt(), language))
             }
         }
 

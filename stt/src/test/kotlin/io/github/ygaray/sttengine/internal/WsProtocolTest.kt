@@ -31,6 +31,25 @@ class WsProtocolTest {
         assertEquals(16_000, json.getInt("sampleRate"))
     }
 
+    @Test
+    fun `buildConfigFrame includes a vocabulary array when a non-empty list is supplied`() {
+        val json = JSONObject(buildConfigFrame("en", listOf("Yahir", "Tailscale")))
+
+        val vocabulary = json.getJSONArray("vocabulary")
+        assertEquals(2, vocabulary.length())
+        assertEquals("Yahir", vocabulary.getString(0))
+        assertEquals("Tailscale", vocabulary.getString(1))
+    }
+
+    @Test
+    fun `buildConfigFrame omits vocabulary entirely for a null or empty list`() {
+        val nullJson = JSONObject(buildConfigFrame("en", null))
+        val emptyJson = JSONObject(buildConfigFrame("en", emptyList()))
+
+        assertTrue(!nullJson.has("vocabulary"))
+        assertTrue(!emptyJson.has("vocabulary"))
+    }
+
     // --- parseServerFrame: the happy paths ------------------------------------------------------
 
     @Test
@@ -55,6 +74,29 @@ class WsProtocolTest {
 
         assertTrue(result is ParseResult.Ok)
         assertEquals(ServerFrame.Final("hello world", 2), (result as ParseResult.Ok).frame)
+    }
+
+    @Test
+    fun `parseServerFrame accepts a final frame with a language key and carries it through`() {
+        val result = parseServerFrame("""{"type":"final","text":"hola","segmentId":0,"language":"es"}""")
+
+        assertTrue(result is ParseResult.Ok)
+        assertEquals(ServerFrame.Final("hola", 0, "es"), (result as ParseResult.Ok).frame)
+    }
+
+    @Test
+    fun `parseServerFrame accepts a final frame with no language key — language is null`() {
+        val result = parseServerFrame("""{"type":"final","text":"hi","segmentId":0}""")
+
+        assertTrue(result is ParseResult.Ok)
+        assertEquals(ServerFrame.Final("hi", 0, null), (result as ParseResult.Ok).frame)
+    }
+
+    @Test
+    fun `parseServerFrame rejects a final frame with a non-string language, never coerces`() {
+        val result = parseServerFrame("""{"type":"final","text":"hi","segmentId":0,"language":123}""")
+
+        assertTrue(result is ParseResult.ProtocolViolation)
     }
 
     @Test
