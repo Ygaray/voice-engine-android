@@ -214,6 +214,53 @@ class TranscriptionClientWireTest {
         assertEquals("fake-job", (outcome as SubmitOutcome.Accepted).jobId)
     }
 
+    // BIAS-01 (15-05): the vocabulary parameter's wire-level proof. Mirrors the language test trio
+    // above — presence-and-shape, true absence (not merely a default value), and the full
+    // three-way language < vocabulary < file ordering (Codex review finding #15).
+    @Test
+    fun `explicit vocabulary reaches the wire as a JSON-array form part`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        client.submitJob(tempAudioFile(), "audio/mp4", vocabulary = listOf("Margolotte", "SecondBrain"))
+        val requestBody = server.takeRequest().body!!.utf8()
+        assertTrue(
+            "expected the request body to carry a form part named \"vocabulary\"",
+            requestBody.contains("name=\"vocabulary\""),
+        )
+        assertTrue(
+            "expected the vocabulary part's value to be the JSON array [\"Margolotte\",\"SecondBrain\"]",
+            requestBody.contains("""["Margolotte","SecondBrain"]"""),
+        )
+    }
+
+    @Test
+    fun `omitted vocabulary sends no vocabulary form part`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        client.submitJob(tempAudioFile(), "audio/mp4")
+        val requestBody = server.takeRequest().body!!.utf8()
+        assertTrue(
+            "expected NO \"vocabulary\" form part when vocabulary is omitted (true absence, not a default value)",
+            !requestBody.contains("name=\"vocabulary\""),
+        )
+    }
+
+    @Test
+    fun `vocabulary part sits between language and file when present`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        client.submitJob(tempAudioFile(), "audio/mp4", language = "es", vocabulary = listOf("Yahir"))
+        val requestBody = server.takeRequest().body!!.utf8()
+        val languageIndex = requestBody.indexOf("name=\"language\"")
+        val vocabularyIndex = requestBody.indexOf("name=\"vocabulary\"")
+        val fileIndex = requestBody.indexOf("name=\"file\"")
+        assertTrue("expected the language part to be present", languageIndex >= 0)
+        assertTrue("expected the vocabulary part to be present", vocabularyIndex >= 0)
+        assertTrue("expected the file part to be present", fileIndex >= 0)
+        assertTrue(
+            "expected the full ordering language ($languageIndex) < vocabulary ($vocabularyIndex) " +
+                "< file ($fileIndex), the locked cross-client convention (Plan 03/04)",
+            languageIndex < vocabularyIndex && vocabularyIndex < fileIndex,
+        )
+    }
+
     private fun tempAudioFile(): File =
         File.createTempFile("clip", ".m4a").apply {
             deleteOnExit() // IN-02 (136-REVIEW.md): avoid leaking stray clip*.m4a files per test run
