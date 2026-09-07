@@ -1,3 +1,12 @@
+public final class io/github/ygaray/sttengine/corrections/CorrectionPair {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRight ()Ljava/lang/String;
+	public final fun getWrong ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class io/github/ygaray/sttengine/corrections/CorrectionRevision {
 	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
 	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
@@ -8,5 +17,15 @@ public final class io/github/ygaray/sttengine/corrections/CorrectionRevision {
 	public final fun getRecognized ()Ljava/lang/String;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/corrections/Corrections {
+	public static final field DEFAULT_PROMOTION_THRESHOLD I
+	public static final field DEFAULT_RULESET_CAP I
+	public static final field INSTANCE Lio/github/ygaray/sttengine/corrections/Corrections;
+	public final fun apply (Ljava/lang/String;Ljava/util/List;)Ljava/lang/String;
+	public final fun buildRuleset (Ljava/util/List;II)Ljava/util/List;
+	public static synthetic fun buildRuleset$default (Lio/github/ygaray/sttengine/corrections/Corrections;Ljava/util/List;IIILjava/lang/Object;)Ljava/util/List;
+	public final fun deriveCorrections (Ljava/lang/String;Ljava/lang/String;)Ljava/util/List;
 }
 
