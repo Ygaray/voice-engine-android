@@ -61,6 +61,7 @@ internal class EngineHarness(
     supportsRawAudio: Boolean = false,
     private val audioPipeOpenFails: Boolean = false,
     deviceLocale: Locale = Locale.US,
+    sdkInt: Int = 35,
 ) {
 
     /** The seam the engine actually talks to. Fire callbacks into it to drive the engine. */
@@ -112,6 +113,7 @@ internal class EngineHarness(
         },
         mainDispatcher = dispatcher,
         deviceLocale = deviceLocale,
+        sdkInt = sdkInt,
     )
 
     // --- recorded output ------------------------------------------------------------------------

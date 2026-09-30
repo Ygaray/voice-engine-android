@@ -25,13 +25,15 @@ import io.github.ygaray.sttengine.corrections.CorrectionRuleset
  *   backend, and into the server's config frame on the server backend. Accepts `"en"` or `"auto"`
  *   (LANG-01, bilingual EN<->ES code-switch) on the server backend — `"auto"` opts into a
  *   server-detected-per-segment bilingual session (see [FinalSegment.language]); the server does not
- *   currently accept a bare `"es"` here. `"auto"` has **no meaning on the native backend**: it is
- *   passed straight through to `RecognizerIntent.EXTRA_LANGUAGE`, which is not a valid device locale,
- *   so a `prefer = Auto` session that silently falls back to native with `language = "auto"` set will
- *   fail native recognition rather than bilingual-switch — set [prefer] to [BackendPreference.Server]
- *   (no silent native fallback) if bilingual dictation must not silently degrade. The field exists
- *   from day one so v2 multilingual is ADDITIVE rather than a breaking contract change — the same
- *   day-one rationale `web/src/types.ts:37` records.
+ *   currently accept a bare `"es"` here. On the native backend, `"auto"` on an **API 34+** device
+ *   triggers native on-device EN/ES language-switch detection: the per-segment detected language is
+ *   stamped onto [FinalSegment.language] as bare `"en"`/`"es"` (from a `HIGHLY_CONFIDENT` detection
+ *   event only, else `null` — unknown, not a guess). On a runtime **below API 34**, `"auto"` falls
+ *   back to the configured default language, normalized bare (`"en"`), exactly as the server
+ *   backend's own `"auto"` falls back when detection is unavailable — set [prefer] to
+ *   [BackendPreference.Server] (no silent native fallback) if bilingual dictation must not silently
+ *   degrade below that floor. The field exists from day one so v2 multilingual is ADDITIVE rather
+ *   than a breaking contract change — the same day-one rationale `web/src/types.ts:37` records.
  * @property prefer Which [Backend] to prefer (SEL-02). Defaults to [BackendPreference.Auto]: try the
  *   server first (bounded timeout), fall back to native silently on timeout/unreachable/busy.
  * @property serverUrl The self-hosted STT server's WebSocket URL (e.g.

@@ -50,4 +50,25 @@ internal object LanguageTags {
             "${locale.language}-$region"
         }
     }
+
+    /**
+     * Normalize a raw `DETECTED_LANGUAGE` value from `onLanguageDetection`'s Bundle to a bare
+     * `"en"`/`"es"`, or `null` for anything else (NBIL-02/NBIL-03's `{en, es}` allowlist).
+     *
+     * Parsed with [Locale.forLanguageTag] and matched on [Locale.getLanguage] — the parsed subtag,
+     * not raw string equality — mirroring [regionQualified]'s own parsing style, so region-qualified
+     * (`en-US`, `es-US`) and bare (`en`, `es`) inputs, in any case (`en-us`, `EN-US`), all normalize
+     * identically. A `null`/empty/malformed tag or any language outside {en, es} (e.g. `de`, `fr`,
+     * `not-a-tag`) returns `null` — this is what keeps the noisy raw detection stream harmless (D-02):
+     * a host must never be told the system is confident in a label it never saw.
+     */
+    fun normalizeDetected(tag: String?): String? {
+        if (tag.isNullOrEmpty()) return null
+        val locale = Locale.forLanguageTag(tag)
+        return when (locale.language) {
+            "en" -> "en"
+            "es" -> "es"
+            else -> null
+        }
+    }
 }

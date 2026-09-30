@@ -1,8 +1,10 @@
 package io.github.ygaray.sttengine.internal
 
 import android.content.Context
+import android.os.Build
 import android.os.Bundle
 import android.speech.RecognitionListener
+import android.speech.SpeechRecognizer
 import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.FinalSegment
@@ -102,19 +104,37 @@ internal class SttEngineImpl(
     private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000L },
     private val restartPolicy: RestartPolicy = RestartPolicy(),
     private val deviceLocale: Locale = Locale.getDefault(),
+    private val sdkInt: Int = Build.VERSION.SDK_INT,
 ) : SttEngine {
 
     private val scope = CoroutineScope(SupervisorJob() + mainDispatcher)
 
+    /** Whether [config] requested `"auto"` bilingual capture, regardless of platform support. */
+    private val isAutoSession: Boolean = config.language == AUTO_LANGUAGE
+
     /**
-     * [config] with its [SttConfig.language] region-qualified for the platform recognizer (see
+     * Whether this session actually runs native on-device EN/ES detection — `"auto"` AND
+     * `sdkInt >= 34` (D-03). On a sub-34 runtime an `"auto"` session still starts, but it falls back
+     * to [AUTO_SUB34_FALLBACK] with no switch extras and no detection tracking (NBIL-04/NBIL-07).
+     */
+    private val autoDetectionActive: Boolean = isAutoSession && sdkInt >= 34
+
+    /**
+     * [config] with its [SttConfig.language] resolved for the platform recognizer (see
      * [LanguageTags]). This is the ONLY language the native preflight and the recognition intent
-     * ever see — a bare `en` reaches SODA as `en-US` instead of being rejected with code 12. The
-     * public [config] is left untouched so the host still observes exactly what it passed.
+     * ever see — a bare `en` reaches SODA as `en-US` instead of being rejected with code 12, and
+     * `"auto"` is resolved to a concrete starting language BEFORE region-qualification ever sees the
+     * literal `"auto"` (D-03 — `LanguageTags.regionQualified("auto", deviceLocale)` would otherwise
+     * return `"auto-US"`, which fails preflight). The public [config] is left untouched so the host
+     * still observes exactly what it passed.
      */
     private val resolvedConfig: SttConfig =
         SttConfig(
-            language = LanguageTags.regionQualified(config.language, deviceLocale),
+            language = when {
+                autoDetectionActive -> AUTO_STARTING_LANGUAGE
+                isAutoSession -> LanguageTags.regionQualified(AUTO_SUB34_FALLBACK, deviceLocale)
+                else -> LanguageTags.regionQualified(config.language, deviceLocale)
+            },
             prefer = config.prefer,
             serverUrl = config.serverUrl,
             // IN-02 (13-REVIEW.md): forwarded for consistency with `config` — a future reader who
@@ -219,6 +239,16 @@ internal class SttEngineImpl(
     private var sawBeginningOfSpeech = false
     private var segmentResultCount = 0
     private var endOfSegmentedSessionDelivered = false
+
+    /**
+     * The last `confidenceLevel == HIGHLY_CONFIDENT` language seen since the current segment
+     * boundary (bare `en`/`es` only, normalized — D-02). `null` means "unknown for this segment", not
+     * "English" — distinguishable from a real detection so a host is never told the system is
+     * confident when it is not (NBIL-02). Only ever mutated by [onLanguageDetection] when
+     * [autoDetectionActive] is true; stamped at commit by [languageForFinal] and cleared on every
+     * segment boundary by [advanceSegmentBoundary] — main-thread-confined, no lock (D-09).
+     */
+    private var detectedLanguage: String? = null
 
     /**
      * Runtime evidence that a rung does not work on this device, accumulated across sessions.
@@ -353,7 +383,7 @@ internal class SttEngineImpl(
         commitLivePartial()
         teardownSession(destroyHandle = true)
         epoch.advance()
-        accumulator.onSegmentBoundary()
+        advanceSegmentBoundary()
 
         if (!terminal) setState(EngineState.Idle)
         pendingStart?.complete(Unit)
@@ -377,7 +407,13 @@ internal class SttEngineImpl(
 
         log.rung(currentRung)
         val intent =
-            RecognizerIntents.forRung(currentRung, resolvedConfig, appContext, audioSource = pipe?.readDescriptor)
+            RecognizerIntents.forRung(
+                currentRung,
+                resolvedConfig,
+                appContext,
+                audioSource = pipe?.readDescriptor,
+                enableLanguageSwitch = autoDetectionActive,
+            )
         withContext(mainDispatcher) {
             active.setListener(listenerFor(boundEpoch))
             active.startListening(intent)
@@ -462,7 +498,7 @@ internal class SttEngineImpl(
             // 3. fence AFTER teardown
             epoch.advance()
             // 4. open the next segment before the next session's first result can arrive
-            accumulator.onSegmentBoundary()
+            advanceSegmentBoundary()
 
             delay(delayMs)
             if (terminal || !running) return@launch
@@ -651,6 +687,31 @@ internal class SttEngineImpl(
         emitFinal(accumulator.commitLivePartialAsFinal() ?: return)
     }
 
+    /**
+     * Advance to the next segment: close this one in [accumulator], then clear [detectedLanguage]
+     * so the next segment starts with no label carried over (D-02's per-segment reset — NBIL-09's
+     * "never carry a stale label across a boundary"). Called at every one of the three points the
+     * session closes a segment; the commit that consumes [detectedLanguage] (via [emitFinal]) always
+     * runs BEFORE its call site calls this, preserving the stamp-then-clear ordering.
+     */
+    private fun advanceSegmentBoundary() {
+        accumulator.onSegmentBoundary()
+        detectedLanguage = null
+    }
+
+    /**
+     * The label to stamp on the NEXT committed [FinalSegment] (D-01/D-02). `null` for any non-
+     * `"auto"` session (byte-identical to today, NBIL-07); [AUTO_SUB34_FALLBACK] (bare `"en"`) for a
+     * sub-34 `"auto"` session, which never runs detection (NBIL-04); the tracked [detectedLanguage]
+     * — possibly still `null` if no confidence-3 event has been seen this segment — for an
+     * API-34+ `"auto"` session.
+     */
+    private fun languageForFinal(): String? = when {
+        autoDetectionActive -> detectedLanguage
+        isAutoSession -> AUTO_SUB34_FALLBACK
+        else -> null
+    }
+
     private fun emitFinal(rawSegment: FinalSegment) {
         _partial.value = ""
         // Android origin point 1 of 3 (RESEARCH.md Pitfall 1) — the on-device-only path. Correction
@@ -658,11 +719,14 @@ internal class SttEngineImpl(
         // segmentId (mirrors web's D-01 exactly). ServerBackend's final branch and
         // BackendSelector's handoff-commit are the other two real origin points (13-02) — do NOT
         // re-apply at BackendSelector's forwarding sites, which would double-apply already-corrected
-        // segments.
+        // segments. Both branches construct a FRESH FinalSegment so the language [label] (D-01) is
+        // carried regardless of whether a correction ruleset is configured — rawSegment itself is
+        // always language-free (SegmentAccumulator stays language-free per D-01).
+        val label = languageForFinal()
         val segment =
             config.corrections?.takeIf { it.isNotEmpty() }
-                ?.let { FinalSegment(Corrections.apply(rawSegment.text, it), rawSegment.segmentId) }
-                ?: rawSegment
+                ?.let { FinalSegment(Corrections.apply(rawSegment.text, it), rawSegment.segmentId, label) }
+                ?: FinalSegment(rawSegment.text, rawSegment.segmentId, label)
         finalsChannel.trySend(segment)
         _events.tryEmit(SttEvent.Final(segment))
         log.final(segment)
@@ -769,7 +833,7 @@ internal class SttEngineImpl(
             // counter that advanced on every boundary spent an id no final ever carried. The
             // accumulator now spends an id only on a boundary that closes a committed segment, so
             // announcing one here AND at the restart is safe rather than merely conventional.
-            accumulator.onSegmentBoundary()
+            advanceSegmentBoundary()
         }
 
         override fun onEndOfSegmentedSession() {
@@ -836,7 +900,16 @@ internal class SttEngineImpl(
 
         override fun onLanguageDetection(results: Bundle) {
             if (!accept()) return
-            // v1c is single-language (D-13); the detection surface is v2's. Fenced anyway.
+            // Non-"auto" and sub-34-"auto" sessions never track a detected label — NBIL-07: the
+            // "auto" path's extra tracking must not leak onto any other session.
+            if (!autoDetectionActive) return
+            // Untrusted cross-process input (T-18-01) — defensive `getInt` with the documented `-1`
+            // sentinel default, matching RecognizerBundles' own no-`!!` discipline. Only a
+            // HIGHLY_CONFIDENT event may mutate the tracked label; anything lower is ignored.
+            val confidence = results.getInt(SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL, -1)
+            if (confidence != HIGHLY_CONFIDENT_LEVEL) return
+            val raw = results.getString(SpeechRecognizer.DETECTED_LANGUAGE)
+            detectedLanguage = LanguageTags.normalizeDetected(raw)
         }
     }
 
@@ -849,5 +922,18 @@ internal class SttEngineImpl(
 
         /** `ERROR_CLIENT`. Rung (c)'s documented hazard when it arrives while our pipe is open. */
         const val RAW_ERROR_CLIENT = 5
+
+        /** The value [SttConfig.language] carries to request native bilingual EN/ES detection. */
+        const val AUTO_LANGUAGE = "auto"
+
+        /** Sub-34 fallback for an `"auto"` session — the library's existing bare default. */
+        const val AUTO_SUB34_FALLBACK = "en"
+
+        /** The concrete API-34+ starting language for an `"auto"` session's recognition intent. */
+        const val AUTO_STARTING_LANGUAGE = "en-US"
+
+        /** `SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_HIGHLY_CONFIDENT` (== 3). Only a
+         *  detection at this confidence level is trusted enough to stamp a label (D-02/NBIL-02). */
+        val HIGHLY_CONFIDENT_LEVEL = SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_HIGHLY_CONFIDENT
     }
 }

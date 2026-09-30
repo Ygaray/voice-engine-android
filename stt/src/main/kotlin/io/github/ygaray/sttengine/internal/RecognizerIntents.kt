@@ -78,6 +78,14 @@ internal object RecognizerIntents {
     const val AUDIO_SOURCE_SAMPLE_RATE_HZ: Int = 16_000
 
     /**
+     * The exact bilingual allowlist NBIL-03 requires for an `"auto"` session's language-switch
+     * extras, in the [en-US, es-US] order the probe wiring used. The single definition of this
+     * literal — Plan 02 reuses the same constant for the NBIL-10 dual-language preflight; do not
+     * duplicate this list elsewhere.
+     */
+    val AUTO_SWITCH_ALLOWED_LANGUAGES: List<String> = listOf("en-US", "es-US")
+
+    /**
      * Build the fully populated recognition intent for [rung].
      *
      * @param rung which rung's extras to apply.
@@ -86,6 +94,12 @@ internal object RecognizerIntents {
      * @param context supplies only `packageName` for `EXTRA_CALLING_PACKAGE`.
      * @param audioSource the read end of the app-owned pipe. **Required** for
      *   [Rung.RawAudioSegmented] and ignored by every other rung.
+     * @param enableLanguageSwitch when `true`, adds `EXTRA_ENABLE_LANGUAGE_SWITCH` +
+     *   `EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES` == [AUTO_SWITCH_ALLOWED_LANGUAGES] to the built
+     *   intent (NBIL-03) — the caller passes this already gated on the injected `sdkInt`
+     *   (API 34+ `"auto"` sessions only), so this function stays a pure data function with no
+     *   SDK-level branching or API-level version annotation of its own (NBIL-07 — the default
+     *   `false` keeps every other intent byte-identical to today).
      * @throws IllegalArgumentException when [Rung.RawAudioSegmented] is requested without an
      *   [audioSource]. Emitting a rung-(c) intent with no descriptor would silently produce a
      *   session that behaves like rung (b), which would then degrade for a reason that has nothing
@@ -96,6 +110,7 @@ internal object RecognizerIntents {
         config: SttConfig,
         context: Context,
         audioSource: ParcelFileDescriptor? = null,
+        enableLanguageSwitch: Boolean = false,
     ): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         // Common to every rung.
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -106,6 +121,16 @@ internal object RecognizerIntents {
         // on-device recognition, and this says so again in the intent. Free, and it makes the
         // "no metered cloud API, ever" constraint legible at the call site.
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+
+        // "auto"-conditional switch extras (NBIL-01/NBIL-03), API 34+ only — the caller has already
+        // gated `enableLanguageSwitch` on the injected sdkInt, so no version annotation belongs here.
+        if (enableLanguageSwitch) {
+            putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH, RecognizerIntent.LANGUAGE_SWITCH_BALANCED)
+            putStringArrayListExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES,
+                ArrayList(AUTO_SWITCH_ALLOWED_LANGUAGES),
+            )
+        }
 
         when (rung) {
             Rung.RestartingSingleSession -> {
