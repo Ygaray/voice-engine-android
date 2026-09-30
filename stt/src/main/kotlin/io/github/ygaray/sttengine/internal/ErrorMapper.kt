@@ -78,7 +78,14 @@ internal sealed interface PreflightFailure {
     /** `RECORD_AUDIO` is not granted. The host must request it — a library has no Activity (D-11). */
     data object RecordAudioDenied : PreflightFailure
 
-    /** In `getSupportedOnDeviceLanguages()` but not in `getInstalledOnDeviceLanguages()`. */
+    /**
+     * In `getSupportedOnDeviceLanguages()` but not in `getInstalledOnDeviceLanguages()`.
+     *
+     * [language] is normally a BCP-47 locale tag, but on the `SKIPPED_NO_MODEL`
+     * [SttEngineImpl.onLanguageDetection] path it may instead be
+     * `SttEngineImpl.UNKNOWN_LANGUAGE_SENTINEL` when the platform's event carried no
+     * `DETECTED_LANGUAGE` key — a specless edge with no real locale to report.
+     */
     class LanguageNotInstalled(val language: String) : PreflightFailure
 
     /** In `getPendingOnDeviceLanguages()` — a download is already scheduled. */

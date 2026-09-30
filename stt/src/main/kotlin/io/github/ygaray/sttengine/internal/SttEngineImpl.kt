@@ -941,8 +941,12 @@ internal class SttEngineImpl(
             val switchResult = results.getInt(SpeechRecognizer.LANGUAGE_SWITCH_RESULT, -1)
             if (switchResult == SWITCH_RESULT_SKIPPED_NO_MODEL) {
                 // Defensive, no `!!` — the platform does not guarantee DETECTED_LANGUAGE is present
-                // on a skipped-switch event (T-18-05, specless edge: empty).
-                val missingLanguage = results.getString(SpeechRecognizer.DETECTED_LANGUAGE) ?: AUTO_LANGUAGE
+                // on a skipped-switch event (T-18-05, specless edge: empty). Fall back to a sentinel
+                // that cannot be confused with a real BCP-47 locale tag — AUTO_LANGUAGE ("auto") is
+                // SttConfig.language's own request value, not a locale, and surfacing it in
+                // SttError.message would read as "download a model literally named auto".
+                val missingLanguage =
+                    results.getString(SpeechRecognizer.DETECTED_LANGUAGE) ?: UNKNOWN_LANGUAGE_SENTINEL
                 fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotInstalled(missingLanguage)))
             }
         }
@@ -960,6 +964,14 @@ internal class SttEngineImpl(
 
         /** The value [SttConfig.language] carries to request native bilingual EN/ES detection. */
         const val AUTO_LANGUAGE = "auto"
+
+        /** Sentinel used when a `SKIPPED_NO_MODEL` [onLanguageDetection] event carries no
+         *  `DETECTED_LANGUAGE` key (the specless edge T-18-05 defends against). Deliberately NOT
+         *  [AUTO_LANGUAGE] — that string is [SttConfig.language]'s own request value, not a real
+         *  BCP-47 locale tag, and surfacing it via [PreflightFailure.LanguageNotInstalled] would
+         *  read as "the on-device model for \"auto\" is supported but not installed," which no host
+         *  can act on since no platform model is ever named `"auto"`. */
+        const val UNKNOWN_LANGUAGE_SENTINEL = "unknown"
 
         /** Sub-34 fallback for an `"auto"` session — the library's existing bare default. */
         const val AUTO_SUB34_FALLBACK = "en"
