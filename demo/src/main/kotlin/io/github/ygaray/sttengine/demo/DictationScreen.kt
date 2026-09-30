@@ -69,6 +69,13 @@ internal object TestTags {
     const val TRANSCRIPT = "stt-transcript"
     const val START = "stt-start"
     const val STOP = "stt-stop"
+
+    /**
+     * Rendered once PER committed segment — like [FINAL] above, NOT a single unique match. A
+     * driver reading this back via uiautomator must pair it with the sibling `#segmentId` label
+     * rather than assuming one node exists on screen (19-REVIEWS.md cycle 1, Codex LOW).
+     */
+    const val LANGUAGE = "stt-language"
 }
 
 /**
@@ -395,6 +402,15 @@ private fun FinalBlock(segment: FinalSegment) {
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.Normal,
             color = MaterialTheme.colorScheme.onSurface,
+        )
+        // Plain Text, no markup interpolation — recognizer output (including the detected
+        // language label) is untrusted input and never becomes markup or a command here.
+        Text(
+            text = segment.language ?: "—",
+            modifier = Modifier.testTag(TestTags.LANGUAGE),
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.outline,
         )
     }
 }
