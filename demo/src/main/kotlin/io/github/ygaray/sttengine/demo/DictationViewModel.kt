@@ -195,6 +195,15 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
             _error.value = null
             _committed.value = emptyList()
             _lastSegmentId.value = null
+            // Same rationale, extended to the trace-derived diagnostics: a same-spec restart reuses
+            // the engine instance (ensureEngine() no-ops when language/diagnosticLogging match) and
+            // therefore the same SessionLog trace file, so a stale restartCount/activeRung/
+            // lastDeafWindowMs left over from the PREVIOUS run must not be read as this run's
+            // evidence by FileAudioSourceControl.watchRung()'s filterNotNull().first() gate
+            // (19-REVIEW.md cycle 1, CR-01).
+            _restartCount.value = null
+            _activeRung.value = null
+            _lastDeafWindowMs.value = null
             _engine.value.start()
         }
     }
