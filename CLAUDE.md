@@ -137,9 +137,11 @@ current one.** Verified against the local SDK API index: `EXTRA_ENABLE_LANGUAGE_
 `EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES` arrived at **API 34**, and
 `EXTRA_LANGUAGE_SWITCH_INITIAL_ACTIVE_DURATION_TIME_MILLIS` and
 `EXTRA_LANGUAGE_SWITCH_MAX_SWITCHES` at **API 35** — not 33, as earlier project notes stated.
-In-session language switching is therefore out of reach at this module's floor. That is acceptable
-because multilingual is deferred and out of scope; `SttConfig.language` per engine instance works at
-33 and is unaffected.
+In-session language switching is therefore out of reach at this module's floor. That is exactly why
+native `"auto"` bilingual detection (implemented for v3.1, NBIL-01..10) is runtime-gated to
+`SDK_INT >= 34` rather than assumed available, falling back to the configured default language
+below 34 instead of raising the floor; `SttConfig.language` per engine instance works at 33
+unconditionally.
 
 ## Toolchain
 

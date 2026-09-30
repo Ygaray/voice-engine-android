@@ -4,9 +4,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.debug.DebugRungCeiling
 import io.github.ygaray.sttengine.demo.DictationViewModel
 import java.io.File
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -156,6 +158,7 @@ class DemoControlReceiver : BroadcastReceiver() {
             put("services", viewModel.recognizerServices.value.joinToString(separator = " "))
             put("selected", viewModel.selectedRecognizer.value ?: JSONObject.NULL)
             put("segmentId", viewModel.lastSegmentId.value ?: JSONObject.NULL)
+            languageDiagnostics(this, viewModel.committed.value)
             put("committedCount", viewModel.committed.value.size)
             put("restartCount", viewModel.restartCount.value ?: JSONObject.NULL)
             put("activeRung", viewModel.activeRung.value ?: JSONObject.NULL)
@@ -253,4 +256,61 @@ class DemoControlReceiver : BroadcastReceiver() {
         /** The demo's own diagnostic sidecar, beside the engine's trace and pullable the same way. */
         const val DIAGNOSTICS_FILE = "demo-diagnostics.jsonl"
     }
+}
+
+/**
+ * The most recently committed segment's detected language, or `null` before any segment has
+ * committed or when the latest segment carries no confident label.
+ *
+ * Reads [FinalSegment.language] ONLY — an IMPLEMENTATION INVARIANT of this function's body, not a
+ * type-level guarantee: the `List<FinalSegment>` parameter still carries `.text`, and nothing in
+ * the type system stops a future edit from reading it (19-REVIEWS.md cycle 2, Codex LOW).
+ *
+ * Plain, dependency-free (no Context, no ViewModel) so it is unit-testable in plain JUnit.
+ */
+internal fun lastSegmentLanguageOf(committed: List<FinalSegment>): String? =
+    committed.lastOrNull()?.language
+
+/**
+ * Every committed segment's detected language, oldest first — mirroring [DictationViewModel]'s own
+ * documented `committed` ordering — as one `{"segmentId": <Int>, "language": <bare en/es> or
+ * JSONObject.NULL}` entry per segment.
+ *
+ * Reads [FinalSegment.language] ONLY — see [lastSegmentLanguageOf]'s KDoc for the same
+ * implementation-invariant-not-type-level-guarantee caveat. Plain, dependency-free, unit-testable.
+ */
+internal fun segmentLanguagesOf(committed: List<FinalSegment>): JSONArray {
+    val array = JSONArray()
+    committed.forEach { segment ->
+        array.put(
+            JSONObject().apply {
+                put("segmentId", segment.segmentId)
+                put("language", segment.language ?: JSONObject.NULL)
+            },
+        )
+    }
+    return array
+}
+
+/**
+ * Writes both the [lastSegmentLanguageOf] scalar and the [segmentLanguagesOf] ordered array onto
+ * [into] — mirroring the existing [FileAudioSourceControl.snapshot] pattern called one line below
+ * this in [DemoControlReceiver.dumpDiagnostics].
+ *
+ * Three things a driver reading this diagnostics dump needs to know:
+ *
+ * 1. This function reads ONLY `.language` on every committed entry, never `.text` — an
+ *    IMPLEMENTATION INVARIANT of this function's body, not a type-level guarantee (the
+ *    `List<FinalSegment>` parameter still carries `.text`; 19-REVIEWS.md cycle 2, Codex LOW).
+ * 2. `segmentLanguages` carries the COMPLETE, ordered per-utterance sequence in a SINGLE
+ *    end-of-run dump — a driver scoring a multi-utterance run (EN-only/ES-only/alternating/
+ *    long-form) should read this array rather than polling `committedCount` and dumping once per
+ *    new segment. This SUPERSEDES the earlier poll-per-segment protocol, which was itself still
+ *    lossy if two segments committed between polls (19-REVIEWS.md cycle 2, Codex MEDIUM #1).
+ * 3. `lastSegmentLanguage` is kept as a redundant convenience scalar — always equal to the array's
+ *    last entry — for any driver that only wants the latest label.
+ */
+internal fun languageDiagnostics(into: JSONObject, committed: List<FinalSegment>) {
+    into.put("lastSegmentLanguage", lastSegmentLanguageOf(committed) ?: JSONObject.NULL)
+    into.put("segmentLanguages", segmentLanguagesOf(committed))
 }

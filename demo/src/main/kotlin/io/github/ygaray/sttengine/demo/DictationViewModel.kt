@@ -187,8 +187,14 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             ensureEngine(language ?: builtWith.language, diagnosticLogging)
             // The banner persists until the next start, exactly as the web demo does it — a stale
-            // error next to a live session would be worse than no error at all.
+            // error next to a live session would be worse than no error at all. The same reasoning
+            // applies to the committed-segment evidence: a second run in the same app session (a
+            // second human real-mic case, or a second file-fed mechanism-check pass) must never read
+            // a PREVIOUS run's lastSegmentLanguage/language chip as if it were this run's evidence
+            // (19-REVIEWS.md cycle 1, Codex MEDIUM #1).
             _error.value = null
+            _committed.value = emptyList()
+            _lastSegmentId.value = null
             _engine.value.start()
         }
     }

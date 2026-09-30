@@ -75,4 +75,17 @@ dependencies {
     implementation(libs.activity.compose)
     // collectAsStateWithLifecycle() — the documented consumer of D-07's per-event StateFlows.
     implementation(libs.lifecycle.runtime.compose)
+
+    // Phase 19 (D-02): the demo's first unit-tested source — the pure diagnostics helpers in
+    // DemoControlReceiver.kt (lastSegmentLanguageOf/segmentLanguagesOf/languageDiagnostics).
+    testImplementation(libs.junit)
+    // org.json.JSONObject/JSONArray are Android-platform stub classes on the host JVM — without
+    // Robolectric (deliberately excluded by this task's design), calling them throws "not mocked"
+    // at runtime rather than exercising real JSON behavior. The real, standalone org.json:json JVM
+    // implementation (same package/class names, picked up ahead of the mockable android.jar stub
+    // on the unit-test classpath) is the standard Android-testing fix — already proven in this
+    // repo by :transcription's identical testImplementation(libs.json) (19-REVIEWS.md cycle 3,
+    // Codex HIGH: the plain-JUnit test against real org.json without this dependency would fail at
+    // runtime rather than validate the diagnostics record).
+    testImplementation(libs.json)
 }
