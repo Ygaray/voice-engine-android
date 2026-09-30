@@ -72,10 +72,18 @@ internal object TestTags {
 
     /**
      * Rendered once PER committed segment — like [FINAL] above, NOT a single unique match. A
-     * driver reading this back via uiautomator must pair it with the sibling `#segmentId` label
+     * driver reading this back via uiautomator must pair it with the sibling [SEGMENT_ID] label
      * rather than assuming one node exists on screen (19-REVIEWS.md cycle 1, Codex LOW).
      */
     const val LANGUAGE = "stt-language"
+
+    /**
+     * The `#segmentId` label rendered above [FINAL]/[LANGUAGE] for the same committed segment —
+     * the stable resource-id a driver pairs with [LANGUAGE] to disambiguate which segment a given
+     * language chip belongs to, rather than matching on rendered text content (19-REVIEW.md
+     * cycle 1, WR-01).
+     */
+    const val SEGMENT_ID = "stt-segment-id"
 }
 
 /**
@@ -390,6 +398,7 @@ private fun FinalBlock(segment: FinalSegment) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
             text = "#${segment.segmentId}",
+            modifier = Modifier.testTag(TestTags.SEGMENT_ID),
             style = MaterialTheme.typography.labelSmall,
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.outline,
