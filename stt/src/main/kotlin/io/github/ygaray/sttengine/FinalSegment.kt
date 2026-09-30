@@ -17,9 +17,11 @@ package io.github.ygaray.sttengine
  * @property text The committed text. Immutable — a final is never revised.
  * @property segmentId Library-owned, monotonic, **starts at 0** (mirroring `segmenter.py:111`).
  *   Opaque and per-session: it is NOT comparable across engines, backends or sessions.
- * @property language The server-detected language label (LANG-02/LANG-03) for a server-backed
- *   bilingual `"auto"` session — `null` when the server frame did not carry one, which is always
- *   the case for a native on-device session (native never detects language).
+ * @property language The detected language label (LANG-02/LANG-03) for a bilingual `"auto"`
+ *   session — `en`/`es` on the server backend (per-segment server detection) or on the native
+ *   backend on an API 34+ device (per-segment on-device detection, from a `HIGHLY_CONFIDENT`
+ *   event only); `null` when no label was produced, which is always the case for a non-`"auto"`
+ *   session on either backend.
  *
  * **`@JvmOverloads` is required** on this constructor, exactly as [SttConfig] documents: without
  * it, adding [language] as a trailing-defaulted parameter would silently drop the existing
