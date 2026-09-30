@@ -927,9 +927,24 @@ internal class SttEngineImpl(
             // sentinel default, matching RecognizerBundles' own no-`!!` discipline. Only a
             // HIGHLY_CONFIDENT event may mutate the tracked label; anything lower is ignored.
             val confidence = results.getInt(SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL, -1)
-            if (confidence != HIGHLY_CONFIDENT_LEVEL) return
-            val raw = results.getString(SpeechRecognizer.DETECTED_LANGUAGE)
-            detectedLanguage = LanguageTags.normalizeDetected(raw)
+            if (confidence == HIGHLY_CONFIDENT_LEVEL) {
+                val raw = results.getString(SpeechRecognizer.DETECTED_LANGUAGE)
+                detectedLanguage = LanguageTags.normalizeDetected(raw)
+            }
+
+            // NBIL-10 runtime signal: the platform reports it SKIPPED a language switch because the
+            // target language's on-device pack is missing — the same "loud, never silent" typed
+            // error the preflight uses, routed through the SAME idempotent fail() funnel. Untrusted
+            // cross-process input (T-18-05): defensive `getInt` with a `-1` sentinel; only the exact
+            // documented SKIPPED_NO_MODEL value (3) triggers a failure, any other value (including a
+            // hostile/out-of-range Int) is ignored.
+            val switchResult = results.getInt(SpeechRecognizer.LANGUAGE_SWITCH_RESULT, -1)
+            if (switchResult == SWITCH_RESULT_SKIPPED_NO_MODEL) {
+                // Defensive, no `!!` — the platform does not guarantee DETECTED_LANGUAGE is present
+                // on a skipped-switch event (T-18-05, specless edge: empty).
+                val missingLanguage = results.getString(SpeechRecognizer.DETECTED_LANGUAGE) ?: AUTO_LANGUAGE
+                fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotInstalled(missingLanguage)))
+            }
         }
     }
 
@@ -955,5 +970,10 @@ internal class SttEngineImpl(
         /** `SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_HIGHLY_CONFIDENT` (== 3). Only a
          *  detection at this confidence level is trusted enough to stamp a label (D-02/NBIL-02). */
         val HIGHLY_CONFIDENT_LEVEL = SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_HIGHLY_CONFIDENT
+
+        /** `SpeechRecognizer.LANGUAGE_SWITCH_RESULT_SKIPPED_NO_MODEL` (== 3) — the platform skipped
+         *  a language switch mid-session because the target language's on-device pack is missing
+         *  (NBIL-10). Routes through the same [fail]/`NO_OFFLINE_MODEL` funnel as the preflight. */
+        val SWITCH_RESULT_SKIPPED_NO_MODEL = SpeechRecognizer.LANGUAGE_SWITCH_RESULT_SKIPPED_NO_MODEL
     }
 }

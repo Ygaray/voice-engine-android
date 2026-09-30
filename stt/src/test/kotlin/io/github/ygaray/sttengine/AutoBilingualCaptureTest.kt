@@ -8,6 +8,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -199,6 +200,73 @@ class AutoBilingualCaptureTest {
             assertEquals(null, h.finals[0].language)
         }
 
+    // --- Task 2: runtime LANGUAGE_SWITCH_RESULT_SKIPPED_NO_MODEL (NBIL-10) -------------------------
+
+    @Test
+    fun `a live auto session receiving a SKIPPED_NO_MODEL switchResult fails loudly with one NO_OFFLINE_MODEL error`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "es-US"))
+            advanceUntilIdle()
+
+            assertEquals(1, h.errors.size)
+            assertEquals(SttErrorCode.NO_OFFLINE_MODEL, h.errors.single().code)
+            assertTrue(h.errors.single().message.contains("es-US"))
+            assertEquals(EngineState.Error, h.engine.state.value)
+        }
+
+    @Test
+    fun `the same SKIPPED_NO_MODEL event with no DETECTED_LANGUAGE key still fails safely, no crash`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            val bundle = Bundle().apply {
+                putInt(SpeechRecognizer.LANGUAGE_SWITCH_RESULT, SpeechRecognizer.LANGUAGE_SWITCH_RESULT_SKIPPED_NO_MODEL)
+                // Deliberately no DETECTED_LANGUAGE key.
+            }
+            h.fake.fireLanguageDetection(bundle)
+            advanceUntilIdle()
+
+            assertEquals(1, h.errors.size)
+            assertEquals(SttErrorCode.NO_OFFLINE_MODEL, h.errors.single().code)
+            assertEquals(EngineState.Error, h.engine.state.value)
+        }
+
+    @Test
+    fun `a confidence-3 detection with no SKIPPED_NO_MODEL switchResult never triggers fail()`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(highlyConfidentDetection("en-US"))
+            advanceUntilIdle()
+
+            assertEquals("a plain confidence-3 detection must not fail() the session", 0, h.errors.size)
+            assertEquals(EngineState.Listening, h.engine.state.value)
+        }
+
+    @Test
+    fun `a second SKIPPED_NO_MODEL event after the first still yields exactly one error (idempotent)`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            val target = h.listenerFor(0)
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "es-US"), target = target)
+            advanceUntilIdle()
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "es-US"), target = target)
+            advanceUntilIdle()
+
+            assertEquals(1, h.errors.size)
+        }
+
     // --- helpers -----------------------------------------------------------------------------------
 
     private fun highlyConfidentDetection(detectedLanguage: String): Bundle =
@@ -207,5 +275,10 @@ class AutoBilingualCaptureTest {
     private fun detectionBundle(detectedLanguage: String, confidenceLevel: Int): Bundle = Bundle().apply {
         putString(SpeechRecognizer.DETECTED_LANGUAGE, detectedLanguage)
         putInt(SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL, confidenceLevel)
+    }
+
+    private fun skippedNoModelBundle(detectedLanguage: String): Bundle = Bundle().apply {
+        putString(SpeechRecognizer.DETECTED_LANGUAGE, detectedLanguage)
+        putInt(SpeechRecognizer.LANGUAGE_SWITCH_RESULT, SpeechRecognizer.LANGUAGE_SWITCH_RESULT_SKIPPED_NO_MODEL)
     }
 }
