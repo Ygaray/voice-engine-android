@@ -47,4 +47,24 @@ class LanguageTagsTest {
     fun `an empty or unparseable tag is returned unchanged`() {
         assertEquals("", LanguageTags.regionQualified("", enUS))
     }
+
+    // --- normalizeDetected (Phase 18, NBIL-02/NBIL-03/NBIL-09) -----------------------------------
+
+    @Test
+    fun `normalizeDetected allowlists en and es, in bare and region-qualified form, case-insensitively`() {
+        assertEquals("en", LanguageTags.normalizeDetected("en"))
+        assertEquals("es", LanguageTags.normalizeDetected("es"))
+        assertEquals("en", LanguageTags.normalizeDetected("en-US"))
+        assertEquals("es", LanguageTags.normalizeDetected("es-US"))
+        assertEquals("en", LanguageTags.normalizeDetected("en-us"))
+    }
+
+    @Test
+    fun `normalizeDetected returns null for null, empty, non-en-es, and malformed input`() {
+        assertEquals(null, LanguageTags.normalizeDetected(null))
+        assertEquals(null, LanguageTags.normalizeDetected(""))
+        assertEquals(null, LanguageTags.normalizeDetected("de-DE"))
+        assertEquals(null, LanguageTags.normalizeDetected("fr"))
+        assertEquals(null, LanguageTags.normalizeDetected("not-a-tag"))
+    }
 }
