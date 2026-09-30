@@ -171,6 +171,41 @@ class RecognizerIntentsTest {
         )
     }
 
+    // --- "auto"-conditional switch extras (Phase 18, NBIL-03/NBIL-07) --------------------------
+
+    @Test
+    fun `enableLanguageSwitch=true adds exactly the bilingual allowlist and the enable-switch extra`() {
+        val intent =
+            RecognizerIntents.forRung(
+                Rung.RestartingSingleSession,
+                SttConfig(language = "auto"),
+                context,
+                enableLanguageSwitch = true,
+            )
+
+        assertEquals(
+            RecognizerIntent.LANGUAGE_SWITCH_BALANCED,
+            intent.getStringExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH),
+        )
+        assertEquals(
+            listOf("en-US", "es-US"),
+            intent.getStringArrayListExtra(RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES),
+        )
+        assertEquals(RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES, listOf("en-US", "es-US"))
+    }
+
+    @Test
+    fun `the default enableLanguageSwitch=false omits both switch-extra keys, byte-identical to today`() {
+        val keys = keysOf(Rung.RestartingSingleSession)
+        assertFalse(keys.contains(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH))
+        assertFalse(keys.contains(RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES))
+        assertEquals(
+            "the default keeps every rung's keyset exactly as it was before this plan (NBIL-07)",
+            commonKeys + silenceKeys,
+            keys,
+        )
+    }
+
     // --- (c) RawAudioSegmented ------------------------------------------------------------------
 
     @Test

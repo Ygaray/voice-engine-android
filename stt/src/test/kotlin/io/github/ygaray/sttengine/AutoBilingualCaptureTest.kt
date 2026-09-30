@@ -1,6 +1,7 @@
 package io.github.ygaray.sttengine
 
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import io.github.ygaray.sttengine.corrections.CorrectionPair
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -145,6 +146,58 @@ class AutoBilingualCaptureTest {
         assertEquals("the cat sat", h.finals[0].text)
         assertEquals("en", h.finals[0].language)
     }
+
+    // --- Task 3: sub-34 fallback, allowlist, non-"auto" no-regression (NBIL-04/NBIL-07) ------------
+
+    @Test
+    fun `on injected sdkInt below 34, an auto session sets no switch extras and falls back to bare en`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"), sdkInt = 33)
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            val intent = h.fake.lastIntent
+            assertEquals(false, intent?.hasExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH))
+            assertEquals("en-US", intent?.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE))
+
+            h.fake.fireSegmentResults("sub 34 fallback")
+            advanceUntilIdle()
+
+            assertEquals(1, h.finals.size)
+            assertEquals("en", h.finals[0].language)
+        }
+
+    @Test
+    fun `sub-34 auto ignores a fired detection - the final still falls back to bare en`() = runTest {
+        val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"), sdkInt = 33)
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        h.fake.fireLanguageDetection(highlyConfidentDetection("es-US"))
+        h.fake.fireSegmentResults("detection fired but must be ignored below 34")
+        advanceUntilIdle()
+
+        assertEquals(1, h.finals.size)
+        assertEquals("en", h.finals[0].language)
+    }
+
+    @Test
+    fun `a non-auto session sets no switch extras and every final has a null language (NBIL-07)`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "en"), sdkInt = 35)
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            val intent = h.fake.lastIntent
+            assertEquals(false, intent?.hasExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH))
+            assertEquals("en-US", intent?.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE))
+
+            h.fake.fireSegmentResults("non auto session")
+            advanceUntilIdle()
+
+            assertEquals(1, h.finals.size)
+            assertEquals(null, h.finals[0].language)
+        }
 
     // --- helpers -----------------------------------------------------------------------------------
 
