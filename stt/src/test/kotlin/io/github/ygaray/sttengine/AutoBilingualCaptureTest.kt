@@ -91,6 +91,22 @@ class AutoBilingualCaptureTest {
     }
 
     @Test
+    fun `WR-03 - a later out-of-allowlist confidence-3 detection does not blank an earlier valid label`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(highlyConfidentDetection("es-US"))
+            h.fake.fireLanguageDetection(highlyConfidentDetection("de-DE"))
+            h.fake.fireSegmentResults("una fraseta seguida de ruido fuera de la lista")
+            advanceUntilIdle()
+
+            assertEquals(1, h.finals.size)
+            assertEquals("es", h.finals[0].language)
+        }
+
+    @Test
     fun `per-segment reset - a detection-free segment after a labeled one commits null`() = runTest {
         val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
         h.collectInto(backgroundScope)

@@ -242,7 +242,10 @@ internal class SttEngineImpl(
 
     /**
      * The last `confidenceLevel == HIGHLY_CONFIDENT` language seen since the current segment
-     * boundary (bare `en`/`es` only, normalized — D-02). `null` means "unknown for this segment", not
+     * boundary **that normalized to a real `en`/`es` label** (D-02). A `HIGHLY_CONFIDENT` event for
+     * a language outside the EN/ES allowlist does NOT clear an earlier valid label within the same
+     * segment — a transient out-of-allowlist misclassification must not erase a genuinely-confident
+     * detection that already happened this segment. `null` means "unknown for this segment", not
      * "English" — distinguishable from a real detection so a host is never told the system is
      * confident when it is not (NBIL-02). Only ever mutated by [onLanguageDetection] when
      * [autoDetectionActive] is true; stamped at commit by [languageForFinal] and cleared on every
@@ -925,11 +928,13 @@ internal class SttEngineImpl(
             if (!autoDetectionActive) return
             // Untrusted cross-process input (T-18-01) — defensive `getInt` with the documented `-1`
             // sentinel default, matching RecognizerBundles' own no-`!!` discipline. Only a
-            // HIGHLY_CONFIDENT event may mutate the tracked label; anything lower is ignored.
+            // HIGHLY_CONFIDENT event may mutate the tracked label, and only when it normalizes to a
+            // real en/es label (WR-03) — a later out-of-allowlist HIGHLY_CONFIDENT detection within
+            // the same segment must not blank out an earlier genuinely-confident en/es detection.
             val confidence = results.getInt(SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL, -1)
             if (confidence == HIGHLY_CONFIDENT_LEVEL) {
                 val raw = results.getString(SpeechRecognizer.DETECTED_LANGUAGE)
-                detectedLanguage = LanguageTags.normalizeDetected(raw)
+                LanguageTags.normalizeDetected(raw)?.let { detectedLanguage = it }
             }
 
             // NBIL-10 runtime signal: the platform reports it SKIPPED a language switch because the
