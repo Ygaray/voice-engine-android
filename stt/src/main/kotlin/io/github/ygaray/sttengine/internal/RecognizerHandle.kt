@@ -80,6 +80,19 @@ internal interface RecognizerHandle {
      */
     suspend fun languageAvailability(language: String): LanguageAvailability =
         LanguageAvailability.UNDETERMINED
+
+    /**
+     * The dual-language extension of [languageAvailability] (NBIL-10, Plan 02) — answers the same
+     * preflight question for every entry in [languages] at once.
+     *
+     * The safe default composes on top of whatever the single-language override already does: one
+     * round trip per language, reusing [languageAvailability]. [FakeRecognizerHandle]/[PreflightHandle]
+     * therefore get this for free with NO override needed — the per-language override map tests
+     * exercise is composed through this exact same default, which is the production code path too
+     * (only [PlatformRecognizerHandle] overrides this for its one-round-trip optimization).
+     */
+    suspend fun languageAvailability(languages: List<String>): Map<String, LanguageAvailability> =
+        languages.associateWith { languageAvailability(it) }
 }
 
 /**

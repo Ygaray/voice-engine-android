@@ -174,6 +174,102 @@ class PreflightTest {
         }
     }
 
+    // --- NBIL-10: dual-language preflight under "auto" -----------------------------------------------
+
+    @Test
+    fun `an auto session with es-US missing fails with no-offline-model naming es-US`() = runTest {
+        val h = EngineHarness(
+            testScheduler,
+            config = SttConfig(language = "auto"),
+            languageAvailabilityOverrides = mapOf(
+                "en-US" to LanguageAvailability.INSTALLED,
+                "es-US" to LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+            ),
+        )
+        h.collectInto(backgroundScope)
+
+        h.engine.start()
+        advanceUntilIdle()
+
+        assertEquals(1, h.errors.size)
+        assertEquals(SttErrorCode.NO_OFFLINE_MODEL, h.errors.single().code)
+        assertTrue(h.errors.single().message.contains("es-US"))
+        assertEquals("preflight failed before any session started", 0, h.fake.startCount)
+    }
+
+    @Test
+    fun `an auto session with en-US missing fails with no-offline-model naming en-US`() = runTest {
+        val h = EngineHarness(
+            testScheduler,
+            config = SttConfig(language = "auto"),
+            languageAvailabilityOverrides = mapOf(
+                "en-US" to LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+                "es-US" to LanguageAvailability.INSTALLED,
+            ),
+        )
+        h.collectInto(backgroundScope)
+
+        h.engine.start()
+        advanceUntilIdle()
+
+        assertEquals(1, h.errors.size)
+        assertEquals(SttErrorCode.NO_OFFLINE_MODEL, h.errors.single().code)
+        assertTrue(h.errors.single().message.contains("en-US"))
+        assertEquals(0, h.fake.startCount)
+    }
+
+    @Test
+    fun `an auto session with BOTH languages missing fails with exactly one error naming en-US first`() =
+        runTest {
+            val h = EngineHarness(
+                testScheduler,
+                config = SttConfig(language = "auto"),
+                languageAvailabilityOverrides = mapOf(
+                    "en-US" to LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+                    "es-US" to LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+                ),
+            )
+            h.collectInto(backgroundScope)
+
+            h.engine.start()
+            advanceUntilIdle()
+
+            assertEquals(
+                "exactly one error, not a merged/duplicate message for both languages",
+                1,
+                h.errors.size,
+            )
+            assertEquals(SttErrorCode.NO_OFFLINE_MODEL, h.errors.single().code)
+            assertTrue(
+                "en-US is checked first (AUTO_SWITCH_ALLOWED_LANGUAGES' literal order)",
+                h.errors.single().message.contains("en-US"),
+            )
+            assertEquals(0, h.fake.startCount)
+        }
+
+    @Test
+    fun `a non-auto session and a sub-34 auto session still preflight with exactly one languageAvailability call`() =
+        runTest {
+            // Non-"auto": regression-proven by the pre-existing de-DE case above still passing
+            // unmodified. Sub-34 "auto" additionally proves the dual-language path is gated on
+            // autoDetectionActive, not merely on the "auto" string.
+            val h = EngineHarness(
+                testScheduler,
+                config = SttConfig(language = "auto"),
+                sdkInt = 33,
+                languageAvailabilityOverrides = mapOf(
+                    // If the dual-language path fired despite sdkInt=33, this would incorrectly fail
+                    // the session naming es-US even though the sub-34 fallback never requests it.
+                    "es-US" to LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+                ),
+            )
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            assertTrue("sub-34 auto must not be blocked by an es-US-only override", h.errors.isEmpty())
+            assertEquals(EngineState.Listening, h.engine.state.value)
+        }
+
     // --- language-tag matching, which decides the tester's own happy path ---------------------------
 
     @Test

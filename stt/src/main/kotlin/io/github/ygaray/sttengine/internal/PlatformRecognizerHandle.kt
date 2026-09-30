@@ -93,13 +93,42 @@ internal class PlatformRecognizerHandle(
      * [LanguageAvailability.UNDETERMINED], i.e. "carry on", never to an error.
      */
     override suspend fun languageAvailability(language: String): LanguageAvailability {
+        val support = querySupport(language) ?: return LanguageAvailability.UNDETERMINED
+        return classify(language, support)
+    }
+
+    /**
+     * The NBIL-10 dual-language extension: classifies every entry in [languages] from ONE
+     * `checkRecognitionSupport` round trip rather than one per language.
+     *
+     * **Assumption A3 (RESEARCH.md Open Question 1, unverified until Phase 19's real-mic run):** the
+     * platform's `checkRecognitionSupport` response lists (`installedOnDeviceLanguages`,
+     * `supportedOnDeviceLanguages`, `pendingOnDeviceLanguages`) are assumed DEVICE-WIDE — not scoped
+     * to the single language named in the query intent's `EXTRA_LANGUAGE` extra — so one response
+     * can classify every requested language. If that assumption proves wrong, the documented
+     * correction is to fall back to one [querySupport] call per language, matching the single-language
+     * override's behavior exactly (no protocol change needed — only this function's body).
+     */
+    override suspend fun languageAvailability(languages: List<String>): Map<String, LanguageAvailability> {
+        if (languages.isEmpty()) return emptyMap()
+        val support = querySupport(languages.first())
+            ?: return languages.associateWith { LanguageAvailability.UNDETERMINED }
+        return languages.associateWith { classify(it, support) }
+    }
+
+    /**
+     * The intent-build + `suspendCancellableCoroutine` + `withTimeoutOrNull` machinery shared by
+     * both [languageAvailability] overrides. Returns the raw platform answer — `null` on a timeout
+     * or a failed query — leaving classification to the caller.
+     */
+    private suspend fun querySupport(language: String): RecognitionSupport? {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
 
-        val support: RecognitionSupport? = withTimeoutOrNull(LANGUAGE_SUPPORT_TIMEOUT_MS) {
+        return withTimeoutOrNull(LANGUAGE_SUPPORT_TIMEOUT_MS) {
             suspendCancellableCoroutine<RecognitionSupport?> { continuation ->
                 val callback = object : RecognitionSupportCallback {
                     override fun onSupportResult(recognitionSupport: RecognitionSupport) {
@@ -122,8 +151,6 @@ internal class PlatformRecognizerHandle(
                 }
             }
         }
-
-        return classify(language, support ?: return LanguageAvailability.UNDETERMINED)
     }
 
     /**

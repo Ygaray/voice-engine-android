@@ -54,6 +54,7 @@ internal class EngineHarness(
     scheduler: TestCoroutineScheduler,
     permissionGranted: Boolean = true,
     languageAvailability: LanguageAvailability = LanguageAvailability.INSTALLED,
+    languageAvailabilityOverrides: Map<String, LanguageAvailability> = emptyMap(),
     private val factoryThrows: Boolean = false,
     config: SttConfig = SttConfig(),
     log: SessionLog = SessionLog(),
@@ -85,7 +86,8 @@ internal class EngineHarness(
      */
     val audioPipes: MutableList<AudioSourcePipe> = mutableListOf()
 
-    private val handle: RecognizerHandle = PreflightHandle(fake, languageAvailability)
+    private val handle: RecognizerHandle =
+        PreflightHandle(fake, languageAvailability, languageAvailabilityOverrides)
 
     val engine: SttEngineImpl = SttEngineImpl(
         appContext = ApplicationProvider.getApplicationContext(),
@@ -199,7 +201,22 @@ internal class SilentPcmSource : PcmSource {
 internal class PreflightHandle(
     private val delegate: FakeRecognizerHandle,
     private val availability: LanguageAvailability,
+    private val availabilityOverrides: Map<String, LanguageAvailability> = emptyMap(),
 ) : RecognizerHandle by delegate {
 
-    override suspend fun languageAvailability(language: String): LanguageAvailability = availability
+    override suspend fun languageAvailability(language: String): LanguageAvailability =
+        availabilityOverrides[language] ?: availability
+
+    // MUST be overridden here, even though its body is byte-identical to RecognizerHandle's
+    // interface default (languages.associateWith { languageAvailability(it) }). `PreflightHandle`
+    // uses Kotlin CLASS DELEGATION ("RecognizerHandle by delegate") — any member NOT overridden on
+    // this class is auto-forwarded straight to `delegate` (FakeRecognizerHandle), bypassing this
+    // class's own `languageAvailability(String)` override entirely and silently answering every
+    // language UNDETERMINED (delegate's inherited default), which never fails a dual-language
+    // preflight and hangs `start()` forever awaiting a session that a test never drives. Overriding
+    // it here makes `languageAvailability(it)` resolve virtually to THIS class's override, composing
+    // through `availabilityOverrides` — proven by a hang-reproducing PreflightTest run before this
+    // override was added.
+    override suspend fun languageAvailability(languages: List<String>): Map<String, LanguageAvailability> =
+        languages.associateWith { languageAvailability(it) }
 }

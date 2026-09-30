@@ -320,25 +320,23 @@ internal class SttEngineImpl(
         }
         handle = created
 
-        // 3. The language. Every outcome routes through the same D-18 preflight table.
-        when (created.languageAvailability(resolvedConfig.language)) {
-            LanguageAvailability.SUPPORTED_NOT_INSTALLED -> {
-                fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotInstalled(resolvedConfig.language)))
-                return
+        // 3. The language. Every outcome routes through the same D-18 preflight table, extended
+        //    under "auto" (NBIL-10) to check BOTH en-US and es-US before any session/listener is
+        //    attached — en-US checked first, per AUTO_SWITCH_ALLOWED_LANGUAGES' literal order, so
+        //    which language's error surfaces when both are missing is deterministic. Non-"auto" and
+        //    sub-34-"auto" sessions still issue exactly one languageAvailability call, byte-identical
+        //    to before this plan (NBIL-05/NBIL-07).
+        val preflightError = if (autoDetectionActive) {
+            val availabilities = created.languageAvailability(RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES)
+            RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES.firstNotNullOfOrNull { lang ->
+                preflightErrorFor(lang, availabilities[lang] ?: LanguageAvailability.UNDETERMINED)
             }
-
-            LanguageAvailability.DOWNLOAD_PENDING -> {
-                fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageDownloadPending(resolvedConfig.language)))
-                return
-            }
-
-            LanguageAvailability.NOT_SUPPORTED -> {
-                fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotSupported(resolvedConfig.language)))
-                return
-            }
-
-            // A query that could not answer must never stop a session that would otherwise work.
-            LanguageAvailability.INSTALLED, LanguageAvailability.UNDETERMINED -> Unit
+        } else {
+            preflightErrorFor(resolvedConfig.language, created.languageAvailability(resolvedConfig.language))
+        }
+        if (preflightError != null) {
+            fail(preflightError)
+            return
         }
 
         // The capability is a PARAMETER resolved here, once per start(), and never a compile-time
@@ -389,6 +387,28 @@ internal class SttEngineImpl(
         pendingStart?.complete(Unit)
         pendingStart = null
     }
+
+    /**
+     * D-18's four-way language-preflight mapping, as a pure function (NBIL-10 extension).
+     *
+     * The exact same mapping the single-language `when` block used before this plan, now shared by
+     * both the non-`"auto"`/sub-34 single-language preflight and the `"auto"` dual-language preflight
+     * so there is exactly one place this table lives.
+     */
+    private fun preflightErrorFor(language: String, availability: LanguageAvailability): SttError? =
+        when (availability) {
+            LanguageAvailability.SUPPORTED_NOT_INSTALLED ->
+                ErrorMapper.mapPreflight(PreflightFailure.LanguageNotInstalled(language))
+
+            LanguageAvailability.DOWNLOAD_PENDING ->
+                ErrorMapper.mapPreflight(PreflightFailure.LanguageDownloadPending(language))
+
+            LanguageAvailability.NOT_SUPPORTED ->
+                ErrorMapper.mapPreflight(PreflightFailure.LanguageNotSupported(language))
+
+            // A query that could not answer must never stop a session that would otherwise work.
+            LanguageAvailability.INSTALLED, LanguageAvailability.UNDETERMINED -> null
+        }
 
     // --- the session loop ---------------------------------------------------------------------------
 
