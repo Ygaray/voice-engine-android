@@ -130,6 +130,21 @@ internal object RecognizerIntents {
                 RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES,
                 ArrayList(AUTO_SWITCH_ALLOWED_LANGUAGES),
             )
+            // NBIL-11.4 (D-04) defense-in-depth. Android documents EXTRA_LANGUAGE_DETECTION_
+            // ALLOWED_LANGUAGES as constraining DETECTION output specifically — a different lever
+            // than EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES above, which constrains switch TARGETS
+            // only — so setting it is a best-effort platform-side nudge toward the same
+            // {en-US, es-US} allowlist. This project's own real-mic evidence already shows this
+            // recognizer build does not fully honor the switch-allowlist extra either, so
+            // SttEngineImpl.onLanguageDetection's engine-side SKIPPED_NO_MODEL gate (NBIL-11.1)
+            // remains the actual enforcement regardless of whether the platform honors this extra.
+            // This addition lives strictly inside the already sdkInt-gated enableLanguageSwitch
+            // conditional, so it does not raise or claim a lower floor than this module's existing
+            // "auto"-API-34+ gating (android/CLAUDE.md's platform-floor invariant).
+            putStringArrayListExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES,
+                ArrayList(AUTO_SWITCH_ALLOWED_LANGUAGES),
+            )
         }
 
         when (rung) {

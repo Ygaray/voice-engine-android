@@ -195,6 +195,22 @@ class RecognizerIntentsTest {
     }
 
     @Test
+    fun `enableLanguageSwitch=true also constrains detected-language output to the same bilingual allowlist (NBIL-11_4, D-04 defense-in-depth)`() {
+        val intent =
+            RecognizerIntents.forRung(
+                Rung.RestartingSingleSession,
+                SttConfig(language = "auto"),
+                context,
+                enableLanguageSwitch = true,
+            )
+
+        assertEquals(
+            RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES,
+            intent.getStringArrayListExtra(RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES),
+        )
+    }
+
+    @Test
     fun `the default enableLanguageSwitch=false omits both switch-extra keys, byte-identical to today`() {
         val keys = keysOf(Rung.RestartingSingleSession)
         assertFalse(keys.contains(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH))
