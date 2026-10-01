@@ -964,9 +964,10 @@ internal class SttEngineImpl(
                 val isConfiguredSwitchTarget =
                     RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES.any { it.equals(missingLanguage, ignoreCase = true) }
 
-                // (b) Pitfall 1 / Option B — a null OR empty DETECTED_LANGUAGE is ambiguous (it could
-                // be an unlabeled missing en/es pack), so BOTH are deliberately treated as "assume the
-                // worst" and still fail loud via UNKNOWN_LANGUAGE_SENTINEL below, rather than ignored.
+                // (b) Pitfall 1 / Option B — a null, empty, OR whitespace-only (blank) DETECTED_LANGUAGE
+                // is ambiguous (it could be an unlabeled missing en/es pack), so ALL THREE are
+                // deliberately treated as "assume the worst" and still fail loud via
+                // UNKNOWN_LANGUAGE_SENTINEL below, rather than ignored.
                 //
                 // (c) D-04 (researched) — LANGUAGE_SWITCH_HIGH_PRECISION only raises the confidence
                 // threshold for WHEN a switch is attempted, not WHICH languages may be proposed, so
@@ -982,8 +983,8 @@ internal class SttEngineImpl(
                 // than SKIP is unresolved; Task 2 adds a test proving the confidence-3 branch above
                 // (L934-938) already defends FinalSegment.language against this shape even without
                 // that probe's answer.
-                if (missingLanguage.isNullOrEmpty() || isConfiguredSwitchTarget) {
-                    val reported = missingLanguage?.takeIf { it.isNotEmpty() } ?: UNKNOWN_LANGUAGE_SENTINEL
+                if (missingLanguage.isNullOrBlank() || isConfiguredSwitchTarget) {
+                    val reported = missingLanguage?.trim()?.takeIf { it.isNotEmpty() } ?: UNKNOWN_LANGUAGE_SENTINEL
                     fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotInstalled(reported)))
                 }
                 // else: a genuine, non-empty, non-literal-entry target (nb-NO/pt-BR/fr-FR/sl-SI/en-GB/

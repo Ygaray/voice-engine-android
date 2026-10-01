@@ -359,6 +359,21 @@ class AutoBilingualCaptureTest {
             assertEquals(EngineState.Error, h.engine.state.value)
         }
 
+    @Test
+    fun `a SKIPPED_NO_MODEL event with DETECTED_LANGUAGE present but blank (whitespace-only) still fails safely via the UNKNOWN_LANGUAGE_SENTINEL fallback`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "  "))
+            advanceUntilIdle()
+
+            assertEquals(1, h.errors.size)
+            assertEquals(SttErrorCode.NO_OFFLINE_MODEL, h.errors.single().code)
+            assertEquals(EngineState.Error, h.engine.state.value)
+        }
+
     // --- Task 2 (NBIL-11.1 full regression + D-03 strengthened): pt-BR/fr-FR/sl-SI/generic/ordering
     // plus a verified LANGUAGE_SWITCH_RESULT_SUCCEEDED test (cross-AI review 9f6823a HIGH #2 fix) ----
 
