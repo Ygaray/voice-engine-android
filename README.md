@@ -106,3 +106,14 @@ documented asymmetry against the TypeScript client, which triggers the browser's
 of capture. A library with no Activity cannot ask, so a missing grant arrives as a typed
 `mic-denied` error rather than a thrown exception. See `INTEGRATION.md` step 3 for the worked
 snippet.
+
+## Known Limitations
+
+**`language="auto"` is scoped to `{en, es}`.** Under `SttConfig(language = "auto")` (see `API.md`'s
+`SttConfig` section), the native on-device detection path pins each committed segment's
+`FinalSegment.language` to `"en"`, `"es"`, or `null` — never any other value. If a non-en/es on-device
+recognition pack happens to be installed on the device, the platform could in principle switch
+recognition to it; this was never observed in testing, and `FinalSegment.language` stays `null` for
+any non-en/es detection rather than surfacing the foreign language label. `"auto"` is additionally
+runtime-gated to `SDK_INT >= 34`, falling back to the engine's configured default language below
+that floor.
