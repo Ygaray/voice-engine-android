@@ -98,6 +98,19 @@ class LanguageSwitchProbeTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
 
+    /**
+     * Phase 19.1 / D-03 probe parameter (orchestrator-cleared 2026-09-30). The on-device recognition
+     * pack whose install this probe ensures (via `triggerModelDownload` + `checkRecognitionSupport`
+     * polling) BEFORE the live session. Default `es-US` preserves the original plan-149 behaviour
+     * byte-for-byte; passing `-Pandroid.testInstrumentationRunnerArguments.downloadTarget=pt-BR`
+     * instead installs pt-BR so D-03 can be observed — does a non-allowlist pack, once INSTALLED,
+     * let the platform SUCCEED-switch (vs SKIPPED_NO_MODEL) during EN/ES audio? The live session's
+     * allowlist stays `{en-US, es-US}` (production parity) regardless; only the pre-installed pack
+     * set changes. en-US/es-US are never removed.
+     */
+    private val downloadTarget: String =
+        InstrumentationRegistry.getArguments().getString(ARG_DOWNLOAD_TARGET) ?: ES_US
+
     @Test
     fun probeLanguageSwitch() {
         val report = JSONObject()
@@ -112,12 +125,14 @@ class LanguageSwitchProbeTest {
             recognizer = createRecognizer()
             val live = recognizer
 
-            // --- 1. Precondition: is es-US actually INSTALLED, not merely supported? ---
+            // --- 1. Precondition: is the download-target pack actually INSTALLED, not merely supported? ---
             val precondition = checkPrecondition(live)
-            report.put("requestedLanguage", ES_US)
+            report.put("requestedLanguage", downloadTarget)
+            report.put("downloadTarget", downloadTarget)
             report.put("installedOnDeviceLanguages", precondition.installed)
             report.put("supportedOnDeviceLanguages", precondition.supported)
             report.put("pendingOnDeviceLanguages", precondition.pending)
+            report.put("targetPackInstalled", precondition.esInstalled)
             report.put("esPackInstalled", precondition.esInstalled)
             report.put(
                 "checkRecognitionSupportErrorCode",
@@ -125,7 +140,7 @@ class LanguageSwitchProbeTest {
             )
             if (precondition.timedOut) {
                 incompleteMeasurement = "checkRecognitionSupport did not call back within " +
-                    "$SUPPORT_TIMEOUT_SECONDS s for es-US — the installed-pack precondition is " +
+                    "$SUPPORT_TIMEOUT_SECONDS s for $downloadTarget — the installed-pack precondition is " +
                     "unmeasured."
             }
 
@@ -137,7 +152,7 @@ class LanguageSwitchProbeTest {
                     .put(
                         "reason",
                         if (precondition.esInstalled) {
-                            "es-US already installed"
+                            "$downloadTarget already installed"
                         } else {
                             "precondition check incomplete — see checkRecognitionSupport timeout above"
                         },
@@ -230,7 +245,8 @@ class LanguageSwitchProbeTest {
                     installed = JSONArray(installed),
                     supported = JSONArray(support.supportedOnDeviceLanguages),
                     pending = JSONArray(support.pendingOnDeviceLanguages),
-                    esInstalled = installed.contains(ES_US),
+                    // D-03: "installed" means the download TARGET (default es-US; pt-BR for the probe).
+                    esInstalled = installed.contains(downloadTarget),
                     timedOut = false,
                 )
             }
@@ -284,7 +300,7 @@ class LanguageSwitchProbeTest {
 
     private fun supportIntent(): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, ES_US)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, downloadTarget)
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
     }
 
@@ -567,6 +583,8 @@ class LanguageSwitchProbeTest {
     }
 
     private companion object {
+        /** Instrumentation arg (D-03 probe): which pack to ensure-install before the session. */
+        const val ARG_DOWNLOAD_TARGET = "downloadTarget"
         const val EN_US = "en-US"
         const val ES_US = "es-US"
         const val NO_ERROR = Int.MIN_VALUE
