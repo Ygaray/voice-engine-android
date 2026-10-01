@@ -946,13 +946,48 @@ internal class SttEngineImpl(
             val switchResult = results.getInt(SpeechRecognizer.LANGUAGE_SWITCH_RESULT, -1)
             if (switchResult == SWITCH_RESULT_SKIPPED_NO_MODEL) {
                 // Defensive, no `!!` — the platform does not guarantee DETECTED_LANGUAGE is present
-                // on a skipped-switch event (T-18-05, specless edge: empty). Fall back to a sentinel
-                // that cannot be confused with a real BCP-47 locale tag — AUTO_LANGUAGE ("auto") is
-                // SttConfig.language's own request value, not a locale, and surfacing it in
-                // SttError.message would read as "download a model literally named auto".
-                val missingLanguage =
-                    results.getString(SpeechRecognizer.DETECTED_LANGUAGE) ?: UNKNOWN_LANGUAGE_SENTINEL
-                fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotInstalled(missingLanguage)))
+                // on a skipped-switch event (T-18-05, specless edge: empty). The sentinel fallback
+                // moves to the REPORT site below (`reported`) so this read stays a plain nullable.
+                val missingLanguage = results.getString(SpeechRecognizer.DETECTED_LANGUAGE)
+
+                // (a) NBIL-11.1 — the engine enforces the switch-target allowlist by LITERAL,
+                // case-insensitive membership in RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES —
+                // the ONE canonical list the dual-language preflight (above, ~L332-336) and the
+                // intent-construction code already treat as "what this engine actually requests" —
+                // deliberately NOT LanguageTags.normalizeDetected's primary-subtag parser: the
+                // platform only ever requests the literal tags in this list, so a same-primary-subtag
+                // sibling it never requested (e.g. en-GB) is not evidence of a missing en-US pack.
+                // 2026-09-30 real-mic finding: nb-NO/pt-BR/fr-FR/sl-SI were all freely proposed on the
+                // TESTER despite the allowlist being set correctly. Cross-AI review 9f6823a's HIGH #1
+                // caught a Round-0 draft of this fix getting the literal-vs-primary-subtag choice
+                // backwards (it failed en-GB loud via normalizeDetected) — this is the corrected form.
+                val isConfiguredSwitchTarget =
+                    RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES.any { it.equals(missingLanguage, ignoreCase = true) }
+
+                // (b) Pitfall 1 / Option B — a null OR empty DETECTED_LANGUAGE is ambiguous (it could
+                // be an unlabeled missing en/es pack), so BOTH are deliberately treated as "assume the
+                // worst" and still fail loud via UNKNOWN_LANGUAGE_SENTINEL below, rather than ignored.
+                //
+                // (c) D-04 (researched) — LANGUAGE_SWITCH_HIGH_PRECISION only raises the confidence
+                // threshold for WHEN a switch is attempted, not WHICH languages may be proposed, so
+                // the switch mode stays LANGUAGE_SWITCH_BALANCED (rejected as a fix path);
+                // RecognizerIntents.forRung separately also sets
+                // EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES to the same list (Task 3) as a
+                // best-effort platform-side nudge — this engine-side gate remains the actual
+                // enforcement regardless of whether the platform honors either extra.
+                //
+                // (d) D-03 (strengthened to a verified test in Task 2; the full platform-layer answer
+                // remains an open, orchestrator-clearance-gated question — no on-device probe run
+                // here) — whether an INSTALLED non-allowlist pack could let a switch SUCCEED rather
+                // than SKIP is unresolved; Task 2 adds a test proving the confidence-3 branch above
+                // (L934-938) already defends FinalSegment.language against this shape even without
+                // that probe's answer.
+                if (missingLanguage.isNullOrEmpty() || isConfiguredSwitchTarget) {
+                    val reported = missingLanguage?.takeIf { it.isNotEmpty() } ?: UNKNOWN_LANGUAGE_SENTINEL
+                    fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotInstalled(reported)))
+                }
+                // else: a genuine, non-empty, non-literal-entry target (nb-NO/pt-BR/fr-FR/sl-SI/en-GB/
+                // any other non-allowlist proposal) — ignore it; the session continues unaffected.
             }
         }
     }

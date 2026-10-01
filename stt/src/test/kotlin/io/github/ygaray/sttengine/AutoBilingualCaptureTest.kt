@@ -283,6 +283,82 @@ class AutoBilingualCaptureTest {
             assertEquals(1, h.errors.size)
         }
 
+    // --- Task 1 (NBIL-11.1): literal AUTO_SWITCH_ALLOWED_LANGUAGES gate, replacing the Round 0
+    // normalizeDetected-based check (cross-AI review 9f6823a HIGH #1 fix) ----------------------------
+
+    @Test
+    fun `a SKIPPED_NO_MODEL switchResult for nb-NO (outside the en-es allowlist) does not fail the session`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "nb-NO"))
+            advanceUntilIdle()
+
+            assertEquals(0, h.errors.size)
+            assertEquals(EngineState.Listening, h.engine.state.value)
+        }
+
+    @Test
+    fun `a SKIPPED_NO_MODEL switchResult for en-GB (same primary subtag as the allowlist, but not a literally-configured switch target) is ignored, not failed`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "en-GB"))
+            advanceUntilIdle()
+
+            assertEquals(0, h.errors.size)
+            assertEquals(EngineState.Listening, h.engine.state.value)
+        }
+
+    @Test
+    fun `a SKIPPED_NO_MODEL switchResult for en-US (a literal AUTO_SWITCH_ALLOWED_LANGUAGES entry) still fails loud`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "en-US"))
+            advanceUntilIdle()
+
+            assertEquals(1, h.errors.size)
+            assertEquals(SttErrorCode.NO_OFFLINE_MODEL, h.errors.single().code)
+            assertTrue(h.errors.single().message.contains("en-US"))
+        }
+
+    @Test
+    fun `a SKIPPED_NO_MODEL switchResult differing only in case from a configured entry (EN-US) still fails loud`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "EN-US"))
+            advanceUntilIdle()
+
+            assertEquals(1, h.errors.size)
+            assertEquals(SttErrorCode.NO_OFFLINE_MODEL, h.errors.single().code)
+            assertTrue(h.errors.single().message.contains("EN-US"))
+        }
+
+    @Test
+    fun `a SKIPPED_NO_MODEL event with DETECTED_LANGUAGE present but empty still fails safely via the UNKNOWN_LANGUAGE_SENTINEL fallback`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = ""))
+            advanceUntilIdle()
+
+            assertEquals(1, h.errors.size)
+            assertEquals(SttErrorCode.NO_OFFLINE_MODEL, h.errors.single().code)
+            assertEquals(EngineState.Error, h.engine.state.value)
+        }
+
     // --- helpers -----------------------------------------------------------------------------------
 
     private fun highlyConfidentDetection(detectedLanguage: String): Bundle =
