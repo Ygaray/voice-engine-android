@@ -952,8 +952,8 @@ internal class SttEngineImpl(
 
                 // (a) NBIL-11.1 — the engine enforces the switch-target allowlist by LITERAL,
                 // case-insensitive membership in RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES —
-                // the ONE canonical list the dual-language preflight (above, ~L332-336) and the
-                // intent-construction code already treat as "what this engine actually requests" —
+                // the ONE canonical list the dual-language preflight (above, via preflightErrorFor)
+                // and the intent-construction code already treat as "what this engine actually requests" —
                 // deliberately NOT LanguageTags.normalizeDetected's primary-subtag parser: the
                 // platform only ever requests the literal tags in this list, so a same-primary-subtag
                 // sibling it never requested (e.g. en-GB) is not evidence of a missing en-US pack.
@@ -980,9 +980,9 @@ internal class SttEngineImpl(
                 // (d) D-03 (strengthened to a verified test in Task 2; the full platform-layer answer
                 // remains an open, orchestrator-clearance-gated question — no on-device probe run
                 // here) — whether an INSTALLED non-allowlist pack could let a switch SUCCEED rather
-                // than SKIP is unresolved; Task 2 adds a test proving the confidence-3 branch above
-                // (L934-938) already defends FinalSegment.language against this shape even without
-                // that probe's answer.
+                // than SKIP is unresolved; Task 2 adds a test proving the onLanguageDetection
+                // HIGHLY_CONFIDENT branch above already defends FinalSegment.language against this
+                // shape even without that probe's answer.
                 if (missingLanguage.isNullOrBlank() || isConfiguredSwitchTarget) {
                     val reported = missingLanguage?.trim()?.takeIf { it.isNotEmpty() } ?: UNKNOWN_LANGUAGE_SENTINEL
                     fail(ErrorMapper.mapPreflight(PreflightFailure.LanguageNotInstalled(reported)))
