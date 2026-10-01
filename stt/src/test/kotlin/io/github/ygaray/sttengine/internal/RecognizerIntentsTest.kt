@@ -174,7 +174,7 @@ class RecognizerIntentsTest {
     // --- "auto"-conditional switch extras (Phase 18, NBIL-03/NBIL-07) --------------------------
 
     @Test
-    fun `enableLanguageSwitch=true adds exactly the bilingual allowlist and the enable-switch extra`() {
+    fun `enableLanguageSwitch=true adds the bilingual allowlist and the enable-switch extra (among possibly other switch-mode extras - see the dedicated detection-allowlist test below)`() {
         val intent =
             RecognizerIntents.forRung(
                 Rung.RestartingSingleSession,
