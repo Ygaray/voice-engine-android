@@ -203,7 +203,7 @@ publishing {
             // -> artifact voice-engine-android-recorder): module :transcription -> artifact
             // voice-engine-android-transcription.
             artifactId = "voice-engine-android-transcription"
-            // D-03 (147): locked release literal, currently 0.6.0 (Phase 17's hub release cut). All
+            // D-03 (147): locked release literal, currently 0.7.0 (Phase 20's hub release cut). All
             // five published modules (:stt, :recorder, :voicenotes, :transcription, :corrections)
             // bump together, per module version check — see jitpack.yml, release-android.sh.
             version = "0.7.0"
