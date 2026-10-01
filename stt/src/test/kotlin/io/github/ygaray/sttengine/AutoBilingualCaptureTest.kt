@@ -359,6 +359,110 @@ class AutoBilingualCaptureTest {
             assertEquals(EngineState.Error, h.engine.state.value)
         }
 
+    // --- Task 2 (NBIL-11.1 full regression + D-03 strengthened): pt-BR/fr-FR/sl-SI/generic/ordering
+    // plus a verified LANGUAGE_SWITCH_RESULT_SUCCEEDED test (cross-AI review 9f6823a HIGH #2 fix) ----
+
+    @Test
+    fun `a SKIPPED_NO_MODEL switchResult for pt-BR (outside the en-es allowlist) does not fail the session`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "pt-BR"))
+            advanceUntilIdle()
+
+            assertEquals(0, h.errors.size)
+            assertEquals(EngineState.Listening, h.engine.state.value)
+        }
+
+    @Test
+    fun `a SKIPPED_NO_MODEL switchResult for fr-FR (outside the en-es allowlist) does not fail the session`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "fr-FR"))
+            advanceUntilIdle()
+
+            assertEquals(0, h.errors.size)
+            assertEquals(EngineState.Listening, h.engine.state.value)
+        }
+
+    @Test
+    fun `a SKIPPED_NO_MODEL switchResult for sl-SI (outside the en-es allowlist) does not fail the session`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "sl-SI"))
+            advanceUntilIdle()
+
+            assertEquals(0, h.errors.size)
+            assertEquals(EngineState.Listening, h.engine.state.value)
+        }
+
+    @Test
+    fun `a SKIPPED_NO_MODEL switchResult for any non-allowlist target (not just the four observed real-device languages) does not fail the session`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "xx-ZZ"))
+            advanceUntilIdle()
+
+            assertEquals(0, h.errors.size)
+            assertEquals(EngineState.Listening, h.engine.state.value)
+        }
+
+    @Test
+    fun `an ignored out-of-allowlist SKIPPED_NO_MODEL does not suppress a later genuine missing-pack failure`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            val target = h.listenerFor(0)
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "pt-BR"), target = target)
+            advanceUntilIdle()
+            assertEquals(0, h.errors.size)
+
+            h.fake.fireLanguageDetection(skippedNoModelBundle(detectedLanguage = "es-US"), target = target)
+            advanceUntilIdle()
+
+            assertEquals(1, h.errors.size)
+            assertEquals(SttErrorCode.NO_OFFLINE_MODEL, h.errors.single().code)
+        }
+
+    // D-03 (NBIL-11.3), strengthened from an unverified inference to a verified test: a single
+    // callback shaped as LANGUAGE_SWITCH_RESULT_SUCCEEDED (not SKIPPED_NO_MODEL) plus a confidence-3
+    // HIGHLY_CONFIDENT detection of a non-allowlist tag proves BOTH that such a callback never
+    // triggers fail() (SUCCEEDED's int value 1 is numerically distinct from SKIPPED_NO_MODEL's 3, so
+    // the SKIPPED_NO_MODEL branch's condition is false by construction) AND that the existing
+    // confidence-3 normalizeDetected gate (L934-938, unmodified) keeps the committed
+    // FinalSegment.language null for a non-allowlist detection even under this shape. What remains
+    // open: whether THIS specific recognizer build can actually reach a succeed-switch shape for an
+    // installed non-allowlist pack on real hardware — an orchestrator-clearance-gated device probe,
+    // not run here, per 19.1-CONTEXT.md's device policy.
+    @Test
+    fun `a LANGUAGE_SWITCH_RESULT_SUCCEEDED event for a non-allowlist target never fails, and the confidence-3 gate keeps the label out of the committed final (D-03, strengthened from inference to a verified test)`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(switchSucceededWithDetectionBundle(detectedLanguage = "nb-NO"))
+            h.fake.fireSegmentResults("a hypothetical succeed-switch shape must never fail or leak a label")
+            advanceUntilIdle()
+
+            assertEquals(0, h.errors.size)
+            assertEquals(1, h.finals.size)
+            assertEquals(null, h.finals[0].language)
+        }
+
     // --- helpers -----------------------------------------------------------------------------------
 
     private fun highlyConfidentDetection(detectedLanguage: String): Bundle =
@@ -372,5 +476,21 @@ class AutoBilingualCaptureTest {
     private fun skippedNoModelBundle(detectedLanguage: String): Bundle = Bundle().apply {
         putString(SpeechRecognizer.DETECTED_LANGUAGE, detectedLanguage)
         putInt(SpeechRecognizer.LANGUAGE_SWITCH_RESULT, SpeechRecognizer.LANGUAGE_SWITCH_RESULT_SKIPPED_NO_MODEL)
+    }
+
+    /**
+     * One bundle carrying BOTH a confidence-3 detection AND a non-SKIPPED_NO_MODEL switch result —
+     * the exact shape cross-AI review `9f6823a`'s HIGH #2 required to strengthen D-03 (NBIL-11.3)
+     * from an unverified inference into a verified test. `LANGUAGE_SWITCH_RESULT_SUCCEEDED` (1) is
+     * numerically distinct from `LANGUAGE_SWITCH_RESULT_SKIPPED_NO_MODEL` (3), confirmed this session
+     * via `javap` against the local android-35 platform jar.
+     */
+    private fun switchSucceededWithDetectionBundle(detectedLanguage: String): Bundle = Bundle().apply {
+        putString(SpeechRecognizer.DETECTED_LANGUAGE, detectedLanguage)
+        putInt(
+            SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL,
+            SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_HIGHLY_CONFIDENT,
+        )
+        putInt(SpeechRecognizer.LANGUAGE_SWITCH_RESULT, SpeechRecognizer.LANGUAGE_SWITCH_RESULT_SUCCEEDED)
     }
 }
