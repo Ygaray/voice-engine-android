@@ -152,15 +152,16 @@ server's Whisper `hotwords` — the same biasing parity the batch `Transcription
 `vocabulary` parameter already has (step 9 below). It is a zero-cost no-op (`null` default, omitted
 from the WS config frame entirely) on a session that never reaches the server backend.
 
-**Bilingual EN/ES dictation is server-backed only (Phase 17, LANG-01).** Set
-`SttConfig(language = "auto")` to opt a server-backed session into per-segment EN<->ES language
-detection; each committed `FinalSegment.language` then carries the server-detected label
-(`"en"`/`"es"`, `null` if the frame didn't carry one). `"auto"` has no meaning on the on-device
-recognizer — it is passed straight through to `RecognizerIntent.EXTRA_LANGUAGE`, which is not a valid
-device locale — so if your host relies on `prefer = Auto`'s default silent server->native fallback,
-a bilingual `"auto"` session that drops to native will fail recognition rather than degrade to
-English-only. Use `prefer = BackendPreference.Server` (no silent fallback) for hosts where bilingual
-dictation must not silently degrade.
+**Bilingual EN/ES `"auto"` runs on both backends.** Set `SttConfig(language = "auto")` to opt into
+per-segment EN<->ES language detection; each committed `FinalSegment.language` then carries the
+detected label (`"en"`/`"es"`, `null` if none). On the **server** backend (Phase 17, LANG-01) the
+label is server-detected. On the **native on-device** backend (v3.1 / `v0.7.0`, NBIL-01..11) `"auto"`
+is now a first-class **offline** mode on **API 34+** (runtime-gated to `SDK_INT >= 34`): it switches
+over the fixed `[en-US, es-US]` allowlist (the engine enforces `{en, es}` itself; a non-en/es platform
+proposal is ignored, and a missing `en-US`/`es-US` pack fails loud with `no-offline-model`). **Below
+API 34**, native `"auto"` falls back to the configured default language rather than failing. So a
+`prefer = Auto` session now bilingual-switches on either backend at API 34+; use
+`prefer = BackendPreference.Server` only if your host must guarantee bilingual capture below API 34.
 
 Configuration is fixed at construction. A language change or a diagnostic run mints a **new** engine
 rather than mutating a live one, so if your host offers either, hold the engine in something the UI

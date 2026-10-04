@@ -194,15 +194,20 @@ into the server's config frame on the server backend, and is checked against the
 on-device models before any audio is captured (native path only). It exists from day one so that v2
 multilingual is **additive** rather than a breaking contract change.
 
-**Bilingual EN/ES (LANG-01) is server-backed only.** On the server backend, `language` accepts `"en"`
-or `"auto"` — `"auto"` opts into a server-detected-per-segment bilingual EN<->ES session; the server
-does not currently accept a bare `"es"` here. The detected language for each committed segment shows
-up on `FinalSegment.language` (see [Model types](#model-types) below). `"auto"` has **no meaning on
-the native backend**: it is passed straight through to `RecognizerIntent.EXTRA_LANGUAGE`, which is not
-a valid device locale, so a `prefer = Auto` session that silently falls back to native with
-`language = "auto"` set will fail native recognition rather than bilingual-switch. Set
-`prefer = BackendPreference.Server` (no silent native fallback) if bilingual dictation must not
-silently degrade.
+**Bilingual EN/ES `"auto"` works on BOTH backends.** On the **server** backend (LANG-01), `language`
+accepts `"en"` or `"auto"` — `"auto"` opts into a server-detected-per-segment bilingual EN<->ES
+session; the server does not currently accept a bare `"es"` here. On the **native on-device** backend
+(v3.1 / `v0.7.0`, NBIL-01..11), `SttConfig(language = "auto")` is now a first-class **offline** EN<->ES
+mode, **runtime-gated to API 34+** (`SDK_INT >= 34`): it enables the platform's on-device
+language-switch over the fixed `[en-US, es-US]` allowlist and labels each committed segment. **Below
+API 34**, `"auto"` falls back to the configured default language (not an error). The engine enforces
+the `{en, es}` allowlist **itself** — a non-en/es platform proposal is ignored (never committed as
+foreign text), while a genuinely missing `en-US`/`es-US` pack fails loud with `no-offline-model`. The
+detected language for each committed segment shows up on `FinalSegment.language` as bare `"en"`/`"es"`
+(or `null` when no confidence-3 label) — see [Model types](#model-types) below. A `prefer = Auto`
+session therefore bilingual-switches on either backend at API 34+; it no longer fails native
+recognition. (A pure-native host that must guarantee bilingual capture below API 34 should use
+`prefer = BackendPreference.Server`.)
 
 > **On the deferred multilingual path and API levels.** Earlier project notes stated that
 > `RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH` is available at API 33. It is not. Verified against
