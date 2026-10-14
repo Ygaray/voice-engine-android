@@ -53,6 +53,17 @@ class BackendSelectorTest {
                 permissions = PermissionChecker { true },
                 webSocketFactory = fakeWs,
                 mainDispatcher = dispatcher,
+                // Pitfall 1 (Phase 21): reaching `ready` starts the PCM pump — a finite fake source
+                // keeps it from spinning on the Robolectric-shadowed AudioRecord forever.
+                serverBackendFactory = { url ->
+                    ServerBackend(
+                        webSocketFactory = fakeWs,
+                        serverUrl = url,
+                        language = "en",
+                        mainDispatcher = dispatcher,
+                        pcmSourceFactory = finitePcmSourceFactory(frames = 0),
+                    )
+                },
             )
 
             val started = launch(dispatcher) { selector.start() }
@@ -199,6 +210,16 @@ class BackendSelectorTest {
             permissions = PermissionChecker { true },
             webSocketFactory = fakeWs,
             mainDispatcher = dispatcher,
+            // Pitfall 1 (Phase 21): a finite fake source — reaching `ready` starts the PCM pump.
+            serverBackendFactory = { url ->
+                ServerBackend(
+                    webSocketFactory = fakeWs,
+                    serverUrl = url,
+                    language = "en",
+                    mainDispatcher = dispatcher,
+                    pcmSourceFactory = finitePcmSourceFactory(frames = 0),
+                )
+            },
         )
 
         val started = launch(dispatcher) { selector.start() }
@@ -268,6 +289,8 @@ class BackendSelectorTest {
                     serverUrl = url,
                     language = "en",
                     mainDispatcher = dispatcher,
+                    // Pitfall 1 (Phase 21): a finite fake source — reaching `ready` starts the pump.
+                    pcmSourceFactory = finitePcmSourceFactory(frames = 0),
                     backpressureGate = ServerBackpressureGate(
                         ServerBackpressureGateOptions(soft = 10L, low = 0L),
                     ),

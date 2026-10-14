@@ -7,10 +7,13 @@ import io.github.ygaray.sttengine.SttErrorCode
 import io.github.ygaray.sttengine.SttWarning
 import io.github.ygaray.sttengine.corrections.Corrections
 import io.github.ygaray.sttengine.corrections.CorrectionRuleset
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.channels.BufferOverflow
@@ -24,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -41,6 +45,50 @@ import okio.ByteString.Companion.toByteString
  */
 internal fun interface WebSocketFactory {
     fun newWebSocket(url: String, listener: WebSocketListener): WebSocket
+}
+
+/**
+ * The server path's pure frame-accumulation loop (Phase 21, SRV-05, D-01) — the body of
+ * [ServerBackend]'s pump thread, kept top-level so a JVM test can drive it with a finite fake
+ * [PcmSource] and no thread, socket or dispatcher at all.
+ *
+ * Reads [source] while [running] holds, accumulating exactly [frameBytes] bytes per frame (a read
+ * may be short — a paced debug feed returns whatever its clock released) and hands each whole frame
+ * to [onFrame] as a fresh copy. A `read()` result `<= 0` is end of stream and ends the loop quietly,
+ * exactly as `AudioSourcePipe.pumpInto` treats it; a partial frame left over at that point is
+ * dropped (less than 32 ms of audio, and the server's frame contract is whole 512-sample frames).
+ *
+ * `catch (Exception)` only, never `Throwable` (mirrors `AudioSourcePipe` CR-03): a read failure —
+ * typically an `IllegalStateException` from a recorder released under a wedged read — is the ordinary
+ * end of capture, but an `Error` such as `OutOfMemoryError` must not be swallowed. [running] is
+ * cleared on every exit path.
+ */
+internal fun pumpFrames(
+    source: PcmSource,
+    running: AtomicBoolean,
+    frameBytes: Int,
+    onFrame: (ByteArray) -> Unit,
+) {
+    val frame = ByteArray(frameBytes)
+    var filled = 0
+    try {
+        while (running.get()) {
+            val chunk = ByteArray(frameBytes - filled)
+            val read = source.read(chunk)
+            if (read <= 0) break
+            val count = minOf(read, chunk.size)
+            System.arraycopy(chunk, 0, frame, filled, count)
+            filled += count
+            if (filled == frameBytes) {
+                onFrame(frame.copyOf())
+                filled = 0
+            }
+        }
+    } catch (ended: Exception) {
+        // The ordinary end of a capture session, never a fault — see the KDoc above.
+    } finally {
+        running.set(false)
+    }
 }
 
 /** The production [WebSocketFactory]: a thin wrapper over a real [OkHttpClient]. */
@@ -81,9 +129,18 @@ internal class OkHttpWebSocketFactory(
  * Pattern 3's "`ServerBackend` calls `AudioRecordPcmSource.open(16_000)` directly rather than
  * hand-rolling a second `AudioRecord` wrapper." [releaseAudioSource] is the release half
  * [BackendSelector]'s mid-session handoff calls BEFORE any native `SpeechRecognizer` acquire — two
- * mic clients cannot coexist (T-09-06). Continuously PUMPING captured frames through a live capture
- * loop is deferred to the on-device measurement work (Plan 09-03); [sendPcmFrame] is the gated send
- * path that future caller will drive, one frame at a time.
+ * mic clients cannot coexist (T-09-06).
+ *
+ * ## The PCM pump (Phase 21, SRV-05, D-01)
+ *
+ * Right after the mic opens on `Ready`, one dedicated daemon thread named [PUMP_THREAD_NAME] runs
+ * [pumpFrames] over the opened source, accumulating whole [FRAME_BYTES]-byte frames (512 samples of
+ * 16 kHz PCM16). Each frame crosses to [mainDispatcher] through one unlimited [Channel], and a
+ * single consumer job there calls [sendPcmFrame] in order — so [outboundQueue] and
+ * [backpressureGate] stay main-confined, and network backpressure stays the gate's job (D-02): the
+ * pump itself never blocks on main. Teardown copies `AudioSourcePipe`: clear the run flag, `source.stop()`, a bounded
+ * `join(PUMP_JOIN_MS)`, and only then `source.release()` — never release while a read may still be
+ * in flight (CR-02). Every teardown path ([stop], [abandon], [fail], [releaseAudioSource]) runs it.
  *
  * ## Outbound backpressure (Phase 9 Task 2, T-09-05)
  *
@@ -162,6 +219,35 @@ internal class ServerBackend(
      *  until then, and after [releaseAudioSource] has run. */
     private var audioSource: PcmSource? = null
 
+    // --- the PCM pump (D-01) -------------------------------------------------------------------
+
+    /** Cleared to ask the pump thread to stop. Atomic because the pump thread reads it. */
+    private val pumping = AtomicBoolean(false)
+
+    /** The daemon pump thread, or `null` before `Ready` and after [releaseAudioSource]. */
+    private var pumpThread: Thread? = null
+
+    /** Pump thread → main hand-off. UNLIMITED: the pump must never block on main (D-02 keeps
+     *  network backpressure in [backpressureGate], not here). */
+    private var frames: Channel<ByteArray>? = null
+
+    /** The single main-dispatcher consumer that drains [frames] through [sendPcmFrame] in order. */
+    private var consumerJob: Job? = null
+
+    // --- the flushing stop (D-04) --------------------------------------------------------------
+
+    /** Set at the start of [stop]; the listener stays live (the epoch is not advanced yet) so the
+     *  server's flushed tail final can still arrive. */
+    private var stopping = false
+
+    /** Completed by the listener while [stopping]: `true` = the server's clean close 1000, `false`
+     *  = a failure, an abnormal close, or [fail] during the flush. First completion wins. */
+    private val flushDone = CompletableDeferred<Boolean>()
+
+    /** The server `segmentId` of the live partial, so a stop that cannot flush commits the partial
+     *  under its own id rather than a synthetic one. Cleared by every server final. */
+    private var livePartialSegmentId: Int? = null
+
     /**
      * The typed error this instance last produced, or `null` if [connect] never failed through
      * [fail] at all (e.g. a bare coroutine cancellation via `withTimeoutOrNull`, where no OkHttp
@@ -204,42 +290,160 @@ internal class ServerBackend(
         // between the timeout firing and this call — release it here too, mirroring fail()/stop(),
         // so abandon() never leaves this instance still holding the microphone.
         releaseAudioSource()
+        // An abandoned instance drops its unsent audio.
+        dropPendingFrames()
         outboundQueue.clear()
         webSocket?.cancel()
         webSocket = null
+        // A stop() racing this abandon must not wait out its whole bound for a callback the epoch
+        // fence above will now swallow.
+        flushDone.complete(false)
     }
 
     /**
-     * Ends a committed session (post-`Ready`) at the host's request. Never emits on [errors] — a
-     * requested stop is not a failure. Idempotent.
+     * Ends a committed session (post-`Ready`) at the host's request, flushing the tail first
+     * (Phase 21, SRV-05, D-04). Never emits on [errors] and never sets [state] to
+     * [EngineState.Error] — a requested stop is not a failure. Idempotent: a call while already
+     * stopping, or after any terminal transition, is a no-op.
+     *
+     * The order is load-bearing:
+     *
+     * ```
+     * 1. stop the pump, bounded-join it, release the mic   (releaseAudioSource)
+     * 2. close the frame channel and join the consumer     (every captured frame went through
+     *                                                        sendPcmFrame — "stop" never overtakes
+     *                                                        the last audio, Pitfall 3)
+     * 3. flush the outbound FIFO
+     * 4. send the text token "stop"                        (Boolean-checked; false → step 6)
+     * 5. await the server's close 1000                     (doOnClosing replies close(1000) —
+     *                                                        OkHttp does not auto-reply — and any
+     *                                                        final the server flushes first is
+     *                                                        emitted on [finals] before this returns)
+     * 6. otherwise: commit the live partial locally under its own server segmentId, cancel the socket
+     * 7. terminal, epoch advanced, mic released again (idempotent), state Idle
+     * ```
+     *
+     * One deadline bounds the whole call: [STOP_FLUSH_TIMEOUT_MS] is measured from entry and covers
+     * every stage 1-5 — the pump's ≤ [PUMP_JOIN_MS] join, the channel drain, the FIFO flush, the
+     * token and the flush await all sit inside the same `withTimeoutOrNull`. Exhausting it at any
+     * stage lands on step 6, so a starved drain cannot push `stop()` past the bound and sends no
+     * frame after it. It never calls `close` before the server's own close (the web client's order
+     * loses the flushed final), and the epoch is advanced only after the flush settles (advancing it
+     * first would fence the flushed final away).
      */
-    fun stop() {
-        if (terminal) return
-        terminal = true
-        epoch.advance()
-        releaseAudioSource()
-        outboundQueue.clear()
-        webSocket?.close(NORMAL_CLOSE_CODE, "normal")
-        webSocket = null
-        setState(EngineState.Idle)
+    suspend fun stop() {
+        if (terminal || stopping) return
+        stopping = true
+        var flushed = false
+        try {
+            flushed = withTimeoutOrNull(STOP_FLUSH_TIMEOUT_MS) {
+                releaseAudioSource()
+                frames?.close()
+                consumerJob?.join()
+                webSocket?.let { flushQueue(it) }
+                if (webSocket?.send(STOP_TOKEN) != true) return@withTimeoutOrNull false
+                flushDone.await()
+            } == true
+        } finally {
+            if (!flushed) {
+                // No frame may be sent after the bound, and the words already spoken must survive.
+                dropPendingFrames()
+                commitLivePartialLocally()
+                webSocket?.cancel()
+            }
+            terminal = true
+            epoch.advance()
+            // Idempotent — keeps the mic-released guarantee independent of which stage the deadline
+            // (or a caller cancellation) interrupted.
+            releaseAudioSource()
+            frames = null
+            consumerJob = null
+            outboundQueue.clear()
+            webSocket = null
+            setState(EngineState.Idle)
+            val cont = connectContinuation
+            connectContinuation = null
+            if (cont != null && cont.isActive) cont.resume(false)
+        }
     }
 
     /**
-     * Releases the server-path microphone (Phase 9 Task 1, SEL-04). Idempotent — tolerates being
-     * called when nothing was ever opened (a `null` [audioSource], e.g. this instance never reached
-     * [ServerFrame.Ready] at all) or when already released.
+     * Releases the server-path microphone (Phase 9 Task 1, SEL-04), stopping the PCM pump first
+     * (Phase 21, D-01). Idempotent — tolerates being called when nothing was ever opened (a `null`
+     * [audioSource], e.g. this instance never reached [ServerFrame.Ready] at all) or when already
+     * released.
+     *
+     * The order copies `AudioSourcePipe.close` (CR-02): clear the pump's run flag, `source.stop()`
+     * (best effort at unblocking a read in flight), a bounded `join(PUMP_JOIN_MS)` on the pump
+     * thread, and only then `source.release()` — releasing while another thread may still be inside
+     * a blocking read on the same recorder is unsafe. Each step is nested in `finally` so a throwing
+     * step cannot skip the next.
      *
      * [BackendSelector]'s mid-session handoff calls this EXPLICITLY, BEFORE constructing the native
-     * fallback (release-then-acquire, D-03/T-09-06) — two mic clients cannot coexist. [fail] and
-     * [stop] also call it as part of their own teardown, so a terminal failure or a requested stop
-     * never leaves this instance still holding the microphone either.
+     * fallback (release-then-acquire, D-03/T-09-06) — two mic clients cannot coexist. [fail],
+     * [abandon] and [stop] also call it as part of their own teardown, so a terminal failure or a
+     * requested stop never leaves this instance still holding the microphone or reading from it.
      */
     fun releaseAudioSource() {
+        pumping.set(false)
         val source = audioSource ?: return
+        val pump = pumpThread
         audioSource = null
-        source.stop()
-        source.release()
+        pumpThread = null
+        try {
+            runCatching { source.stop() }
+        } finally {
+            try {
+                // Bounded — never unbounded: this can run on the main looper.
+                runCatching { pump?.join(PUMP_JOIN_MS) }
+            } finally {
+                runCatching { source.release() }
+            }
+        }
     }
+
+    /** Starts the pump thread and its main-dispatcher consumer over the just-opened [source]. */
+    private fun startPump(source: PcmSource) {
+        val channel = Channel<ByteArray>(Channel.UNLIMITED)
+        frames = channel
+        consumerJob = scope.launch {
+            for (frame in channel) sendPcmFrame(frame)
+        }
+        pumping.set(true)
+        pumpThread = Thread(
+            {
+                pumpFrames(source, pumping, FRAME_BYTES) { frame ->
+                    channel.trySend(frame)
+                }
+            },
+            PUMP_THREAD_NAME,
+        ).apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    /** Drops every captured-but-unsent frame: cancels the frame channel and its consumer. */
+    private fun dropPendingFrames() {
+        frames?.cancel()
+        consumerJob?.cancel()
+    }
+
+    /**
+     * The stop path's fallback when the server's flush did not settle cleanly (D-04): emit the live
+     * partial as one [FinalSegment] under the partial's own server `segmentId` (corrections
+     * applied, exactly like a server final), then clear it. A blank partial commits nothing.
+     */
+    private fun commitLivePartialLocally() {
+        val partialText = _partial.value
+        if (partialText.isBlank()) return
+        finalsChannel.trySend(FinalSegment(corrected(partialText), livePartialSegmentId ?: 0))
+        _partial.value = ""
+        livePartialSegmentId = null
+    }
+
+    private fun corrected(text: String): String =
+        corrections?.takeIf { it.isNotEmpty() }?.let { Corrections.apply(text, it) } ?: text
 
     // --- the backpressure-aware outbound PCM send path (Phase 9 Task 2, T-09-05) --------------------
 
@@ -335,12 +539,24 @@ internal class ServerBackend(
      */
     private fun fail(error: SttError) {
         if (terminal) return
+        if (stopping) {
+            // D-04: a failure DURING a requested stop (a false send while flushing, a server error
+            // frame, a malformed frame) ends the flush, never the session's contract: no error on
+            // [errors], no [EngineState.Error]. stop() sees `false` and commits the live partial
+            // locally, so an open partial survives a mid-flush failure.
+            webSocket?.cancel()
+            webSocket = null
+            flushDone.complete(false)
+            return
+        }
         terminal = true
         lastError = error
         epoch.advance()
         // Before the error is emitted: an instance that has failed terminally must not still be
         // holding the microphone (mirrors SttEngineImpl.fail's own ordering discipline).
         releaseAudioSource()
+        // A failed instance drops its unsent audio.
+        dropPendingFrames()
         outboundQueue.clear()
         webSocket?.cancel()
         webSocket = null
@@ -418,6 +634,8 @@ internal class ServerBackend(
         when (val result = parseServerFrame(text)) {
             is ParseResult.Ok -> when (val frame = result.frame) {
                 ServerFrame.Ready -> {
+                    // A Ready that arrives after stop() began must never open the mic.
+                    if (stopping) return
                     // Open the server-path mic BEFORE declaring the session Listening (Task 1,
                     // SEL-04) — a session is not really live if it cannot capture audio to send.
                     // A capture failure here is routed through the SAME fail() funnel as any other
@@ -438,16 +656,23 @@ internal class ServerBackend(
                     } else {
                         audioSource = opened
                         succeed()
+                        // SRV-05 (D-01): the mic is open and the session is live — start pumping.
+                        startPump(opened)
                     }
                 }
 
-                is ServerFrame.Partial -> _partial.value = frame.text
+                is ServerFrame.Partial -> {
+                    _partial.value = frame.text
+                    livePartialSegmentId = frame.segmentId
+                }
 
+                // Keeps emitting while stopping: that is the server's flushed tail (D-04).
                 is ServerFrame.Final -> {
                     _partial.value = ""
-                    val text = corrections?.takeIf { it.isNotEmpty() }
-                        ?.let { Corrections.apply(frame.text, it) } ?: frame.text
-                    finalsChannel.trySend(FinalSegment(text, frame.segmentId, frame.language))
+                    livePartialSegmentId = null
+                    finalsChannel.trySend(
+                        FinalSegment(corrected(frame.text), frame.segmentId, frame.language),
+                    )
                 }
 
                 // Carries the server's taxonomy code verbatim (mirrors protocol.ts) — this client
@@ -462,6 +687,19 @@ internal class ServerBackend(
 
     private fun doOnClosing(code: Int, reason: String) {
         if (terminal) return
+        if (stopping) {
+            if (code == NORMAL_CLOSE_CODE) {
+                // RESEARCH Pattern 2 / Pitfall 2: OkHttp 5.2.1 does NOT auto-reply to a received
+                // close — without this the handshake never completes and the server waits out its
+                // own close timeout. Then the flush is done.
+                webSocket?.close(NORMAL_CLOSE_CODE, "normal")
+                flushDone.complete(true)
+            } else {
+                // An abnormal close during a requested stop ends the flush, never with an error.
+                flushDone.complete(false)
+            }
+            return
+        }
         when (code) {
             // A normal closure with no prior frame is an ordinary teardown, not a failure.
             NORMAL_CLOSE_CODE -> Unit
@@ -476,6 +714,11 @@ internal class ServerBackend(
 
     private fun doOnClosed(code: Int) {
         if (terminal) return
+        if (stopping) {
+            // First completion wins: after a clean onClosing(1000) this cannot flip it to false.
+            flushDone.complete(false)
+            return
+        }
         if (code != NORMAL_CLOSE_CODE) {
             fail(SttError(SttErrorCode.SERVER_UNREACHABLE, "connection closed unexpectedly: $code"))
         }
@@ -483,16 +726,39 @@ internal class ServerBackend(
 
     private fun doOnFailure(t: Throwable) {
         if (terminal) return
+        if (stopping) {
+            // A socket failure mid-flush: stop() commits locally, and a requested stop never errors.
+            flushDone.complete(false)
+            return
+        }
         fail(SttError(SttErrorCode.SERVER_UNREACHABLE, t.message ?: "server unreachable"))
     }
 
-    private companion object {
-        const val NORMAL_CLOSE_CODE = 1000
-        const val BUSY_CLOSE_CODE = 1013
+    internal companion object {
+        private const val NORMAL_CLOSE_CODE = 1000
+        private const val BUSY_CLOSE_CODE = 1013
 
         /** Mirrors `engine.ts:79`'s `MAX_QUEUE_FRAMES` — each frame ~1 KB, so ~64 KB, matched to the
          *  ported gate's own soft ceiling. Bounds [outboundQueue] so it cannot grow unbounded while
          *  shedding. */
-        const val MAX_QUEUE_FRAMES = 64
+        private const val MAX_QUEUE_FRAMES = 64
+
+        /** The protocol's end-of-audio text token (mirrors `server/` and `web/src/engine.ts`). */
+        const val STOP_TOKEN = "stop"
+
+        /** The ONE end-to-end bound on [stop] (D-04), measured from entry: pump teardown, frame
+         *  drain, FIFO flush, token send and flush await all share it. */
+        const val STOP_FLUSH_TIMEOUT_MS: Long = 2_500L
+
+        /** How long a teardown waits for the pump thread to notice and exit (copies
+         *  `AudioSourcePipe`'s bound): never unbounded, because teardown can run on the main looper
+         *  and a wedged driver read must not hang it. */
+        const val PUMP_JOIN_MS: Long = 250L
+
+        /** The pump thread's name — findable in a thread dump. */
+        const val PUMP_THREAD_NAME = "stt-server-pcm-pump"
+
+        /** One wire frame: [FRAME_SAMPLES] samples of 16-bit PCM = 1 024 bytes. */
+        const val FRAME_BYTES = FRAME_SAMPLES * 2
     }
 }
