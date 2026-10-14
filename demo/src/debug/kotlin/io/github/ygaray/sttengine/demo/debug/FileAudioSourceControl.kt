@@ -1,17 +1,23 @@
 package io.github.ygaray.sttengine.demo.debug
 
 import android.util.Log
+import io.github.ygaray.sttengine.Backend
+import io.github.ygaray.sttengine.BackendPreference
+import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.SttError
 import io.github.ygaray.sttengine.SttErrorCode
 import io.github.ygaray.sttengine.debug.DebugAudioSource
 import io.github.ygaray.sttengine.demo.DictationViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -44,8 +50,15 @@ import org.json.JSONObject
  *    aborts at the point a human can still fix it — never falls back to the microphone.
  * 2. **A file-fed run REQUIRES the session diagnostic.** The active rung is only knowable from the
  *    engine's own trace, so a run without it cannot be checked and is refused rather than guessed at.
- * 3. **The tailed rung must be `RawAudioSegmented`.** Anything else, or nothing at all, stops the
- *    session and paints the loud banner.
+ * 3. **The run must be on a path that reads the armed file — checked per path.**
+ *    - *On-device (no server URL):* the tailed rung must be `RawAudioSegmented`. Anything else, or
+ *      nothing at all, stops the session and paints the loud banner.
+ *    - *Server path (a `SERVER_URL` was given, Phase 21 D-08):* a server session never writes a
+ *      `rung` line — the ladder belongs to the native backend — so the rung gate would refuse every
+ *      server run (Pitfall 7). Instead the engine's `backend` must reach [Backend.Server] while
+ *      listening, and [serverPathFeedConfirmed] must hold. Under `PREFER Server` a server path that
+ *      never comes up is refused loudly; under `Auto` the selector fell back to native, so the
+ *      on-device rung gate above applies instead.
  * 4. **The armed feed must actually have been opened.** [DebugAudioSource.openCount] is a count of
  *    real opens, so "was this file-fed?" is answered by a number rather than by an assumption.
  *
@@ -101,6 +114,9 @@ internal object FileAudioSourceControl {
      *
      * @param sessionLog whether the caller asked for the engine's JSONL trace. **Must be true** — see
      *   gate 2 in the class documentation.
+     * @param serverUrl the validated `wss://` server URL, or `null` for an on-device run. Selects
+     *   which branch of gate 3 applies.
+     * @param prefer the backend preference forwarded to the session.
      * @return `true` when a session was started, `false` when the request was refused. A caller that
      *   ignores this and starts a session anyway reintroduces the exact mislabelling this prevents.
      */
@@ -109,6 +125,8 @@ internal object FileAudioSourceControl {
         path: String,
         language: String?,
         sessionLog: Boolean,
+        serverUrl: String? = null,
+        prefer: BackendPreference = BackendPreference.Auto,
     ): Boolean {
         guard?.cancel()
         guard = null
@@ -136,9 +154,18 @@ internal object FileAudioSourceControl {
             )
         }
 
-        Log.i(TAG, "armed $path (${durationMs} ms); starting a file-fed session")
-        viewModel.start(language = language, diagnosticLogging = true)
-        guard = scope.launch { watchRung(viewModel) }
+        Log.i(
+            TAG,
+            "armed $path (${durationMs} ms); starting a file-fed session " +
+                "(server path: ${if (serverUrl != null) "yes, prefer=${prefer.name}" else "no"})",
+        )
+        viewModel.start(
+            language = language,
+            diagnosticLogging = true,
+            serverUrl = serverUrl,
+            prefer = prefer,
+        )
+        guard = scope.launch { watchRung(viewModel, serverPath = serverUrl != null, prefer = prefer) }
         return true
     }
 
@@ -158,7 +185,18 @@ internal object FileAudioSourceControl {
      * Reads the rung the engine actually chose rather than the one the operator hoped for. The
      * difference between those two is the entire failure mode.
      */
-    private suspend fun watchRung(viewModel: DictationViewModel) {
+    private suspend fun watchRung(
+        viewModel: DictationViewModel,
+        serverPath: Boolean,
+        prefer: BackendPreference,
+    ) {
+        if (serverPath) {
+            when (watchServerPath(viewModel, prefer)) {
+                ServerGate.Settled -> return
+                ServerGate.FellBackToNative -> Unit // the selector chose native: rung gate below
+            }
+        }
+
         val rung = withTimeoutOrNull(RUNG_WAIT_MS) { viewModel.activeRung.filterNotNull().first() }
 
         if (rung == null) {
@@ -197,6 +235,74 @@ internal object FileAudioSourceControl {
         Log.i(TAG, "file-fed run CONFIRMED on $RUNG_RAW_AUDIO — ${DebugAudioSource.describe()}")
     }
 
+    private enum class ServerGate { Settled, FellBackToNative }
+
+    /**
+     * Gate 3's server-path branch, then gate 4 on that path.
+     *
+     * Waits for the engine to be **on the server AND listening** rather than for `backend` alone:
+     * a same-spec second run reuses the engine, whose `backend` can still read `Server` from the
+     * previous session until the new try-server phase resolves. `Listening` on the server path is
+     * only reached after a successful connect, so the pair is a fact about THIS session. The open
+     * count is re-read against the live `backend` on every poll for the same reason.
+     *
+     * @return [ServerGate.Settled] when the run was confirmed or refused, [ServerGate.FellBackToNative]
+     *   when the server never came up under `Auto` and the on-device rung gate must decide instead.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun watchServerPath(
+        viewModel: DictationViewModel,
+        prefer: BackendPreference,
+    ): ServerGate {
+        val onServer = withTimeoutOrNull(RUNG_WAIT_MS) {
+            viewModel.engine
+                .flatMapLatest { engine ->
+                    combine(engine.backend, engine.state) { backend, state ->
+                        backend == Backend.Server && state == EngineState.Listening
+                    }
+                }
+                .first { it }
+        }
+
+        if (onServer == null) {
+            if (prefer == BackendPreference.Server) {
+                // The engine's own error (if any) is about to be replaced on the banner by the
+                // abort code, so its code is carried into the reason rather than lost.
+                val engineCode = viewModel.error.value?.code?.value ?: "none"
+                refuse(
+                    viewModel,
+                    "the server path never came up within ${RUNG_WAIT_MS / 1_000}s under " +
+                        "PREFER Server (engine error code: $engineCode), so there is no server-path " +
+                        "run to score",
+                )
+                return ServerGate.Settled
+            }
+            Log.i(TAG, "server path did not come up under Auto; applying the on-device rung gate")
+            return ServerGate.FellBackToNative
+        }
+
+        val opened = withTimeoutOrNull(OPEN_WAIT_MS) {
+            while (
+                !serverPathFeedConfirmed(viewModel.engine.value.backend.value, DebugAudioSource.openCount)
+            ) {
+                delay(250)
+            }
+            true
+        }
+        if (opened == null) {
+            refuse(
+                viewModel,
+                "the engine is on the server path but the armed file was never opened, so no audio " +
+                    "from it reached the server",
+            )
+            return ServerGate.Settled
+        }
+
+        confirmed = true
+        Log.i(TAG, "file-fed run CONFIRMED on the server path — ${DebugAudioSource.describe()}")
+        return ServerGate.Settled
+    }
+
     /**
      * Stop, disarm, shout.
      *
@@ -231,5 +337,14 @@ internal object FileAudioSourceControl {
     }
 }
 
-// RED stub — replaced in the GREEN step.
-internal fun serverPathFeedConfirmed(backend: io.github.ygaray.sttengine.Backend, openCount: Int): Boolean = false
+/**
+ * Gate 3's server-path branch (Phase 21, D-08; Pitfall 7): a file-fed run on the server path is
+ * confirmed only when the engine actually landed on [Backend.Server] AND the armed feed was opened
+ * at least once.
+ *
+ * A server session never writes a `rung` line — the ladder is the native backend's — so the native
+ * gate would refuse every server run. This is its replacement, not a relaxation: both facts are
+ * still measurements, never assumptions. Pure, so it is unit-testable in plain JUnit.
+ */
+internal fun serverPathFeedConfirmed(backend: Backend, openCount: Int): Boolean =
+    backend == Backend.Server && openCount > 0

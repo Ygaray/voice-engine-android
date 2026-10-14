@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import io.github.ygaray.sttengine.BackendPreference
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.debug.DebugRungCeiling
 import io.github.ygaray.sttengine.demo.DictationViewModel
@@ -88,11 +89,23 @@ class DemoControlReceiver : BroadcastReceiver() {
                 val language = intent.getStringExtra(EXTRA_LANGUAGE)?.takeIf { it.isNotBlank() }
                 val audioSource = intent.getStringExtra(EXTRA_AUDIO_SOURCE)?.takeIf { it.isNotBlank() }
                 val rungCeiling = intent.getStringExtra(EXTRA_RUNG_CEILING)?.takeIf { it.isNotBlank() }
+                val serverPath = parseServerPathExtras(
+                    serverUrl = intent.getStringExtra(EXTRA_SERVER_URL),
+                    prefer = intent.getStringExtra(EXTRA_PREFER),
+                )
+                if (serverPath is ServerPathRequest.Refused) {
+                    Log.d(TAG, "START refused: ${serverPath.reason}")
+                    return
+                }
+                val serverUrl = (serverPath as? ServerPathRequest.Server)?.url
+                val prefer = (serverPath as? ServerPathRequest.Server)?.prefer ?: BackendPreference.Auto
+                // Only WHETHER a URL was set is logged — never the URL, which names a private host.
                 Log.d(
                     TAG,
                     "START language=${language ?: "(default)"} sessionLog=$sessionLog " +
                         "audioSource=${audioSource ?: "(microphone)"} " +
-                        "rungCeiling=${rungCeiling ?: "(none)"}",
+                        "rungCeiling=${rungCeiling ?: "(none)"} " +
+                        "serverUrl=${if (serverUrl != null) "set" else "(none)"} prefer=${prefer.name}",
                 )
 
                 // Applied BEFORE the session starts, because the ladder is resolved once per start()
@@ -112,7 +125,12 @@ class DemoControlReceiver : BroadcastReceiver() {
                 if (audioSource == null) {
                     // The ordinary path, and the only one a release build could ever have had.
                     FileAudioSourceControl.stopFileFed()
-                    viewModel.start(language = language, diagnosticLogging = sessionLog)
+                    viewModel.start(
+                        language = language,
+                        diagnosticLogging = sessionLog,
+                        serverUrl = serverUrl,
+                        prefer = prefer,
+                    )
                 } else {
                     // Deliberately NOT falling through to a microphone session when this refuses.
                     // An acoustic run labelled file-fed is worse than no run: it is evidence-shaped.
@@ -121,6 +139,8 @@ class DemoControlReceiver : BroadcastReceiver() {
                         path = audioSource,
                         language = language,
                         sessionLog = sessionLog,
+                        serverUrl = serverUrl,
+                        prefer = prefer,
                     )
                 }
             }
@@ -251,6 +271,31 @@ class DemoControlReceiver : BroadcastReceiver() {
          */
         const val EXTRA_RUNG_CEILING = "io.github.ygaray.sttengine.demo.debug.extra.RUNG_CEILING"
 
+        /**
+         * String extra on [ACTION_START] (Phase 21, D-08). A `wss://` server URL, supplied **at run
+         * time over adb** — e.g. `wss://host.example:8444/` — so no server address ever enters this
+         * source tree. Absent means no server, which is what every ordinary run does.
+         *
+         * Only `wss://` is accepted; anything else refuses the START loudly and starts nothing.
+         * The START log line records only `serverUrl=set` / `serverUrl=(none)`, never the URL.
+         *
+         * **Language on the server path:** the server rejects region-tagged languages such as
+         * `en-US` (`unsupported-language`), which would fast-fail the run to the on-device backend
+         * and make it look like a passing native run. Pair this extra with [EXTRA_LANGUAGE] `en` or
+         * `auto` (Pitfall 6).
+         */
+        const val EXTRA_SERVER_URL = "io.github.ygaray.sttengine.demo.debug.extra.SERVER_URL"
+
+        /**
+         * String extra on [ACTION_START] (Phase 21, D-08). The backend preference — exactly one of
+         * `Auto`, `Server`, `OnDevice` (the `BackendPreference` names, case-sensitive). Absent means
+         * `Auto`. Requires [EXTRA_SERVER_URL]; on its own it refuses the START.
+         *
+         * A Gate-1 run uses `Server`, so a failed connect is a loud error instead of a silent native
+         * run labelled as a server run.
+         */
+        const val EXTRA_PREFER = "io.github.ygaray.sttengine.demo.debug.extra.PREFER"
+
         // ────────────────────────────────────────────────────────────────────────────────────────
 
         /** The demo's own diagnostic sidecar, beside the engine's trace and pullable the same way. */
@@ -315,12 +360,80 @@ internal fun languageDiagnostics(into: JSONObject, committed: List<FinalSegment>
     into.put("segmentLanguages", segmentLanguagesOf(committed))
 }
 
-// RED stub — replaced in the GREEN step.
+/**
+ * What an [DemoControlReceiver.ACTION_START] asked for on the server path (Phase 21, D-08).
+ *
+ * - [None]: no server URL and no preference — the ordinary on-device run, exactly as before.
+ * - [Server]: a validated `wss://` URL plus the [BackendPreference] to start under.
+ * - [Refused]: the extras were malformed; the receiver logs [Refused.reason] and starts nothing.
+ *
+ * A demo-only debug type; the URL lives here only in memory and is never logged or dumped.
+ */
 internal sealed interface ServerPathRequest {
+
     data object None : ServerPathRequest
-    class Server(val url: String, val prefer: io.github.ygaray.sttengine.BackendPreference) : ServerPathRequest
-    class Refused(val reason: String) : ServerPathRequest
+
+    class Server(val url: String, val prefer: BackendPreference) : ServerPathRequest {
+        // The URL is deliberately left out: a stray `Log.d("$request")` must not print it.
+        override fun toString(): String = "Server(url=set, prefer=${prefer.name})"
+    }
+
+    class Refused(val reason: String) : ServerPathRequest {
+        override fun toString(): String = "Refused($reason)"
+    }
 }
 
-internal fun parseServerPathExtras(serverUrl: String?, prefer: String?): ServerPathRequest =
-    ServerPathRequest.None
+/**
+ * Validate the two server-path extras on START.
+ *
+ * Rules, each a refusal rather than a silent downgrade, because a Gate-1 run that quietly ends up
+ * on-device looks exactly like a passing one:
+ *
+ * - no URL (absent or blank) and no preference → [ServerPathRequest.None];
+ * - a preference with no URL → refused (there is nothing to prefer);
+ * - a URL that does not start with `wss://` → refused (the server is only reachable over TLS, and a
+ *   plain `ws://` or an `https://` URL can only fail later, less legibly);
+ * - a preference that is not exactly one of the [BackendPreference] names (`Auto`, `Server`,
+ *   `OnDevice` — case-sensitive) → refused;
+ * - otherwise [ServerPathRequest.Server], preference defaulting to [BackendPreference.Auto].
+ *
+ * Refusal reasons never quote the URL itself: logcat leaves the app, and the URL names a private
+ * host. Plain and dependency-free so it is unit-testable in plain JUnit.
+ */
+internal fun parseServerPathExtras(serverUrl: String?, prefer: String?): ServerPathRequest {
+    val url = serverUrl?.trim()?.takeIf { it.isNotEmpty() }
+    val preferName = prefer?.trim()?.takeIf { it.isNotEmpty() }
+
+    if (url == null) {
+        return if (preferName == null) {
+            ServerPathRequest.None
+        } else {
+            ServerPathRequest.Refused(
+                "PREFER was given without SERVER_URL. A backend preference needs a server to " +
+                    "prefer; re-send START with a wss:// SERVER_URL or drop PREFER.",
+            )
+        }
+    }
+
+    if (!url.startsWith(WSS_SCHEME)) {
+        return ServerPathRequest.Refused(
+            "SERVER_URL must start with $WSS_SCHEME. The server is reachable only over TLS, so any " +
+                "other scheme can only fail later and less legibly.",
+        )
+    }
+
+    val preference = if (preferName == null) {
+        BackendPreference.Auto
+    } else {
+        BackendPreference.entries.firstOrNull { it.name == preferName }
+            ?: return ServerPathRequest.Refused(
+                "PREFER must be exactly one of " +
+                    BackendPreference.entries.joinToString { it.name } +
+                    " (case-sensitive); got \"$preferName\".",
+            )
+    }
+
+    return ServerPathRequest.Server(url, preference)
+}
+
+private const val WSS_SCHEME = "wss://"

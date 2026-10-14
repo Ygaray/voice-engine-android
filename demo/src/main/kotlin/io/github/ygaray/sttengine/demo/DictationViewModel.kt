@@ -3,6 +3,7 @@ package io.github.ygaray.sttengine.demo
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import io.github.ygaray.sttengine.BackendPreference
 import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.SttConfig
@@ -118,7 +119,12 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
     private var logTailJob: Job? = null
 
     init {
-        builtWith = EngineSpec(language = SttConfig().language, diagnosticLogging = false)
+        builtWith = EngineSpec(
+            language = SttConfig().language,
+            diagnosticLogging = false,
+            serverUrl = null,
+            prefer = BackendPreference.Auto,
+        )
         _engine = MutableStateFlow(build(builtWith))
         startLevelDecay()
         refreshRecognizerInfo()
@@ -182,10 +188,27 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
      *   **This records the user's dictated speech to a file**, which is why it is off by default,
      *   why nothing in the release build can reach this argument, and why asking for it mints a new
      *   engine rather than flipping a flag on the live one.
+     * @param serverUrl a `wss://` server URL, or `null` for no server (Phase 21, D-08). Only the
+     *   debug control receiver ever passes one, and it arrives at run time over adb — no server
+     *   address lives in this app. A plain UI Start passes nothing and gets no server, as before.
+     * @param prefer the backend preference to start under. Like the language, a change rebuilds the
+     *   engine, because `SttConfig` is fixed at construction.
      */
-    fun start(language: String? = null, diagnosticLogging: Boolean = false) {
+    fun start(
+        language: String? = null,
+        diagnosticLogging: Boolean = false,
+        serverUrl: String? = null,
+        prefer: BackendPreference = BackendPreference.Auto,
+    ) {
         viewModelScope.launch {
-            ensureEngine(language ?: builtWith.language, diagnosticLogging)
+            ensureEngine(
+                EngineSpec(
+                    language = language ?: builtWith.language,
+                    diagnosticLogging = diagnosticLogging,
+                    serverUrl = serverUrl,
+                    prefer = prefer,
+                ),
+            )
             // The banner persists until the next start, exactly as the web demo does it — a stale
             // error next to a live session would be worse than no error at all. The same reasoning
             // applies to the committed-segment evidence: a second run in the same app session (a
@@ -196,7 +219,7 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
             _committed.value = emptyList()
             _lastSegmentId.value = null
             // Same rationale, extended to the trace-derived diagnostics: a same-spec restart reuses
-            // the engine instance (ensureEngine() no-ops when language/diagnosticLogging match) and
+            // the engine instance (ensureEngine() no-ops when the whole EngineSpec matches) and
             // therefore the same SessionLog trace file, so a stale restartCount/activeRung/
             // lastDeafWindowMs left over from the PREVIOUS run must not be read as this run's
             // evidence by FileAudioSourceControl.watchRung()'s filterNotNull().first() gate
@@ -221,8 +244,7 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- internals -------------------------------------------------------------------------------------
 
-    private suspend fun ensureEngine(language: String, diagnosticLogging: Boolean) {
-        val wanted = EngineSpec(language, diagnosticLogging)
+    private suspend fun ensureEngine(wanted: EngineSpec) {
         if (wanted == builtWith) return
         _engine.value.stop()
         builtWith = wanted
@@ -233,7 +255,7 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
         _diagnosticLogging.value = spec.diagnosticLogging
         val engine = createSttEngine(
             context = getApplication(),
-            config = SttConfig(language = spec.language),
+            config = SttConfig(language = spec.language, prefer = spec.prefer, serverUrl = spec.serverUrl),
             diagnosticLogging = spec.diagnosticLogging,
         )
         startLogTail(spec.diagnosticLogging)
@@ -385,7 +407,16 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 
-    private data class EngineSpec(val language: String, val diagnosticLogging: Boolean)
+    /**
+     * Everything an engine is built from. A change in ANY field mints a new engine — none of them is
+     * reconfigurable on a built one. Holds the server URL in memory only; it is never logged.
+     */
+    private data class EngineSpec(
+        val language: String,
+        val diagnosticLogging: Boolean,
+        val serverUrl: String?,
+        val prefer: BackendPreference,
+    )
 
     internal companion object {
 
