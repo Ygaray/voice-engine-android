@@ -230,3 +230,6 @@ internal object FileAudioSourceControl {
         into.put("fileFedAbortReason", abortReason ?: JSONObject.NULL)
     }
 }
+
+// RED stub — replaced in the GREEN step.
+internal fun serverPathFeedConfirmed(backend: io.github.ygaray.sttengine.Backend, openCount: Int): Boolean = false

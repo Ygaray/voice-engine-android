@@ -314,3 +314,13 @@ internal fun languageDiagnostics(into: JSONObject, committed: List<FinalSegment>
     into.put("lastSegmentLanguage", lastSegmentLanguageOf(committed) ?: JSONObject.NULL)
     into.put("segmentLanguages", segmentLanguagesOf(committed))
 }
+
+// RED stub — replaced in the GREEN step.
+internal sealed interface ServerPathRequest {
+    data object None : ServerPathRequest
+    class Server(val url: String, val prefer: io.github.ygaray.sttengine.BackendPreference) : ServerPathRequest
+    class Refused(val reason: String) : ServerPathRequest
+}
+
+internal fun parseServerPathExtras(serverUrl: String?, prefer: String?): ServerPathRequest =
+    ServerPathRequest.None
