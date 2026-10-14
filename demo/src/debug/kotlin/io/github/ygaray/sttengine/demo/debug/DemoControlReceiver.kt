@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.BackendPreference
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.debug.DebugRungCeiling
@@ -189,6 +190,16 @@ class DemoControlReceiver : BroadcastReceiver() {
             // What was ASKED for. `activeRung` above is what actually happened; a report that
             // quotes one without the other cannot tell a working cap from an ignored one.
             put("rungCeiling", DebugRungCeiling.ceiling ?: JSONObject.NULL)
+            // The server-path facts (Phase 21, D-08). Names, a boolean and counts — the partial's
+            // text is only tested for blankness, never written.
+            val engine = viewModel.engine.value
+            serverPathDiagnostics(
+                into = this,
+                backend = engine.backend.value,
+                partialLive = engine.partial.value.isNotBlank(),
+                partialUpdates = viewModel.partialUpdates.value,
+                warningCount = viewModel.warningCount.value,
+            )
             // The file-feed facts. `fileFedConfirmed` and `fileFedOpens` are what turn "this run was
             // file-fed" from a claim into a measurement, and the harness refuses to score a
             // supposedly file-fed run without them. Counters only — still no transcript text.
@@ -438,5 +449,29 @@ internal fun parseServerPathExtras(serverUrl: String?, prefer: String?): ServerP
 
 private const val WSS_SCHEME = "wss://"
 
-// RED stub — replaced in the GREEN step.
-internal fun serverPathDiagnostics(into: JSONObject, backend: io.github.ygaray.sttengine.Backend, partialLive: Boolean, partialUpdates: Int, warningCount: Int) {}
+/**
+ * Writes the four server-path facts Gate-1 scores (Phase 21, D-08) onto [into]:
+ *
+ * - `backend` — which backend actually ran (`Server` / `Native`), the fact a server-path run is
+ *   judged by (a `PREFER Auto` run that silently fell back reads `Native` here);
+ * - `partialLive` — whether a non-blank partial is on screen at this instant, which is how a driver
+ *   finds the mid-utterance moment to send STOP;
+ * - `partialUpdates` — non-blank partial emissions since the last start;
+ * - `warningCount` — `SttEvent.Warning`s since the last start. D-02 ships the backpressure gate
+ *   as-is and retunes it only on evidence: this count IS that Gate-1 observation.
+ *
+ * Counts, names and booleans only — never transcript text and never the server URL. Plain and
+ * dependency-free so it is unit-testable in plain JUnit.
+ */
+internal fun serverPathDiagnostics(
+    into: JSONObject,
+    backend: Backend,
+    partialLive: Boolean,
+    partialUpdates: Int,
+    warningCount: Int,
+) {
+    into.put("backend", backend.name)
+    into.put("partialLive", partialLive)
+    into.put("partialUpdates", partialUpdates)
+    into.put("warningCount", warningCount)
+}

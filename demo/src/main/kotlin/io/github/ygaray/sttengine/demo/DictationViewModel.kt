@@ -9,6 +9,7 @@ import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttEngine
 import io.github.ygaray.sttengine.SttError
+import io.github.ygaray.sttengine.SttEvent
 import io.github.ygaray.sttengine.createSttEngine
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -115,8 +116,25 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
     /** The most recent restart's deaf window in milliseconds — the audio the engine could not hear. */
     val lastDeafWindowMs: StateFlow<Long?> = _lastDeafWindowMs.asStateFlow()
 
+    private val _partialUpdates = MutableStateFlow(0)
+
+    /**
+     * Non-blank partial emissions observed since the last [start] (Phase 21, D-08). A count only —
+     * no text is stored. Gate-1 reads it to prove partials streamed on the server path.
+     */
+    val partialUpdates: StateFlow<Int> = _partialUpdates.asStateFlow()
+
+    private val _warningCount = MutableStateFlow(0)
+
+    /**
+     * `SttEvent.Warning`s observed since the last [start]. D-02 ships the server backpressure gate
+     * as-is and retunes it only on evidence; this count is that Gate-1 observation.
+     */
+    val warningCount: StateFlow<Int> = _warningCount.asStateFlow()
+
     private var decayJob: Job? = null
     private var logTailJob: Job? = null
+    private var countersJob: Job? = null
 
     init {
         builtWith = EngineSpec(
@@ -227,6 +245,9 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
             _restartCount.value = null
             _activeRung.value = null
             _lastDeafWindowMs.value = null
+            // The Gate-1 counters are per run for the same reason (Phase 21, D-08).
+            _partialUpdates.value = 0
+            _warningCount.value = 0
             _engine.value.start()
         }
     }
@@ -259,7 +280,31 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
             diagnosticLogging = spec.diagnosticLogging,
         )
         startLogTail(spec.diagnosticLogging)
+        startCounters(engine)
         return engine
+    }
+
+    /**
+     * Count partial updates and warnings on [engine] for the diagnostics dump (Phase 21, D-08).
+     *
+     * Reads `partial` (a `StateFlow`) and `events` (a shared flow) — both safe to observe from a
+     * second collector, unlike `finals`, which stays collected in exactly one place (the screen).
+     * Only counts are kept; the partial's text is inspected for blankness and discarded.
+     */
+    private fun startCounters(engine: SttEngine) {
+        countersJob?.cancel()
+        countersJob = viewModelScope.launch {
+            launch {
+                engine.partial.collect { text ->
+                    if (text.isNotBlank()) _partialUpdates.value += 1
+                }
+            }
+            launch {
+                engine.events.collect { event ->
+                    if (event is SttEvent.Warning) _warningCount.value += 1
+                }
+            }
+        }
     }
 
     // --- the restart counter and the rung, read from the engine's own trace --------------------------
@@ -391,6 +436,7 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         decayJob?.cancel()
         logTailJob?.cancel()
+        countersJob?.cancel()
         // stop() releases the recognizer, and it must still run: viewModelScope is already cancelled
         // by the time this is called, so a short-lived scope is used and shut down immediately after.
         // Leaking a recognizer past the screen that owned it holds the microphone open.
