@@ -2,6 +2,7 @@ package io.github.ygaray.sttengine.demo.debug
 
 import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.BackendPreference
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -98,6 +99,40 @@ class DemoServerPathTest {
     @Test
     fun `native backend is never a confirmed server-path feed`() {
         assertFalse(serverPathFeedConfirmed(Backend.Native, 3))
+    }
+
+    // --- serverPathDiagnostics ------------------------------------------------------------------------
+
+    @Test
+    fun `serverPathDiagnostics writes exactly the four server-path keys`() {
+        val into = JSONObject()
+
+        serverPathDiagnostics(into, Backend.Server, partialLive = true, partialUpdates = 4, warningCount = 0)
+
+        assertEquals(
+            setOf("backend", "partialLive", "partialUpdates", "warningCount"),
+            into.keys().asSequence().toSet(),
+        )
+        assertEquals("Server", into.getString("backend"))
+        assertEquals(true, into.getBoolean("partialLive"))
+        assertEquals(4, into.getInt("partialUpdates"))
+        assertEquals(0, into.getInt("warningCount"))
+
+        // Privacy invariant: never transcript text and never the server URL.
+        assertFalse(into.has("text"))
+        assertFalse(into.has("partial"))
+        assertFalse(into.has("serverUrl"))
+    }
+
+    @Test
+    fun `serverPathDiagnostics names the native backend`() {
+        val into = JSONObject()
+
+        serverPathDiagnostics(into, Backend.Native, partialLive = false, partialUpdates = 0, warningCount = 2)
+
+        assertEquals("Native", into.getString("backend"))
+        assertEquals(false, into.getBoolean("partialLive"))
+        assertEquals(2, into.getInt("warningCount"))
     }
 
     private fun assertRefused(request: ServerPathRequest) {

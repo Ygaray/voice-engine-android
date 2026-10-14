@@ -437,3 +437,6 @@ internal fun parseServerPathExtras(serverUrl: String?, prefer: String?): ServerP
 }
 
 private const val WSS_SCHEME = "wss://"
+
+// RED stub — replaced in the GREEN step.
+internal fun serverPathDiagnostics(into: JSONObject, backend: io.github.ygaray.sttengine.Backend, partialLive: Boolean, partialUpdates: Int, warningCount: Int) {}
