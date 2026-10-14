@@ -138,7 +138,8 @@ internal class OkHttpWebSocketFactory(
  * 16 kHz PCM16). Each frame crosses to [mainDispatcher] through one unlimited [Channel], and a
  * single consumer job there calls [sendPcmFrame] in order — so [outboundQueue] and
  * [backpressureGate] stay main-confined, and network backpressure stays the gate's job (D-02): the
- * pump itself never blocks on main. Teardown copies `AudioSourcePipe`: clear the run flag, `source.stop()`, a bounded
+ * pump itself never blocks on main. The pump thread also computes the input level with a
+ * [LevelMeter] (D-03, parity with the web worklet) and emits it on [level]. Teardown copies `AudioSourcePipe`: clear the run flag, `source.stop()`, a bounded
  * `join(PUMP_JOIN_MS)`, and only then `source.release()` — never release while a read may still be
  * in flight (CR-02). Every teardown path ([stop], [abandon], [fail], [releaseAudioSource]) runs it.
  *
@@ -233,6 +234,9 @@ internal class ServerBackend(
 
     /** The single main-dispatcher consumer that drains [frames] through [sendPcmFrame] in order. */
     private var consumerJob: Job? = null
+
+    /** D-03's level aggregator — used by the pump thread only. */
+    private val levelMeter = LevelMeter()
 
     // --- the flushing stop (D-04) --------------------------------------------------------------
 
@@ -413,6 +417,9 @@ internal class ServerBackend(
         pumpThread = Thread(
             {
                 pumpFrames(source, pumping, FRAME_BYTES) { frame ->
+                    // D-03: level from the pump thread (tryEmit is thread-safe; the meter is
+                    // touched by this thread only), then hand the frame to main.
+                    levelMeter.accept(frame)?.let { _level.tryEmit(it) }
                     channel.trySend(frame)
                 }
             },
