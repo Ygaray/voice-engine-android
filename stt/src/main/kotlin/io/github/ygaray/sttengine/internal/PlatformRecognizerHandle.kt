@@ -1,10 +1,13 @@
 package io.github.ygaray.sttengine.internal
 
+import android.annotation.SuppressLint
+import android.annotation.TargetApi
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.speech.ModelDownloadListener
 import android.speech.RecognitionListener
 import android.speech.RecognitionSupport
 import android.speech.RecognitionSupportCallback
@@ -32,6 +35,10 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  * [destroy] is exempt at the platform level but is routed identically, for uniformity: a reader
  * should not have to remember which one of five methods is special.
+ *
+ * **The one deliberate exception to the hop is [triggerModelDownload]**, which REQUIRES the main
+ * thread and asserts it instead: a posted download call could not report its own outcome, so its
+ * Boolean would stop meaning anything. Its KDoc has the full reasoning.
  */
 internal class PlatformRecognizerHandle(
     private val delegate: SpeechRecognizer,
@@ -143,11 +150,7 @@ internal class PlatformRecognizerHandle(
      * [LanguageAvailability.UNKNOWN].
      */
     private suspend fun querySupport(language: String): RecognitionSupport? {
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        }
+        val intent = supportIntent(language)
 
         return withTimeoutOrNull(LANGUAGE_SUPPORT_TIMEOUT_MS) {
             suspendCancellableCoroutine<RecognitionSupport?> { continuation ->
@@ -186,6 +189,80 @@ internal class PlatformRecognizerHandle(
     }
 
     /**
+     * The one intent that names an on-device pack to the platform — shared by the support query and
+     * the model download, so the two always ask about the same thing.
+     */
+    private fun supportIntent(language: String): Intent =
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        }
+
+    /**
+     * `SpeechRecognizer.triggerModelDownload` for [language] (an exact tag such as `es-US`), reduced
+     * to "did the platform accept the request?".
+     *
+     * - **API 34+:** the listener overload, through [triggerWithListener] and
+     *   [awaitDownloadAcceptance] — the first listener callback decides, bounded by
+     *   [DOWNLOAD_ACCEPT_TIMEOUT_MS].
+     * - **API 33:** the fire-and-forget overload. There is no outcome to wait for, so `true` means
+     *   only that the request was handed to the platform without throwing. A throw is `false`.
+     *
+     * The 34-only overload is never reached below 34: the branch is on [sdkInt], and the call is
+     * isolated in a `@TargetApi` helper.
+     *
+     * **MAIN-THREAD-ONLY — this method asserts instead of hopping, unlike every other delegate call
+     * here.** A posted call cannot report its own outcome: a hop would make `true` mean only "queued"
+     * on API 33, and on both API levels it would let a later platform throw escape on the main looper,
+     * outside every catch below. Called on main, both branches run the platform synchronously, so
+     * every synchronous throw lands inside a catch and `true` always reflects a call that actually
+     * ran. The only production caller, `LanguagePacks.requestDownload`, runs inside its transient
+     * handle's `withContext(mainDispatcher)`, so the check never fires in production; an off-main
+     * caller is a programming error and gets an [IllegalStateException] before any intent is built.
+     */
+    override suspend fun triggerModelDownload(language: String): Boolean {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "triggerModelDownload must be called on the main thread" }
+        val intent = supportIntent(language)
+
+        if (sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return triggerWithListener(intent)
+
+        return try {
+            delegate.triggerModelDownload(intent)
+            true
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: RuntimeException) {
+            false
+        }
+    }
+
+    /**
+     * The API-34 listener overload. `register` runs synchronously on the main thread, so a
+     * synchronous platform throw is caught by [awaitDownloadAcceptance] and resolves `false`. The
+     * listener forwards every callback, verbatim, to the platform-free sink.
+     *
+     * `@TargetApi`, not `@RequiresApi`, on purpose: the guard at the only call site is on the
+     * injected [sdkInt], which lint cannot read as a version check, so a propagated requirement would
+     * flag that guarded call as `NewApi`. The helper is private and has exactly that one caller.
+     */
+    @SuppressLint("UseRequiresApi")
+    @TargetApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    private suspend fun triggerWithListener(intent: Intent): Boolean =
+        awaitDownloadAcceptance(DOWNLOAD_ACCEPT_TIMEOUT_MS) { sink ->
+            delegate.triggerModelDownload(
+                intent,
+                DIRECT_EXECUTOR,
+                object : ModelDownloadListener {
+                    override fun onProgress(completedPercent: Int) = sink.onProgress()
+                    override fun onSuccess() = sink.onSuccess()
+                    override fun onScheduled() = sink.onScheduled()
+                    override fun onError(error: Int) = sink.onError(error)
+                },
+            )
+        }
+
+    /**
      * `internal` rather than `private` so [matches] is directly testable.
      *
      * That is not a convenience. The library's default config asks for `"en"` while the phase's
@@ -205,7 +282,14 @@ internal class PlatformRecognizerHandle(
          */
         const val LANGUAGE_SUPPORT_TIMEOUT_MS: Long = 2_000L
 
-        /** RED placeholder — KDoc lands with the GREEN implementation. */
+        /**
+         * Ceiling on waiting for the API-34 download listener's first callback.
+         *
+         * **Trade-off:** long enough to catch a prompt `onSuccess` / `onScheduled`, short enough
+         * that the worst case — a 2 s support query plus this — stays inside a broadcast receiver's
+         * `goAsync` budget. A user-approval prompt may outlast it, which is why a `false` here means
+         * "not confirmed — re-query", never "refused". TUNABLE, NOT CONTRACTUAL.
+         */
         const val DOWNLOAD_ACCEPT_TIMEOUT_MS: Long = 5_000L
 
         /** Run the callback on whichever thread the service delivers it — we only resume a coroutine. */
