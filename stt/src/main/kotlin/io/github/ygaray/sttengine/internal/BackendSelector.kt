@@ -536,13 +536,18 @@ internal class BackendSelector(
      * [finalsForwarders]): closes every source, then joins every collector. Each collector body
      * only does non-suspending sends, so a join returns as soon as main has run the buffered sends.
      * Main-confined; called only once every backend in the list is finished.
+     *
+     * The collectors leave the list only AFTER they are joined, so a second retire that overlaps
+     * this one (a [stop] that cancelled a [runStart] mid-drain, or the next [runStart] it then
+     * admits) joins the same collectors instead of finding an empty list and resetting the session
+     * while they are still draining. Closing a source twice is a no-op.
      */
     private suspend fun retireFinalsForwarders() {
         if (finalsForwarders.isEmpty()) return
         val retiring = finalsForwarders.toList()
-        finalsForwarders.clear()
         retiring.forEach { it.closeSource() }
         retiring.forEach { it.job.join() }
+        finalsForwarders.removeAll(retiring)
     }
 
     private suspend fun detachAndFlush() {
