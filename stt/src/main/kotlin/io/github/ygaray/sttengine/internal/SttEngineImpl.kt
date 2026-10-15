@@ -8,6 +8,7 @@ import android.speech.SpeechRecognizer
 import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.FinalSegment
+import io.github.ygaray.sttengine.LanguageAvailability
 import io.github.ygaray.sttengine.ReconnectInfo
 import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttEngine
@@ -362,7 +363,7 @@ internal class SttEngineImpl(
         val preflightError = if (autoDetectionActive) {
             val availabilities = created.languageAvailability(RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES)
             RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES.firstNotNullOfOrNull { lang ->
-                preflightErrorFor(lang, availabilities[lang] ?: LanguageAvailability.UNDETERMINED)
+                preflightErrorFor(lang, availabilities[lang] ?: LanguageAvailability.UNKNOWN)
             }
         } else {
             preflightErrorFor(resolvedConfig.language, created.languageAvailability(resolvedConfig.language))
@@ -430,17 +431,17 @@ internal class SttEngineImpl(
      */
     private fun preflightErrorFor(language: String, availability: LanguageAvailability): SttError? =
         when (availability) {
-            LanguageAvailability.SUPPORTED_NOT_INSTALLED ->
+            LanguageAvailability.DOWNLOADABLE ->
                 ErrorMapper.mapPreflight(PreflightFailure.LanguageNotInstalled(language))
 
-            LanguageAvailability.DOWNLOAD_PENDING ->
+            LanguageAvailability.PENDING ->
                 ErrorMapper.mapPreflight(PreflightFailure.LanguageDownloadPending(language))
 
-            LanguageAvailability.NOT_SUPPORTED ->
+            LanguageAvailability.UNSUPPORTED ->
                 ErrorMapper.mapPreflight(PreflightFailure.LanguageNotSupported(language))
 
             // A query that could not answer must never stop a session that would otherwise work.
-            LanguageAvailability.INSTALLED, LanguageAvailability.UNDETERMINED -> null
+            LanguageAvailability.INSTALLED, LanguageAvailability.UNKNOWN -> null
         }
 
     // --- the session loop ---------------------------------------------------------------------------

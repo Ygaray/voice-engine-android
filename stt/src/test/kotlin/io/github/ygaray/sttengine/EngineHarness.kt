@@ -4,7 +4,6 @@ import androidx.test.core.app.ApplicationProvider
 import io.github.ygaray.sttengine.internal.AudioSourcePipe
 import io.github.ygaray.sttengine.internal.FakeRecognizerHandle
 import io.github.ygaray.sttengine.internal.PcmSource
-import io.github.ygaray.sttengine.internal.LanguageAvailability
 import io.github.ygaray.sttengine.internal.RecognizerHandle
 import io.github.ygaray.sttengine.internal.RecognizerHandleFactory
 import io.github.ygaray.sttengine.internal.PermissionChecker
@@ -212,7 +211,7 @@ internal class PreflightHandle(
     // uses Kotlin CLASS DELEGATION ("RecognizerHandle by delegate") — any member NOT overridden on
     // this class is auto-forwarded straight to `delegate` (FakeRecognizerHandle), bypassing this
     // class's own `languageAvailability(String)` override entirely and silently answering every
-    // language UNDETERMINED (delegate's inherited default), which never fails a dual-language
+    // language UNKNOWN (delegate's inherited default), which never fails a dual-language
     // preflight and hangs `start()` forever awaiting a session that a test never drives. Overriding
     // it here makes `languageAvailability(it)` resolve virtually to THIS class's override, composing
     // through `availabilityOverrides` — proven by a hang-reproducing PreflightTest run before this

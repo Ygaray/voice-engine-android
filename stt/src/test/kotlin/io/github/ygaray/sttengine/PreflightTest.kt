@@ -1,7 +1,6 @@
 package io.github.ygaray.sttengine
 
 import io.github.ygaray.sttengine.internal.FakeRecognizerHandle
-import io.github.ygaray.sttengine.internal.LanguageAvailability
 import io.github.ygaray.sttengine.internal.PlatformRecognizerHandle
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -90,7 +89,7 @@ class PreflightTest {
         // de-DE is one of the 30 locales the tester reports as supported-but-not-installed.
         val h = EngineHarness(
             testScheduler,
-            languageAvailability = LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+            languageAvailability = LanguageAvailability.DOWNLOADABLE,
             config = SttConfig(language = "de-DE"),
         )
         h.collectInto(backgroundScope)
@@ -114,7 +113,7 @@ class PreflightTest {
     fun `a language already downloading yields no-offline-model with a DISTINCT message`() = runTest {
         val pending = EngineHarness(
             testScheduler,
-            languageAvailability = LanguageAvailability.DOWNLOAD_PENDING,
+            languageAvailability = LanguageAvailability.PENDING,
             config = SttConfig(language = "de-DE"),
         )
         pending.collectInto(backgroundScope)
@@ -123,7 +122,7 @@ class PreflightTest {
 
         val notInstalled = EngineHarness(
             testScheduler,
-            languageAvailability = LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+            languageAvailability = LanguageAvailability.DOWNLOADABLE,
             config = SttConfig(language = "de-DE"),
         )
         notInstalled.collectInto(backgroundScope)
@@ -146,7 +145,7 @@ class PreflightTest {
     fun `an unsupported language yields unsupported-language`() = runTest {
         val h = EngineHarness(
             testScheduler,
-            languageAvailability = LanguageAvailability.NOT_SUPPORTED,
+            languageAvailability = LanguageAvailability.UNSUPPORTED,
             config = SttConfig(language = "xx-XX"),
         )
         h.collectInto(backgroundScope)
@@ -164,7 +163,7 @@ class PreflightTest {
 
     @Test
     fun `an installed language and an undetermined answer both proceed to a session`() = runTest {
-        listOf(LanguageAvailability.INSTALLED, LanguageAvailability.UNDETERMINED).forEach { answer ->
+        listOf(LanguageAvailability.INSTALLED, LanguageAvailability.UNKNOWN).forEach { answer ->
             val h = EngineHarness(testScheduler, languageAvailability = answer)
             h.collectInto(backgroundScope)
             h.reachListening()
@@ -183,7 +182,7 @@ class PreflightTest {
             config = SttConfig(language = "auto"),
             languageAvailabilityOverrides = mapOf(
                 "en-US" to LanguageAvailability.INSTALLED,
-                "es-US" to LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+                "es-US" to LanguageAvailability.DOWNLOADABLE,
             ),
         )
         h.collectInto(backgroundScope)
@@ -203,7 +202,7 @@ class PreflightTest {
             testScheduler,
             config = SttConfig(language = "auto"),
             languageAvailabilityOverrides = mapOf(
-                "en-US" to LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+                "en-US" to LanguageAvailability.DOWNLOADABLE,
                 "es-US" to LanguageAvailability.INSTALLED,
             ),
         )
@@ -225,8 +224,8 @@ class PreflightTest {
                 testScheduler,
                 config = SttConfig(language = "auto"),
                 languageAvailabilityOverrides = mapOf(
-                    "en-US" to LanguageAvailability.SUPPORTED_NOT_INSTALLED,
-                    "es-US" to LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+                    "en-US" to LanguageAvailability.DOWNLOADABLE,
+                    "es-US" to LanguageAvailability.DOWNLOADABLE,
                 ),
             )
             h.collectInto(backgroundScope)
@@ -260,7 +259,7 @@ class PreflightTest {
                 languageAvailabilityOverrides = mapOf(
                     // If the dual-language path fired despite sdkInt=33, this would incorrectly fail
                     // the session naming es-US even though the sub-34 fallback never requests it.
-                    "es-US" to LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+                    "es-US" to LanguageAvailability.DOWNLOADABLE,
                 ),
             )
             h.collectInto(backgroundScope)

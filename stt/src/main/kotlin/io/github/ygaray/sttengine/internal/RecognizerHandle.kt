@@ -3,6 +3,7 @@ package io.github.ygaray.sttengine.internal
 import android.content.Context
 import android.content.Intent
 import android.speech.RecognitionListener
+import io.github.ygaray.sttengine.LanguageAvailability
 
 /**
  * The seam. ONE narrow interface between the library's session logic and
@@ -74,12 +75,12 @@ internal interface RecognizerHandle {
      * (`05-PROBE-REPORT.json` → `part1.languageSupport.installedOnDeviceLanguages`). Mapping in the
      * adapter is what lets the branch be exercised at all.
      *
-     * The default is [LanguageAvailability.UNDETERMINED], and the engine treats that as "proceed".
+     * The default is [LanguageAvailability.UNKNOWN], and the engine treats that as "proceed".
      * A failed capability query must never stop a session that is otherwise working — the same
      * judgement `ErrorMapper` applies to `ERROR_CANNOT_CHECK_SUPPORT`, which it swallows.
      */
     suspend fun languageAvailability(language: String): LanguageAvailability =
-        LanguageAvailability.UNDETERMINED
+        LanguageAvailability.UNKNOWN
 
     /**
      * The dual-language extension of [languageAvailability] (NBIL-10, Plan 02) — answers the same
@@ -93,31 +94,6 @@ internal interface RecognizerHandle {
      */
     suspend fun languageAvailability(languages: List<String>): Map<String, LanguageAvailability> =
         languages.associateWith { languageAvailability(it) }
-}
-
-/**
- * What the recognition service says about one language's on-device model.
- *
- * The four determinate values are D-18's non-`onError` language rows; [UNDETERMINED] is the fifth
- * outcome the platform genuinely has — the query itself can fail or time out — and it deliberately
- * maps to "carry on" rather than to an error.
- */
-internal enum class LanguageAvailability {
-
-    /** In `getInstalledOnDeviceLanguages()`. Dictation can start. */
-    INSTALLED,
-
-    /** In `getSupportedOnDeviceLanguages()` only — the model has to be downloaded first. */
-    SUPPORTED_NOT_INSTALLED,
-
-    /** In `getPendingOnDeviceLanguages()` — a download is already scheduled. */
-    DOWNLOAD_PENDING,
-
-    /** In none of the on-device lists. No download will help. */
-    NOT_SUPPORTED,
-
-    /** The query failed, timed out, or the service returned nothing usable. Proceed anyway. */
-    UNDETERMINED,
 }
 
 /**

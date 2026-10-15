@@ -39,6 +39,17 @@ public final class io/github/ygaray/sttengine/FinalSegment {
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class io/github/ygaray/sttengine/LanguageAvailability : java/lang/Enum {
+	public static final field DOWNLOADABLE Lio/github/ygaray/sttengine/LanguageAvailability;
+	public static final field INSTALLED Lio/github/ygaray/sttengine/LanguageAvailability;
+	public static final field PENDING Lio/github/ygaray/sttengine/LanguageAvailability;
+	public static final field UNKNOWN Lio/github/ygaray/sttengine/LanguageAvailability;
+	public static final field UNSUPPORTED Lio/github/ygaray/sttengine/LanguageAvailability;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lio/github/ygaray/sttengine/LanguageAvailability;
+	public static fun values ()[Lio/github/ygaray/sttengine/LanguageAvailability;
+}
+
 public final class io/github/ygaray/sttengine/ReconnectInfo {
 	public fun <init> (II)V
 	public fun equals (Ljava/lang/Object;)Z

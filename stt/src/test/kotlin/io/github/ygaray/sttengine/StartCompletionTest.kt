@@ -1,6 +1,5 @@
 package io.github.ygaray.sttengine
 
-import io.github.ygaray.sttengine.internal.LanguageAvailability
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -100,7 +99,7 @@ class StartCompletionTest {
     fun `start completes on a language preflight failure`() = runTest {
         val h = EngineHarness(
             testScheduler,
-            languageAvailability = LanguageAvailability.SUPPORTED_NOT_INSTALLED,
+            languageAvailability = LanguageAvailability.DOWNLOADABLE,
             config = SttConfig(language = "de-DE"),
         )
         val started = launch(h.dispatcher) { h.engine.start() }

@@ -9,6 +9,7 @@ import android.speech.RecognitionSupport
 import android.speech.RecognitionSupportCallback
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import io.github.ygaray.sttengine.LanguageAvailability
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -90,10 +91,10 @@ internal class PlatformRecognizerHandle(
      * Bounded by [LANGUAGE_SUPPORT_TIMEOUT_MS] because this is a Binder round trip into an
      * OEM-controlled process and a preflight that can hang forever would hang `start()` forever —
      * exactly the failure D-10 exists to prevent. A timeout degrades to
-     * [LanguageAvailability.UNDETERMINED], i.e. "carry on", never to an error.
+     * [LanguageAvailability.UNKNOWN], i.e. "carry on", never to an error.
      */
     override suspend fun languageAvailability(language: String): LanguageAvailability {
-        val support = querySupport(language) ?: return LanguageAvailability.UNDETERMINED
+        val support = querySupport(language) ?: return LanguageAvailability.UNKNOWN
         return classify(language, support)
     }
 
@@ -112,7 +113,7 @@ internal class PlatformRecognizerHandle(
     override suspend fun languageAvailability(languages: List<String>): Map<String, LanguageAvailability> {
         if (languages.isEmpty()) return emptyMap()
         val support = querySupport(languages.first())
-            ?: return languages.associateWith { LanguageAvailability.UNDETERMINED }
+            ?: return languages.associateWith { LanguageAvailability.UNKNOWN }
         return languages.associateWith { classify(it, support) }
     }
 
@@ -181,18 +182,18 @@ internal class PlatformRecognizerHandle(
                 LanguageAvailability.INSTALLED
 
             matches(requested, support.pendingOnDeviceLanguages) ->
-                LanguageAvailability.DOWNLOAD_PENDING
+                LanguageAvailability.PENDING
 
             matches(requested, support.supportedOnDeviceLanguages) ->
-                LanguageAvailability.SUPPORTED_NOT_INSTALLED
+                LanguageAvailability.DOWNLOADABLE
 
             // The service answered but listed nothing on-device at all. That is a service that does
             // not know, not a service saying "no" — treat it as undetermined so an OEM with an
             // unpopulated support surface can still dictate.
             support.installedOnDeviceLanguages.isEmpty() &&
-                support.supportedOnDeviceLanguages.isEmpty() -> LanguageAvailability.UNDETERMINED
+                support.supportedOnDeviceLanguages.isEmpty() -> LanguageAvailability.UNKNOWN
 
-            else -> LanguageAvailability.NOT_SUPPORTED
+            else -> LanguageAvailability.UNSUPPORTED
         }
 
         /**

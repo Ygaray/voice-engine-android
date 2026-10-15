@@ -92,6 +92,16 @@ public class ContractSurfaceTest {
         )
     }
 
+    // --- LanguageAvailability (host-confirmed pack-preflight shape) ------------------------------
+
+    @Test
+    public fun `LanguageAvailability mirrors the five frozen values in order`() {
+        assertEquals(
+            listOf("INSTALLED", "DOWNLOADABLE", "PENDING", "UNSUPPORTED", "UNKNOWN"),
+            LanguageAvailability.entries.map { it.name },
+        )
+    }
+
     // --- SttConfig (web/src/types.ts:32-39, D-13) -----------------------------------------------
 
     @Test

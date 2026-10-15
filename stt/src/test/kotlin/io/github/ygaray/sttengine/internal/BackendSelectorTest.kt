@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.BackendPreference
 import io.github.ygaray.sttengine.EngineState
+import io.github.ygaray.sttengine.LanguageAvailability
 import io.github.ygaray.sttengine.PreflightHandle
 import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttError

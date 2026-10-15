@@ -6,7 +6,6 @@ import androidx.test.core.app.ApplicationProvider
 import io.github.ygaray.sttengine.internal.BackendSelector
 import io.github.ygaray.sttengine.internal.FakeRecognizerHandle
 import io.github.ygaray.sttengine.internal.FakeWebSocketFactory
-import io.github.ygaray.sttengine.internal.LanguageAvailability
 import io.github.ygaray.sttengine.internal.PermissionChecker
 import io.github.ygaray.sttengine.internal.RecognizerHandleFactory
 import io.github.ygaray.sttengine.internal.ServerBackend
