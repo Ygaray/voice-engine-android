@@ -140,6 +140,50 @@ class SessionLogTest {
     }
 
     @Test
+    fun `a server-attempt line carries exactly its fields and absent codes stay json null`() {
+        val log = enabledLog()
+        log.serverAttempt(
+            attempt = 2,
+            outcome = "Retryable",
+            exception = "IOException",
+            sawOpen = false,
+            closeCode = null,
+            responseCode = 503,
+        )
+
+        val line = JSONObject(lines(log).single())
+        assertEquals(
+            setOf("t", "kind", "attempt", "class", "exception", "sawOpen", "closeCode", "responseCode"),
+            line.fieldNames(),
+        )
+        assertEquals("server-attempt", line.getString("kind"))
+        assertEquals(2, line.getInt("attempt"))
+        assertEquals("Retryable", line.getString("class"))
+        assertEquals("IOException", line.getString("exception"))
+        assertFalse(line.getBoolean("sawOpen"))
+        assertTrue("closeCode must be a present json null", line.has("closeCode") && line.isNull("closeCode"))
+        assertEquals(503, line.getInt("responseCode"))
+    }
+
+    @Test
+    fun `a server-attempt line with no exception keeps the key as json null`() {
+        val log = enabledLog()
+        log.serverAttempt(1, "WindowExpired", null, false, null, null)
+
+        val line = JSONObject(lines(log).single())
+        assertTrue(line.has("exception") && line.isNull("exception"))
+        assertTrue(line.has("responseCode") && line.isNull("responseCode"))
+    }
+
+    @Test
+    fun `a disabled log writes no server-attempt line`() {
+        val log = SessionLog(directory = folder.root, sessionStartEpochMs = FIXED_EPOCH_MS)
+        log.serverAttempt(1, "Retryable", "IOException", true, 1006, null)
+        assertNull(log.file)
+        assertEquals(emptyList<String>(), folder.root.list()!!.toList())
+    }
+
+    @Test
     fun `a null platformDetail stays a present json null rather than a missing key`() {
         val log = enabledLog()
         log.error(SttError(SttErrorCode.MIC_DENIED, "denied"))

@@ -135,6 +135,17 @@ internal class SessionLog(
         }
     }
 
+    /** RED stub — replaced by the real line (TRY-02). */
+    @Suppress("UNUSED_PARAMETER")
+    fun serverAttempt(
+        attempt: Int,
+        outcome: String,
+        exception: String?,
+        sawOpen: Boolean,
+        closeCode: Int?,
+        responseCode: Int?,
+    ) = Unit
+
     // --- internals ------------------------------------------------------------------------------------
 
     private inline fun write(kind: String, fill: (JSONObject) -> Unit) {
@@ -173,6 +184,7 @@ internal class SessionLog(
         const val KIND_RESTART = "restart"
         const val KIND_READY = "ready"
         const val KIND_ERROR = "error"
+        const val KIND_SERVER_ATTEMPT = "server-attempt"
 
         /**
          * A log rooted at the application's own external files directory.
