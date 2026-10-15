@@ -178,6 +178,17 @@ internal class SttEngineImpl(
     override val finals: Flow<FinalSegment> = finalsChannel.receiveAsFlow()
 
     /**
+     * Ends [finals] for good: every final already sent is still delivered, then the collector
+     * completes. Only for an owner that will never start this instance again — [BackendSelector],
+     * which builds a fresh native engine per session and calls this once that session has stopped
+     * or failed, so its forwarding collector drains and ends. A host's own engine never calls it
+     * (a host engine is reused across sessions). A later send is dropped.
+     */
+    fun closeFinals() {
+        finalsChannel.close()
+    }
+
+    /**
      * The last segment [emitFinal] committed this session (LAST-01, D-05) — written synchronously at
      * the one native emit point, as the SAME instance [finals] delivers, so a host reads the tail
      * [stop] flushed the moment [stop] returns. `@Volatile` because a host may read it off the main

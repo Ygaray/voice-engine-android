@@ -27,7 +27,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.min
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -133,14 +135,36 @@ internal class BackendSelector(
 
     /**
      * Parent of the CURRENT session's forwarding collectors ([forwardServer], [startNative]) — every
-     * one except the two `finals` collectors. Cancelled and replaced at the top of [runStart], so a
+     * one except the `finals` collectors. Cancelled and replaced at the top of [runStart], so a
      * previous session's state/partial/level/warning/error collectors can never write into the next
-     * session's flows (and no longer pile up on a reused engine). The `finals` collectors stay on
-     * [scope] instead: [finals] is LOSSLESS, so a previous session's committed text is delivered
-     * rather than risk being cancelled away. `internal` only so a test can observe the cancellation.
+     * session's flows (and no longer pile up on a reused engine). The `finals` collectors are not
+     * under it: [finals] is LOSSLESS, so they are never cancelled. They are drained and ended
+     * instead — see [finalsForwarders]. `internal` only so a test can observe the cancellation.
      */
     internal var sessionForwarders: Job = SupervisorJob(scopeJob)
         private set
+
+    /** One `finals` collector and the call that ends its source. See [finalsForwarders]. */
+    private class FinalsForwarder(val job: Job, val closeSource: () -> Unit)
+
+    /**
+     * The current session's `finals` collectors, one per backend it forwarded (a server, a native
+     * engine, or both after a handoff). Main-confined.
+     *
+     * [finals] is lossless, so these are never cancelled. They are retired by
+     * [retireFinalsForwarders]: each backend's own `finals` is closed, and each collector is joined
+     * once it has handed everything still buffered to [finals] and completed. That happens when
+     * [stop] has settled the session, and again at the top of [runStart] for a session that ended
+     * without a `stop()` (a terminal error). So a previous session's final is always delivered
+     * BEFORE the next session resets anything or emits a single event, and no collector outlives its
+     * session.
+     */
+    private val finalsForwarders = mutableListOf<FinalsForwarder>()
+
+    /** The current session's live `finals` collectors. `internal` only so a test can prove they
+     *  complete. Main-confined. */
+    internal val finalsForwarderJobs: List<Job>
+        get() = finalsForwarders.map { it.job }
 
     private val _state = MutableStateFlow(EngineState.Idle)
     override val state: StateFlow<EngineState> = _state.asStateFlow()
@@ -297,8 +321,13 @@ internal class BackendSelector(
         // be cleared here, or [lastFinal] would hand a host a previous session's text and the
         // one-shot handoff guard would stay spent. [start] runs this only when no session is
         // starting, live or stopping (see its re-entry guard), so clearing the active references is
-        // safe. The previous session's forwarding collectors are cancelled first, so none of them can
-        // write into this session's state/partial/level/warnings/errors (see [sessionForwarders]).
+        // safe. The previous session's forwarding collectors are retired first, so none of them can
+        // write into this session: its `finals` collectors drain and end (a session that ended
+        // without a stop() still has them — see [finalsForwarders]), and the rest are cancelled.
+        // The drain cannot be interrupted half-way; a stop() that cancelled this job in the meantime
+        // then ends it before any reset.
+        withContext(NonCancellable) { retireFinalsForwarders() }
+        currentCoroutineContext().ensureActive()
         sessionForwarders.cancel()
         sessionForwarders = SupervisorJob(scopeJob)
         terminal = false
@@ -448,7 +477,8 @@ internal class BackendSelector(
      * [activeServer], so its identity guard makes it a no-op: a stop can never start the native
      * recognizer. The forwarding collectors from [forwardServer] keep running after the detach, so
      * the server's flushed tail final still reaches [finals] and [state] still follows the backend
-     * to [EngineState.Idle].
+     * to [EngineState.Idle]. Once the flush has settled, the `finals` collectors are drained and
+     * ended ([settleStoppedSession]), so the tail is on [finals] before `stop()` returns.
      *
      * **Threading.** Runs on [mainDispatcher], like [start]'s guard (see its KDoc): the cancel, the
      * abandon and the detach below are one uninterrupted main-thread step, so a [runStart] that is
@@ -486,14 +516,33 @@ internal class BackendSelector(
     }
 
     /**
-     * The session is over: [state] ends at [EngineState.Idle], the same as [SttEngineImpl.stop].
-     * A committed backend's own forwarded state already took it there. This covers a stop during
-     * the try-server window, where [runStart] is cancelled before any backend owns [state] and it
-     * would otherwise stay at [EngineState.Connecting]. An [EngineState.Error] is left alone, as
-     * [SttEngineImpl.stop] leaves its own.
+     * The session is over. Every backend has stopped (the flush has settled), so its `finals`
+     * collectors are drained and ended ([retireFinalsForwarders]): the flushed tail is on [finals]
+     * before `stop()` returns, and nothing of this session can reach the next one.
+     *
+     * Then [state] ends at [EngineState.Idle], the same as [SttEngineImpl.stop]. A committed
+     * backend's own forwarded state already took it there. This covers a stop during the try-server
+     * window, where [runStart] is cancelled before any backend owns [state] and it would otherwise
+     * stay at [EngineState.Connecting]. An [EngineState.Error] is left alone, as [SttEngineImpl.stop]
+     * leaves its own.
      */
-    private fun settleStoppedSession() {
+    private suspend fun settleStoppedSession() {
+        retireFinalsForwarders()
         if (_state.value != EngineState.Error) setState(EngineState.Idle)
+    }
+
+    /**
+     * Ends the current session's `finals` collectors without losing a final (see
+     * [finalsForwarders]): closes every source, then joins every collector. Each collector body
+     * only does non-suspending sends, so a join returns as soon as main has run the buffered sends.
+     * Main-confined; called only once every backend in the list is finished.
+     */
+    private suspend fun retireFinalsForwarders() {
+        if (finalsForwarders.isEmpty()) return
+        val retiring = finalsForwarders.toList()
+        finalsForwarders.clear()
+        retiring.forEach { it.closeSource() }
+        retiring.forEach { it.job.join() }
     }
 
     private suspend fun detachAndFlush() {
@@ -547,13 +596,15 @@ internal class BackendSelector(
                 _events.tryEmit(SttEvent.Partial(text))
             }
         }
-        // Not under [forwarders]: [finals] is lossless (see [sessionForwarders]).
-        scope.launch {
+        // Not under [forwarders]: [finals] is lossless, so this one is drained, never cancelled
+        // (see [finalsForwarders]).
+        val finalsJob = scope.launch {
             serverBackend.finals.collect { segment ->
                 finalsChannel.trySend(segment)
                 _events.tryEmit(SttEvent.Final(segment))
             }
         }
+        finalsForwarders += FinalsForwarder(finalsJob, serverBackend::closeFinals)
         scope.launch(forwarders) {
             serverBackend.errors.collect { handleServerDrop(serverBackend) }
         }
@@ -659,13 +710,15 @@ internal class BackendSelector(
                 _events.tryEmit(SttEvent.Partial(text))
             }
         }
-        // Not under [forwarders]: [finals] is lossless (see [sessionForwarders]).
-        scope.launch {
+        // Not under [forwarders]: [finals] is lossless, so this one is drained, never cancelled
+        // (see [finalsForwarders]).
+        val finalsJob = scope.launch {
             native.finals.collect { segment ->
                 finalsChannel.trySend(segment)
                 _events.tryEmit(SttEvent.Final(segment))
             }
         }
+        finalsForwarders += FinalsForwarder(finalsJob, native::closeFinals)
         scope.launch(forwarders) {
             native.errors.collect { error ->
                 errorsChannel.trySend(error)

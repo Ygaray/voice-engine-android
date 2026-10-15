@@ -8,6 +8,7 @@ import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.PreflightHandle
 import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttError
+import io.github.ygaray.sttengine.SttEvent
 import java.io.IOException
 import java.net.ConnectException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -424,7 +425,134 @@ class BackendSelectorStopTest {
         assertEquals(listOf(FinalSegment("open words", 9)), h.finals)
     }
 
+    // --- a session's finals collectors end with it (21-W46 cycle 3, finding 2) --------------------
+    //
+    // `finals` is lossless, so its forwarding collectors are never cancelled. Before this fix they
+    // were never ended either: each stayed suspended on its backend's channel for the selector's
+    // whole life, and only dispatch order kept a final it still held from reaching the host after
+    // the next session had begun. Now a settled stop (or the next start, after a session that ended
+    // on an error) closes each backend's `finals` and joins its collector.
+
+    /** stop(), then — inside the same coroutine, before the test advances anything — whether every
+     *  collector in [forwarders] had already completed normally, and how many were still live. */
+    private class StopReadout {
+        var forwardersDoneAtReturn: Boolean? = null
+        var liveAtReturn: Int? = null
+    }
+
+    private fun TestScope.stopAndRead(h: Harness, forwarders: List<Job>, then: suspend () -> Unit = {}): Pair<Job, StopReadout> {
+        val readout = StopReadout()
+        val caller = launch(h.main) {
+            h.selector.stop()
+            readout.forwardersDoneAtReturn = forwarders.all { it.isCompleted && !it.isCancelled }
+            readout.liveAtReturn = h.selector.finalsForwarderJobs.size
+            then()
+        }
+        runCurrent()
+        return caller to readout
+    }
+
+    private fun assertRetiredAtReturn(readout: StopReadout) {
+        assertEquals(
+            "every finals collector must have drained and completed (not been cancelled) by the time stop() returns",
+            true,
+            readout.forwardersDoneAtReturn,
+        )
+        assertEquals("no finals collector may outlive the stopped session", 0, readout.liveAtReturn)
+    }
+
+    @Test
+    fun `the server finals collector has delivered the flushed tail and completed when stop returns`() = runTest {
+        val h = committedServerSession()
+        val forwarders = h.selector.finalsForwarderJobs
+        assertEquals(1, forwarders.size)
+
+        val (caller, readout) = stopAndRead(h, forwarders)
+        answerFlush(h)
+
+        assertTrue(caller.isCompleted)
+        assertRetiredAtReturn(readout)
+        assertEquals(listOf(FinalSegment("tail", 5)), h.finals)
+        assertEquals(FinalSegment("tail", 5), h.selector.lastFinal)
+    }
+
+    @Test
+    fun `a final committed at the flush bound reaches the stopping session, never the next one`() = runTest {
+        val h = committedServerSession()
+        val events = mutableListOf<SttEvent>()
+        backgroundScope.launch(h.main) { h.selector.events.collect { events += it } }
+        h.fakeWs.fireMessage("""{"type":"partial","text":"open words","segmentId":9}""")
+        runCurrent()
+        val forwarders = h.selector.finalsForwarderJobs
+
+        // The local commit at the bound is sent from inside stop() itself, so its forwarding hop is
+        // still pending as the flush returns; the next start() is issued the instant stop() returns.
+        val (caller, readout) = stopAndRead(h, forwarders) { h.selector.start() }
+        advanceTimeBy(ServerBackend.STOP_FLUSH_TIMEOUT_MS)
+        runCurrent()
+        assertRetiredAtReturn(readout)
+        assertEquals("the next session's attempt is in flight", 2, h.fakeWs.createCount)
+
+        h.fakeWs.fireOpen()
+        h.fakeWs.fireMessage("""{"type":"ready"}""")
+        h.fakeWs.fireMessage("""{"type":"final","text":"next","segmentId":1}""")
+        runCurrent()
+        assertTrue(caller.isCompleted)
+
+        assertEquals(listOf(FinalSegment("open words", 9), FinalSegment("next", 1)), h.finals)
+        val oldFinal = events.indexOfFirst { it is SttEvent.Final && it.segment.text == "open words" }
+        val nextConnecting = events.indexOfLast { it is SttEvent.State && it.state == EngineState.Connecting }
+        assertTrue("the old session's final must precede the next session's first event: $events", oldFinal in 0 until nextConnecting)
+        assertEquals(
+            "exactly one final event after the next session began",
+            listOf("next"),
+            events.drop(nextConnecting).filterIsInstance<SttEvent.Final>().map { it.segment.text },
+        )
+        assertEquals("only the next session's collector is live", 1, h.selector.finalsForwarderJobs.size)
+    }
+
+    @Test
+    fun `the native finals collector has delivered the committed partial and completed when stop returns`() = runTest {
+        val h = nativeSession()
+        h.fakeHandle.firePartial("native words")
+        runCurrent()
+        val forwarders = h.selector.finalsForwarderJobs
+        assertEquals(1, forwarders.size)
+
+        val (caller, readout) = stopAndRead(h, forwarders)
+
+        assertTrue(caller.isCompleted)
+        assertRetiredAtReturn(readout)
+        assertEquals(listOf("native words"), h.finals.map { it.text })
+    }
+
+    @Test
+    fun `a session that ended on a terminal error has its finals collector retired before the next session begins`() =
+        runTest {
+            val h = nativeSession()
+            val forwarders = h.selector.finalsForwarderJobs
+            assertEquals(1, forwarders.size)
+            h.fakeHandle.fireError(ERROR_LANGUAGE_NOT_SUPPORTED)
+            runCurrent()
+            assertEquals(EngineState.Error, h.selector.state.value)
+            assertTrue("an error alone does not retire the collector", forwarders.none { it.isCompleted })
+
+            launch(h.main) { h.selector.start() }
+            runCurrent()
+
+            assertEquals("the next session began", 2, h.fakeWs.createCount)
+            assertTrue(
+                "the old collector must have drained and completed, not been cancelled: $forwarders",
+                forwarders.all { it.isCompleted && !it.isCancelled },
+            )
+            assertEquals("only the next session's collectors may be live", 0, h.selector.finalsForwarderJobs.size)
+
+            launch(h.main) { h.selector.stop() }
+            runCurrent()
+        }
+
     private companion object {
         const val WINDOW_MS = 5_000L
+        const val ERROR_LANGUAGE_NOT_SUPPORTED = 12
     }
 }

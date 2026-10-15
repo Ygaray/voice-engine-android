@@ -245,6 +245,17 @@ internal class ServerBackend(
     val finals: Flow<FinalSegment> = finalsChannel.receiveAsFlow()
 
     /**
+     * Ends [finals] for good: every final already sent is still delivered, then the collector
+     * completes. [BackendSelector] calls it once this instance is finished — after [stop] returned
+     * (the flush has settled, so nothing more can be sent), or after it failed — so its forwarding
+     * collector drains and ends instead of staying suspended for the life of the selector. Never
+     * call it on an instance that may still commit a final: a later send is dropped.
+     */
+    fun closeFinals() {
+        finalsChannel.close()
+    }
+
+    /**
      * The last segment this instance committed (LAST-01, D-05) — written synchronously at both of
      * its emit-origin points (the [ServerFrame.Final] branch and [commitLivePartialLocally]) as the
      * SAME instance sent on [finals], so [BackendSelector.lastFinal] can read the flushed tail the
