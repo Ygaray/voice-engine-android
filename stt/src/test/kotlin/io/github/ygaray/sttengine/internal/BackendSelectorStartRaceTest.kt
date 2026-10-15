@@ -5,9 +5,11 @@ import androidx.test.core.app.ApplicationProvider
 import io.github.ygaray.sttengine.BackendPreference
 import io.github.ygaray.sttengine.PreflightHandle
 import io.github.ygaray.sttengine.SttConfig
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineDispatcher
@@ -17,10 +19,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -44,8 +45,10 @@ import org.robolectric.annotation.Config
  * each round's attempt simply waits on a socket that never answers until `stop()` abandons it.
  *
  * Fails fast: a round is asserted the moment the main thread has drained, the loop ends at the first
- * double start, every wait is bounded, the session log is disabled, and the whole test is capped at
- * [ROUNDS] rounds or [BUDGET_MS], whichever comes first.
+ * double start, and the session log is disabled. The whole test runs under ONE deadline
+ * ([BUDGET_MS]): every wait — the spin barrier, the callers, each main-thread drain and each
+ * round's `stop()` — is bounded by the time left on it, and a round only begins with at least
+ * [ROUND_RESERVE_MS] left. It ends after [ROUNDS] rounds or at that reserve, whichever comes first.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -70,16 +73,51 @@ class BackendSelectorStartRaceTest {
 
     private fun context(): Context = ApplicationProvider.getApplicationContext()
 
-    /** Runs every task queued on the main executor so far, [times] times over (each pass may queue more). */
-    private fun drainMain(times: Int = 1) {
-        repeat(times) { mainExecutor.submit {}.get(DRAIN_MS, TimeUnit.MILLISECONDS) }
+    /** The one deadline the whole test runs under; every wait is bounded by what is left of it. */
+    private class Deadline(budgetMs: Long) {
+        private val endNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(budgetMs)
+        val endNanoTime: Long get() = endNanos
+        fun remainingMs(): Long = maxOf(0L, TimeUnit.NANOSECONDS.toMillis(endNanos - System.nanoTime()))
+        fun expired(): Boolean = System.nanoTime() >= endNanos
+    }
+
+    /** Runs every task queued on the main executor so far, [times] times over (each pass may queue
+     *  more), within what is left of [deadline]. */
+    private fun drainMain(deadline: Deadline, times: Int = 1) {
+        repeat(times) { mainExecutor.submit {}.get(deadline.remainingMs(), TimeUnit.MILLISECONDS) }
+    }
+
+    /**
+     * `stop()` within what is left of [deadline]; `false` if it did not return in time. `stop()` is
+     * non-cancellable by design (a cancelled caller must still tear down), so a coroutine timeout
+     * cannot bound it — the wait is on a future instead.
+     */
+    private fun stopWithin(selector: BackendSelector, deadline: Deadline): Boolean {
+        val done = CompletableFuture<Unit>()
+        CoroutineScope(Dispatchers.Unconfined).launch {
+            try {
+                selector.stop()
+                done.complete(Unit)
+            } catch (t: Throwable) {
+                done.completeExceptionally(t)
+            }
+        }
+        return try {
+            done.get(deadline.remainingMs(), TimeUnit.MILLISECONDS)
+            true
+        } catch (timeout: TimeoutException) {
+            false
+        }
     }
 
     @Test
     fun `two concurrent off-main start calls run exactly one try-server loop`() {
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(BUDGET_MS)
+        val deadline = Deadline(BUDGET_MS)
         var rounds = 0
-        while (rounds < ROUNDS && System.nanoTime() < deadline) {
+        var stopTimedOut = false
+        // A round only begins with ROUND_RESERVE_MS still left, so its waits have a real bound and
+        // the whole test — rounds, waits and stops — ends inside BUDGET_MS.
+        while (rounds < ROUNDS && !stopTimedOut && deadline.remainingMs() > ROUND_RESERVE_MS) {
             rounds += 1
             val loops = AtomicInteger()
             val fakeWs = FakeWebSocketFactory()
@@ -111,19 +149,18 @@ class BackendSelectorStartRaceTest {
                 val calls = List(2) {
                     callers.submit {
                         arrived.incrementAndGet()
-                        // Spin, so both callers are released as close together as possible (bounded).
-                        val spinUntil = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DRAIN_MS)
-                        while (!go.get() && System.nanoTime() < spinUntil) { /* spin */ }
+                        // Spin, so both callers are released as close together as possible
+                        // (bounded by the test's deadline).
+                        while (!go.get() && System.nanoTime() < deadline.endNanoTime) { /* spin */ }
                         callerScope.launch(Dispatchers.Unconfined) { selector.start() }
                     }
                 }
-                val arriveBy = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DRAIN_MS)
-                while (arrived.get() < 2 && System.nanoTime() < arriveBy) { /* both callers on the spin */ }
+                while (arrived.get() < 2 && !deadline.expired()) { /* both callers on the spin */ }
                 go.set(true)
-                calls.forEach { it.get(DRAIN_MS, TimeUnit.MILLISECONDS) }
+                calls.forEach { it.get(deadline.remainingMs(), TimeUnit.MILLISECONDS) }
 
                 // Let every queued check, install and runStart() reach its first suspension.
-                drainMain(times = 4)
+                drainMain(deadline, times = 4)
                 assertTrue("round $rounds: no start() reached the try-server loop", loops.get() >= 1)
                 assertEquals(
                     "round $rounds: two concurrent start() calls must run exactly one try-server loop",
@@ -131,10 +168,11 @@ class BackendSelectorStartRaceTest {
                     loops.get(),
                 )
             } finally {
-                runBlocking { withTimeout(DRAIN_MS) { selector.stop() } }
+                stopTimedOut = !stopWithin(selector, deadline)
                 callerScope.cancel()
             }
         }
+        assertFalse("round $rounds: stop() must return inside the test's deadline", stopTimedOut)
         assertTrue("the race must actually be exercised", rounds >= MIN_ROUNDS)
     }
 
@@ -144,7 +182,9 @@ class BackendSelectorStartRaceTest {
         const val WINDOW_MS = 10_000L
         const val ROUNDS = 400
         const val MIN_ROUNDS = 20
-        const val BUDGET_MS = 20_000L
-        const val DRAIN_MS = 5_000L
+        /** The whole test's deadline: no wait, round or stop can run past it. */
+        const val BUDGET_MS = 25_000L
+        /** No new round begins with less than this left (a healthy round takes milliseconds). */
+        const val ROUND_RESERVE_MS = 8_000L
     }
 }
