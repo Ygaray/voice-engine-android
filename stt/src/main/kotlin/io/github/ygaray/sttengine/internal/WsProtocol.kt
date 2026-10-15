@@ -29,11 +29,9 @@ internal const val SAMPLE_RATE: Int = 16_000
 /**
  * One 16 kHz output frame == one Silero VAD chunk (mirrors `protocol.ts:24`).
  *
- * IN-01: intentionally reserved, not yet referenced by any production call site. The continuous
- * audio-pump loop that will chunk captured PCM into frames of this size before handing them to
- * [ServerBackend.sendPcmFrame] is deferred to Plan 09-03 (see [ServerBackend]'s own KDoc) — this
- * constant already matches the wire contract so that work lands as a pure wiring change, not a
- * second protocol decision.
+ * Used by [ServerBackend]'s PCM pump (Phase 21, SRV-05): `FRAME_BYTES = FRAME_SAMPLES * 2` is the
+ * whole-frame size the pump accumulates captured PCM into before each frame goes through
+ * [ServerBackend.sendPcmFrame] — every binary frame on the wire is exactly this many samples.
  */
 internal const val FRAME_SAMPLES: Int = 512
 

@@ -106,7 +106,7 @@ internal class OkHttpWebSocketFactory(
  * same `setState` single-mutation-point discipline (RESEARCH.md Pattern 4) — but it does NOT port
  * `web/src/reconnect.ts`'s exponential-backoff keep-capture-warm reconnect loop: D-03 already
  * resolves post-commit drops differently (a one-way handoff to native, owned by
- * [BackendSelector]), and the mid-session handoff itself is Plan 09-02/09-03 scope, not this plan.
+ * [BackendSelector]'s `handleServerDrop`).
  *
  * ## One connection attempt per instance
  *
@@ -125,7 +125,8 @@ internal class OkHttpWebSocketFactory(
  *
  * ## The server-path microphone (Phase 9 Task 1, SEL-04)
  *
- * [pcmSourceFactory] opens [audioSource] once the session reaches [ServerFrame.Ready] — mirroring
+ * [pcmSourceFactory] (the microphone, or in a debug build an armed [DebugAudioSourceHolder] feed)
+ * opens [audioSource] once the session reaches [ServerFrame.Ready] — mirroring
  * Pattern 3's "`ServerBackend` calls `AudioRecordPcmSource.open(16_000)` directly rather than
  * hand-rolling a second `AudioRecord` wrapper." [releaseAudioSource] is the release half
  * [BackendSelector]'s mid-session handoff calls BEFORE any native `SpeechRecognizer` acquire — two
@@ -158,7 +159,15 @@ internal class ServerBackend(
     private val serverUrl: String,
     private val language: String,
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
-    private val pcmSourceFactory: PcmSourceFactory = AudioRecordPcmSource,
+    /** The server-path capture source (Phase 21, D-08). The default consults
+     *  [DebugAudioSourceHolder] before falling back to the microphone — the same idiom as
+     *  [AudioSourcePipe]'s `sourceFactory` — so a debug build can feed this path a fixed WAV for a
+     *  reproducible Gate-1 run. Release builds never write that holder, so there this always
+     *  resolves to [AudioRecordPcmSource]. It is read once per construction, and the selector builds
+     *  a fresh instance per `start()`, so arming before `start()` covers that session. An explicit
+     *  argument always wins over the holder. */
+    private val pcmSourceFactory: PcmSourceFactory =
+        DebugAudioSourceHolder.factory ?: AudioRecordPcmSource,
     private val backpressureGate: ServerBackpressureGate = ServerBackpressureGate(),
     corrections: CorrectionRuleset? = null,
     private val monotonicMs: () -> Long = { System.currentTimeMillis() },
