@@ -3,8 +3,10 @@ package io.github.ygaray.sttengine.internal
 import java.io.IOException
 import java.net.ConnectException
 import java.net.InetAddress
+import java.net.Proxy
 import java.net.ServerSocket
 import java.net.UnknownHostException
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -17,6 +19,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.SocketEffect
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.WebSocket
@@ -75,8 +78,8 @@ class ServerConnectRealSocketTest {
 
     private fun serverUrl(): String = "ws://$LOOPBACK:${server.port}/"
 
-    private fun newBackend(url: String): ServerBackend = ServerBackend(
-        webSocketFactory = OkHttpWebSocketFactory(client),
+    private fun newBackend(url: String, httpClient: OkHttpClient = client): ServerBackend = ServerBackend(
+        webSocketFactory = OkHttpWebSocketFactory(httpClient),
         serverUrl = url,
         language = "en",
         mainDispatcher = mainDispatcher,
@@ -115,16 +118,30 @@ class ServerConnectRealSocketTest {
     @Test
     fun `an unknown host fast-fails`() = runBlocking {
         withTimeout(10_000) {
-            val backend = newBackend("ws://stt-test-host.invalid/")
+            // No real DNS (21-W46 review): the client's resolver is an injected OkHttp `Dns` that
+            // fails every lookup the way the platform resolver does for a name that does not exist,
+            // and NO_PROXY keeps a system proxy selector from routing around it. The failure still
+            // travels the real OkHttp route-selection and WebSocket stack to `onFailure`.
+            val lookups = CopyOnWriteArrayList<String>()
+            val unresolvable = client.newBuilder()
+                .proxy(Proxy.NO_PROXY)
+                .dns(
+                    Dns { host ->
+                        lookups += host
+                        throw UnknownHostException("$host: injected test resolver has no address")
+                    },
+                )
+                .build()
+            val backend = newBackend("ws://$UNRESOLVABLE_HOST/", unresolvable)
 
-            assertEquals(false, connect(backend, boundMs = 8_000L))
+            assertEquals(false, connect(backend))
             val observation = observe(backend)
-            // UnknownHostException from the resolver, or ConnectException where a resolver answers
-            // with an address nothing listens on — both are pre-answer, both fast-fail.
+            assertEquals("OkHttp must resolve through the injected Dns", listOf(UNRESOLVABLE_HOST), lookups)
             assertTrue(
-                "expected UnknownHostException or ConnectException, got ${observation.throwable}",
-                observation.throwable is UnknownHostException || observation.throwable is ConnectException,
+                "expected the injected UnknownHostException, got ${observation.throwable}",
+                observation.throwable is UnknownHostException,
             )
+            assertFalse(observation.sawOpen)
             assertEquals(ConnectFailureClass.FastFail, classifyConnectFailure(observation))
         }
     }
@@ -239,5 +256,6 @@ class ServerConnectRealSocketTest {
 
     private companion object {
         const val LOOPBACK = "127.0.0.1"
+        const val UNRESOLVABLE_HOST = "stt-test-host.invalid"
     }
 }
