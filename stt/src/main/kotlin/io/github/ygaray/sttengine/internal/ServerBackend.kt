@@ -323,6 +323,10 @@ internal class ServerBackend(
     var lastError: SttError? = null
         private set
 
+    /** RED stub — replaced by the recorded observation (TRY-02). */
+    internal val connectObservation: ConnectObservation
+        get() = ConnectObservation()
+
     /**
      * Opens the WebSocket, sends the config frame on `onOpen`, and resumes `true` only once a
      * [ServerFrame.Ready] frame is parsed. Resumes `false` on any terminal failure reached before
