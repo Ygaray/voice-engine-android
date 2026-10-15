@@ -152,6 +152,12 @@ public interface SttEngine {
      * The open partial is flushed as a final before teardown, so text the user had already spoken
      * is committed rather than dropped. Returns the engine to [EngineState.Idle]. Safe to call in
      * any state, including from a terminal error.
+     *
+     * **Latency on the server backend:** `stop()` sends the protocol `stop` token and waits up to
+     * about 2.5 s for the server to flush the tail (committing the open partial locally if the
+     * flush does not finish in time), so the flushed tail is on [finals] and in [lastFinal] when it
+     * returns. It cannot be cut short by cancelling the caller. On the native backend it returns
+     * promptly. Call it from a coroutine rather than blocking a UI thread on it.
      */
     public suspend fun stop()
 }
