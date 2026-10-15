@@ -153,3 +153,51 @@ public suspend fun checkLanguageAvailability(
     context: Context,
     langs: Set<String> = setOf("en", "es"),
 ): Map<String, LanguageAvailability> = LanguagePacks().check(context, langs)
+
+/**
+ * Ask this device's recognition service to download the on-device language pack for [lang], and
+ * learn whether it **accepted** the request — not whether the download has finished.
+ *
+ * ```kotlin
+ * lifecycleScope.launch {
+ *     if (checkLanguageAvailability(context)["es"] == LanguageAvailability.DOWNLOADABLE) {
+ *         val accepted = requestLanguagePackDownload(context, "es")
+ *         // later: checkLanguageAvailability(context) again to see whether it has arrived
+ *     }
+ * }
+ * ```
+ *
+ * **Keys.** Only the exact keys `"en"` and `"es"` are accepted. Anything else — including a
+ * region-qualified tag such as `en-US` or a case variant such as `EN` — returns `false` without
+ * contacting the recognition service.
+ *
+ * **Already there.** If the pack is already installed, or a download of it is already pending, this
+ * returns `true` without asking the platform again — so no system prompt appears for a pack the user
+ * already has.
+ *
+ * **What `true` means.** The platform accepted the request. On Android 14 and later that means it
+ * acknowledged, scheduled or started the download (a lost progress feed still counts as accepted). On
+ * Android 13 it only means the request was handed to the platform without an error — that version
+ * reports nothing back.
+ *
+ * **What `false` means.** The request was refused, the language is unsupported on this device, or
+ * acceptance was not confirmed within about five seconds — a user-approval prompt can outlast that.
+ * Call [checkLanguageAvailability] again rather than retrying this in a loop.
+ *
+ * **The download itself** needs a network connection and may wait for an unmetered one, and the pack
+ * can keep reading [LanguageAvailability.DOWNLOADABLE] while it downloads. No progress is reported —
+ * any download UI is the host's job.
+ *
+ * **Threading.** Call it from a coroutine; it enters the main thread itself to talk to the
+ * recognition service. **Never call it from `runBlocking` on the main thread.** Call it when no
+ * dictation session is active; it briefly creates and destroys its own on-device recognizer.
+ *
+ * It never throws, except for cancellation of the calling coroutine. Cancelling does not recall a
+ * request already handed to the platform.
+ *
+ * @param context any context; only its application context is used, and nothing is retained.
+ * @param lang the language to download, as a bare key: `"en"` or `"es"`.
+ * @return `true` if the platform accepted the request (or the pack is already installed or pending).
+ */
+public suspend fun requestLanguagePackDownload(context: Context, lang: String): Boolean =
+    LanguagePacks().requestDownload(context, lang)

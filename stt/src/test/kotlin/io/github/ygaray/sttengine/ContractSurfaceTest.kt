@@ -112,6 +112,14 @@ public class ContractSurfaceTest {
         assertNotNull(preflight)
     }
 
+    @Test
+    public fun `pack download keeps its frozen shape`() {
+        // A shape change (parameter types, order, return type, suspend-ness) stops this compiling.
+        // The function is deliberately not called: this pins the signature, not the behavior.
+        val download: suspend (Context, String) -> Boolean = ::requestLanguagePackDownload
+        assertNotNull(download)
+    }
+
     // --- SttConfig (web/src/types.ts:32-39, D-13) -----------------------------------------------
 
     @Test

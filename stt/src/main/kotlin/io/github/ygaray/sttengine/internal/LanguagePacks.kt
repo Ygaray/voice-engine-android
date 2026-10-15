@@ -50,8 +50,8 @@ internal suspend fun RecognizerHandle.autoPackAvailability(): Map<String, Langua
  * finishing), so every call asks the recognition service afresh, and two concurrent calls each own
  * their own handle.
  *
- * The transient handle only ever answers support queries: no listener is registered and no
- * recognition is started on it.
+ * The transient handle only ever answers support queries and, for [requestDownload], asks for one
+ * model download: no listener is registered and no recognition is started on it.
  *
  * @param handleFactory the ON-DEVICE recognizer factory. Injected so tests never touch a platform
  *   factory.
@@ -106,9 +106,50 @@ internal class LanguagePacks(
         }
     }
 
-    /** RED stub — replaced in the GREEN commit. */
-    @Suppress("UNUSED_PARAMETER")
-    suspend fun requestDownload(context: Context, lang: String): Boolean = false
+    /**
+     * Asks the platform to download [lang]'s on-device pack, and answers whether it ACCEPTED.
+     *
+     * Query-then-trigger on ONE transient handle, through the same [autoPackAvailability] question
+     * [check] and a native `"auto"` start ask:
+     * - A key the bilingual allowlist does not recognize → `false` before anything is constructed,
+     *   so no host-supplied string ever reaches the platform — only the allowlist's exact tag does.
+     * - INSTALLED or PENDING → `true` with NO platform trigger: there is nothing to download, and a
+     *   trigger could show system UI or spend the user's data for nothing.
+     * - UNSUPPORTED → `false`.
+     * - DOWNLOADABLE or UNKNOWN → [RecognizerHandle.triggerModelDownload] with the exact tag, and its
+     *   answer. A trigger that throws reads `false`.
+     * - A recognizer that cannot be constructed → `false`.
+     * - A handle whose cleanup fails → `false` ("not confirmed — re-query"), whatever the path.
+     *
+     * The caller's cancellation always propagates — it is never turned into `false` — and the handle
+     * is still destroyed. A request already handed to the platform is not recalled.
+     *
+     * The block runs inside [withTransientHandle]'s main-thread `withContext`, which is what lets the
+     * platform adapter's main-thread-only trigger pass its check.
+     */
+    suspend fun requestDownload(context: Context, lang: String): Boolean {
+        val tag = allowlistTagFor(lang) ?: return false
+
+        return withTransientHandle(
+            context = context,
+            unavailable = false,
+            cleanupFailed = false,
+        ) { handle ->
+            // No catch around the query: a throwing query already comes back from
+            // autoPackAvailability() as UNKNOWN for every tag, and UNKNOWN attempts the trigger.
+            when (handle.autoPackAvailability()[tag] ?: LanguageAvailability.UNKNOWN) {
+                LanguageAvailability.INSTALLED, LanguageAvailability.PENDING -> true
+                LanguageAvailability.UNSUPPORTED -> false
+                LanguageAvailability.DOWNLOADABLE, LanguageAvailability.UNKNOWN -> try {
+                    handle.triggerModelDownload(tag)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (failure: RuntimeException) {
+                    false
+                }
+            }
+        }
+    }
 
     /**
      * The single create/use/destroy skeleton for a transient recognizer handle.

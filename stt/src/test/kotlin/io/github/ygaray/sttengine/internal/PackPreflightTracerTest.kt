@@ -8,6 +8,7 @@ import android.speech.SpeechRecognizer
 import androidx.test.core.app.ApplicationProvider
 import io.github.ygaray.sttengine.LanguageAvailability
 import io.github.ygaray.sttengine.checkLanguageAvailability
+import io.github.ygaray.sttengine.requestLanguagePackDownload
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -32,6 +33,10 @@ import org.robolectric.shadows.ShadowSpeechRecognizer
  * The background thread matters: the function promises to enter the main thread itself (D-09). If
  * it did not, the shadowed on-device factory would throw its main-thread check and the call would
  * never reach the shadow.
+ *
+ * The PACK-02 rows trace `requestLanguagePackDownload` the same way: an installed pack answers true
+ * with no platform trigger, an unrecognized key never constructs a recognizer, and a background-thread
+ * request reaches the main-thread-only download seam through the orchestration's own main hop.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -115,6 +120,38 @@ class PackPreflightTracerTest {
     }
 
     // --- the model download ------------------------------------------------------------------
+
+    @Test
+    fun `a public download request for an installed pack reads true and never triggers`() {
+        val support = RecognitionSupport.Builder()
+            .setInstalledOnDeviceLanguages(listOf("en-US", "es-US"))
+            .setSupportedOnDeviceLanguages(listOf("en-US", "es-US"))
+            .build()
+
+        val call = PreflightCall { requestLanguagePackDownload(context, "es") }
+        val recognizer = call.awaitRecognizer()
+        shadowOf(recognizer).triggerSupportResult(support)
+        val accepted = call.awaitResult()
+
+        assertTrue("an installed pack reads accepted", accepted)
+        assertNull(
+            "an installed pack must not trigger a platform download",
+            shadowOf(recognizer).latestModelDownloadIntent,
+        )
+        assertTrue("the transient recognizer was not destroyed", shadowOf(recognizer).isDestroyed)
+    }
+
+    @Test
+    fun `a public download request for an unrecognized key reads false without a recognizer`() {
+        val call = PreflightCall { requestLanguagePackDownload(context, "fr") }
+        val accepted = call.awaitResult()
+
+        assertEquals(false, accepted)
+        assertNull(
+            "a recognizer was constructed for a key the allowlist does not recognize",
+            ShadowSpeechRecognizer.getLatestSpeechRecognizer(),
+        )
+    }
 
     @Test
     fun `a background-thread download request puts the main-only seam on the main thread`() {
