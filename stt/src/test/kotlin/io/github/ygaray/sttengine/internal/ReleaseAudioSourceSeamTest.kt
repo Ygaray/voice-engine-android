@@ -1,6 +1,7 @@
 package io.github.ygaray.sttengine.internal
 
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -48,6 +49,9 @@ import org.junit.Test
  * | [theHolderDeclaresItselfNull] | The cell ships pre-armed |
  * | [aNullHolderResolvesToTheMicrophone] | The seam changes rung (c)'s behaviour even when unarmed |
  * | [armingSwapsTheSourceAndDisarmingRestoresIt] | The seam does not actually work, so the whole exercise is theatre |
+ * | [aNullHolderResolvesServerBackendToTheMicrophone] | The server path reads anything but the mic when unarmed (every release build) |
+ * | [armingSwapsServerBackendSourceAndDisarmingRestoresIt] | A file-fed Gate-1 run silently uses the mic on the server path |
+ * | [anExplicitServerBackendFactoryIsNeverOverriddenByTheHolder] | The seam changes what the server-path suites exercise |
  * | [theFrozenApiDumpNamesNoSeamSymbol] | The seam widens the published binary contract |
  */
 class ReleaseAudioSourceSeamTest {
@@ -247,6 +251,61 @@ class ReleaseAudioSourceSeamTest {
         )
     }
 
+    // --- the server path (Phase 21, SRV-05, D-08) ----------------------------------------------
+
+    /**
+     * With nothing armed — which is every release build, where nothing can write the holder — the
+     * server path's capture source is the microphone.
+     */
+    @Test
+    fun aNullHolderResolvesServerBackendToTheMicrophone() {
+        DebugAudioSourceHolder.factory = null
+        assertSame(
+            "an un-armed build must resolve ServerBackend's capture source to AudioRecordPcmSource",
+            AudioRecordPcmSource,
+            defaultPcmSourceFactoryOf(serverBackend()),
+        )
+    }
+
+    /**
+     * Arming the holder before a [ServerBackend] is constructed feeds that backend from the armed
+     * factory (what a reproducible file-fed Gate-1 server session needs); disarming restores the
+     * microphone for backends built afterwards. The default is read per construction, so each
+     * attempt the selector builds sees the holder's current value.
+     */
+    @Test
+    fun armingSwapsServerBackendSourceAndDisarmingRestoresIt() {
+        val armed = PcmSourceFactory { fail("the fake source is never opened by this test"); error("unreachable") }
+
+        DebugAudioSourceHolder.factory = armed
+        assertSame(
+            "a ServerBackend constructed while the holder is armed must read the armed factory",
+            armed,
+            defaultPcmSourceFactoryOf(serverBackend()),
+        )
+
+        DebugAudioSourceHolder.factory = null
+        assertSame(
+            "disarming must return the server path to the microphone for subsequently built backends",
+            AudioRecordPcmSource,
+            defaultPcmSourceFactoryOf(serverBackend()),
+        )
+    }
+
+    /** An explicitly injected factory wins, so the seam perturbs none of the server-path suites. */
+    @Test
+    fun anExplicitServerBackendFactoryIsNeverOverriddenByTheHolder() {
+        val armed = PcmSourceFactory { error("the armed factory must not be consulted") }
+        val injected = PcmSourceFactory { error("the injected factory is never opened by this test") }
+
+        DebugAudioSourceHolder.factory = armed
+        assertSame(
+            "an explicitly injected pcmSourceFactory must win over the debug holder",
+            injected,
+            defaultPcmSourceFactoryOf(serverBackend(pcmSourceFactory = injected)),
+        )
+    }
+
     // --- the frozen surface ---------------------------------------------------------------------
 
     /** The release API dump names nothing from the seam. */
@@ -324,6 +383,38 @@ class ReleaseAudioSourceSeamTest {
         field.isAccessible = true
         val value = field.get(pipe)
         assertNotNull("AudioSourcePipe.sourceFactory resolved to null", value)
+        return value as PcmSourceFactory
+    }
+
+    /**
+     * A [ServerBackend] built the way the selector builds one, minus the network: construction opens
+     * no socket and no microphone. [Dispatchers.Unconfined] keeps this plain-JVM suite off the
+     * Android main looper. A `null` [pcmSourceFactory] leaves the constructor default in force.
+     */
+    private fun serverBackend(pcmSourceFactory: PcmSourceFactory? = null): ServerBackend =
+        if (pcmSourceFactory == null) {
+            ServerBackend(
+                webSocketFactory = FakeWebSocketFactory(),
+                serverUrl = "wss://example.ts.net:8444/",
+                language = "en",
+                mainDispatcher = Dispatchers.Unconfined,
+            )
+        } else {
+            ServerBackend(
+                webSocketFactory = FakeWebSocketFactory(),
+                serverUrl = "wss://example.ts.net:8444/",
+                language = "en",
+                mainDispatcher = Dispatchers.Unconfined,
+                pcmSourceFactory = pcmSourceFactory,
+            )
+        }
+
+    /** The capture factory a [ServerBackend] resolved for itself, without opening anything. */
+    private fun defaultPcmSourceFactoryOf(backend: ServerBackend): PcmSourceFactory {
+        val field = ServerBackend::class.java.getDeclaredField("pcmSourceFactory")
+        field.isAccessible = true
+        val value = field.get(backend)
+        assertNotNull("ServerBackend.pcmSourceFactory resolved to null", value)
         return value as PcmSourceFactory
     }
 
