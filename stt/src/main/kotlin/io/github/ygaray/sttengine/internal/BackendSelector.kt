@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlin.math.min
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -42,23 +44,41 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  * 1. `prefer == OnDevice`, or no `serverUrl` configured: skip the server phase ENTIRELY — no
  *    [ServerBackend]/[WebSocketFactory] construction happens at all on this path (SEL-02).
- * 2. Otherwise, bound [ServerBackend.connect] with `withTimeoutOrNull(tryServerTimeoutMs)` at the
- *    COROUTINE level (RESEARCH.md Pattern 2 / Pitfall 1 — never `OkHttpClient.connectTimeout`
- *    alone, which bounds only the raw TCP+TLS handshake, not the WS-upgrade-then-`ready` round
- *    trip this window actually needs).
+ * 2. Otherwise, run the try-server attempt loop ([tryServer], Phase 21, TRY-02) under ONE
+ *    `withTimeoutOrNull(tryServerTimeoutMs)` at the COROUTINE level (RESEARCH.md Pattern 2 /
+ *    Pitfall 1 — never `OkHttpClient.connectTimeout` alone, which bounds only the raw TCP+TLS
+ *    handshake, not the WS-upgrade-then-`ready` round trip this window actually needs). Each attempt
+ *    is a fresh single-attempt [ServerBackend]; a failed attempt is classified by connection phase
+ *    with [classifyConnectFailure] (D-06):
+ *    - **FastFail** — the host never answered (DNS, refused, unreachable, cleartext refused) or
+ *      rejected the session deterministically (busy close 1013, an `error` frame, a non-5xx upgrade
+ *      answer, a TLS certificate/hostname failure): the loop ends at once.
+ *    - **Retryable** — the host answered but was not ready yet (an EOF before the response
+ *      headers, a handshake the peer terminated, a reset, a 5xx upgrade, a close before `ready`,
+ *      a socket timeout): retried after [RETRY_BACKOFF_MS] (250 → 500 → 1 000 ms, then 1 000 ms).
+ *      This is the tailscale-serve cold start, which fails FAST, so a bigger window alone would not
+ *      help.
+ *    - **A black-holed host** (no callback at all) waits the full window (D-14): the window, not a
+ *      short `connectTimeout`, is the only bound, and a socket timeout is retried rather than
+ *      treated as a reason to fall back early.
  * 3. On success: [backend] becomes [Backend.Server] and every [ServerBackend] flow is forwarded
  *    into this selector's own equivalent flow via one launched collector per property (mirrors
  *    [SttEngineImpl]'s single-state-mutation-point discipline, applied to a whole upstream engine).
- * 4. On timeout/failure: [ServerBackend.abandon] closes the half-open socket without emitting any
- *    host-visible state (D-04's swallow mechanism — the failed instance's flows are simply never
- *    forwarded, so nothing it already produced internally is ever observed). Then:
- *    - `prefer == Server`: [fail] with the typed error [ServerBackend] produced (or
- *      [SttErrorCode.SERVER_UNREACHABLE] if the failure was a bare coroutine timeout that never
- *      reached an OkHttp callback) — no native fallback in this mode (SEL-02's force-server
- *      semantics).
+ * 4. On fast-fail or window expiry: every failed attempt was already abandoned by the loop
+ *    ([ServerBackend.abandon] closes the half-open socket without emitting any host-visible state —
+ *    D-04's swallow mechanism: the failed instances' flows are simply never forwarded). Then:
+ *    - `prefer == Server`: [fail] with the latest typed error an attempt produced (or
+ *      [SttErrorCode.SERVER_UNREACHABLE] if no attempt ever reached an OkHttp callback) — exactly
+ *      one error, no native fallback in this mode (SEL-02's force-server semantics).
  *    - Otherwise (`prefer == Auto`): fall through to native, exactly like the v1.0 default path
- *      (SEL-01's silent swallow of the connect timeout / unreachable / `busy` close-1013
- *      conditions — no typed error reaches the host on this branch).
+ *      (SEL-01's silent swallow — no typed error reaches the host on this branch).
+ *
+ * Documented edge: a `start()` right after a previous session's flushing `stop()` can meet `busy`
+ * (close 1013) while the server's single session slot is still being released; busy fast-fails, so
+ * that session falls back to native instead of retrying.
+ *
+ * Each attempt writes one opt-in `server-attempt` trace line through [log] (class simple names,
+ * counts, codes and booleans only — never a message, the URL or text).
  *
  * ## Everything is injected (mirrors [SttEngineImpl])
  *
@@ -152,6 +172,10 @@ internal class BackendSelector(
      */
     private var pendingServer: ServerBackend? = null
 
+    /** The latest typed error any attempt of the current try-server loop produced — what
+     *  `prefer = Server` surfaces when the loop gives up (TRY-02). Reset per [tryServer]. */
+    private var lastTryError: SttError? = null
+
     /**
      * The job actually running [runStart] — launched on [scope] rather than executed inline in the
      * caller's own coroutine, specifically so [stop] has something it can cancel regardless of which
@@ -179,43 +203,107 @@ internal class BackendSelector(
             // "connecting…" affordance off `state == Connecting` must see it during the try-server
             // window too, not just on the native-only path.
             setState(EngineState.Connecting)
-            val serverBackend = serverBackendFactory(serverUrl)
-            pendingServer = serverBackend
-            val connected = try {
-                withTimeoutOrNull(tryServerTimeoutMs) { serverBackend.connect() }
-            } finally {
-                // The try-server phase has resolved one way or another (success, timeout, failure,
-                // or a stop()-triggered cancellation) — nothing further should treat this instance
-                // as "pending" once we leave this block.
-                pendingServer = null
-            }
-            if (connected == true) {
+            val serverBackend = tryServer(serverUrl)
+            if (serverBackend != null) {
                 activeServer = serverBackend
                 setBackend(Backend.Server)
                 forwardServer(serverBackend)
                 return
             }
 
-            // Never leak the half-open socket — abandon it BEFORE deciding what happens next.
-            // Emits nothing on its own errors/state (D-04): this IS the swallow mechanism, not a
-            // special case bolted on top of it. Idempotent — a no-op if stop() already abandoned
-            // this instance via pendingServer above.
-            serverBackend.abandon()
-
             if (config.prefer == BackendPreference.Server) {
-                // prefer:server means server-only — no native fallback (SEL-02).
-                fail(
-                    serverBackend.lastError
-                        ?: SttError(SttErrorCode.SERVER_UNREACHABLE, "server unreachable"),
-                )
+                // prefer:server means server-only — no native fallback (SEL-02, TRY-02's
+                // transparency prohibition): exactly one typed error, the latest one an attempt
+                // produced, or SERVER_UNREACHABLE when no attempt ever reached an OkHttp callback.
+                fail(lastTryError ?: SttError(SttErrorCode.SERVER_UNREACHABLE, "server unreachable"))
                 return
             }
             // Otherwise (Auto): fall through to native below — SEL-01's silent swallow of the
-            // connect timeout / unreachable / busy (close 1013) conditions.
+            // fast-fail / window-expired conditions.
         }
 
         setBackend(Backend.Native)
         startNative()
+    }
+
+    /**
+     * The try-server attempt loop (Phase 21, TRY-02, D-06/D-14), all under ONE deadline equal to
+     * [tryServerTimeoutMs]. Returns the [ServerBackend] that reached `ready`, or `null` once a
+     * failure fast-failed or the window expired. Every failed attempt is abandoned before anything
+     * else happens (D-04's swallow mechanism: its errors/state are never forwarded).
+     *
+     * Each attempt is a fresh single-attempt [ServerBackend] assigned to [pendingServer] BEFORE
+     * `connect()` (CR-03), so [stop] always reaches the live one. A coroutine cancellation (`stop()`
+     * cancelling [startJob], during an attempt or a backoff) propagates untouched; the `finally`
+     * abandons whatever attempt is still in flight, and no further attempt is created.
+     *
+     * Each outcome writes one opt-in `server-attempt` trace line ([SessionLog.serverAttempt]):
+     * `Connected`, `FastFail`, `Retryable`, or — once, when the deadline ends the loop — `WindowExpired`
+     * (numbered as the in-flight attempt, or as the last attempt started if the window ran out
+     * during a backoff).
+     */
+    private suspend fun tryServer(url: String): ServerBackend? {
+        lastTryError = null
+        var attempt = 0
+        var gaveUp = false
+        try {
+            val connected = withTimeoutOrNull(tryServerTimeoutMs) {
+                var retryIndex = 0
+                while (true) {
+                    attempt += 1
+                    val backend = serverBackendFactory(url)
+                    pendingServer = backend
+                    if (backend.connect()) {
+                        pendingServer = null
+                        logAttempt(attempt, "Connected", backend.connectObservation)
+                        return@withTimeoutOrNull backend
+                    }
+                    val observation = backend.connectObservation
+                    val cls = classifyConnectFailure(observation)
+                    backend.lastError?.let { lastTryError = it }
+                    // Never leak the half-open socket — abandon BEFORE deciding what happens next.
+                    backend.abandon()
+                    pendingServer = null
+                    logAttempt(attempt, cls.name, observation)
+                    if (cls == ConnectFailureClass.FastFail) {
+                        gaveUp = true
+                        return@withTimeoutOrNull null
+                    }
+                    delay(RETRY_BACKOFF_MS[min(retryIndex, RETRY_BACKOFF_MS.lastIndex)])
+                    retryIndex += 1
+                }
+                @Suppress("UNREACHABLE_CODE")
+                null
+            }
+            if (connected == null && !gaveUp) {
+                // D-14: the window — not a socket timeout, not a backoff — ran out.
+                val inFlight = pendingServer
+                pendingServer = null
+                val observation = inFlight?.connectObservation ?: ConnectObservation()
+                inFlight?.lastError?.let { lastTryError = it }
+                inFlight?.abandon()
+                logAttempt(attempt, WINDOW_EXPIRED, observation)
+            }
+            return connected
+        } finally {
+            // A stop()-triggered cancellation: abandon the in-flight attempt (cancels its socket,
+            // releases any mic it opened). Idempotent; a no-op on every other path.
+            pendingServer?.abandon()
+            pendingServer = null
+        }
+    }
+
+    /** One `server-attempt` trace line — the throwable's simple class name only, never its
+     *  message (it embeds the server URL). */
+    private fun logAttempt(attempt: Int, outcome: String, observation: ConnectObservation) {
+        log.serverAttempt(
+            attempt = attempt,
+            outcome = outcome,
+            exception = observation.throwable?.javaClass?.simpleName,
+            sawOpen = observation.sawOpen,
+            closeCode = observation.closeCode,
+            responseCode = observation.responseCode,
+        )
     }
 
     /**
@@ -434,5 +522,13 @@ internal class BackendSelector(
          *  `segmentId` is opaque and per-session (API.md) — this is not part of [ServerBackend]'s own
          *  server-numbered sequence, just a safe fixed value for the one-off commit this path makes. */
         const val HANDOFF_SEGMENT_ID: Int = 0
+
+        /** The backoff before each retry of a Retryable failure (TRY-02, D-06; values are Claude's
+         *  discretion): 250 → 500 → 1 000 ms, then 1 000 ms for every later retry. All of them sit
+         *  inside the ONE window [tryServerTimeoutMs], which cancels a backoff that outlives it. */
+        val RETRY_BACKOFF_MS: LongArray = longArrayOf(250L, 500L, 1_000L)
+
+        /** The `server-attempt` trace class written once when the window ends the loop (D-14). */
+        const val WINDOW_EXPIRED = "WindowExpired"
     }
 }

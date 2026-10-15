@@ -44,6 +44,12 @@ import org.json.JSONObject
  * | `restart` | `epoch`, `reason`, `delayMs`, `advanceRung` |
  * | `ready` | `epoch`, `deafWindowMs` |
  * | `error` | `code`, `platformDetail` (present as JSON `null` when there is none) |
+ * | `server-attempt` | `attempt`, `class`, `exception`, `sawOpen`, `closeCode`, `responseCode` (absent values as JSON `null`) |
+ *
+ * `server-attempt` (TRY-02) is one line per server connection attempt; `class` is `Connected`,
+ * `FastFail`, `Retryable` or `WindowExpired`. Its `exception` is the throwable's simple class name
+ * only — never its message (it embeds the server URL) and never text. The analyzer ignores the kind
+ * (unknown kinds are additive).
  *
  * ## Failure is always a no-op
  *
@@ -135,8 +141,13 @@ internal class SessionLog(
         }
     }
 
-    /** RED stub — replaced by the real line (TRY-02). */
-    @Suppress("UNUSED_PARAMETER")
+    /**
+     * One server connection attempt's outcome (Phase 21, TRY-02, D-09 capture input).
+     *
+     * @param outcome written as `class`: `Connected`, `FastFail`, `Retryable` or `WindowExpired`.
+     * @param exception the failure's simple class name only — never `Throwable.message`, which embeds
+     *   the server URL, and never any text. JSON `null` when the attempt ended without a throwable.
+     */
     fun serverAttempt(
         attempt: Int,
         outcome: String,
@@ -144,7 +155,17 @@ internal class SessionLog(
         sawOpen: Boolean,
         closeCode: Int?,
         responseCode: Int?,
-    ) = Unit
+    ) {
+        write(KIND_SERVER_ATTEMPT) {
+            it.put("attempt", attempt)
+            it.put("class", outcome)
+            // JSONObject.put(key, null) REMOVES the key — absent values stay explicit JSON nulls.
+            it.put("exception", exception ?: JSONObject.NULL)
+            it.put("sawOpen", sawOpen)
+            it.put("closeCode", closeCode ?: JSONObject.NULL)
+            it.put("responseCode", responseCode ?: JSONObject.NULL)
+        }
+    }
 
     // --- internals ------------------------------------------------------------------------------------
 

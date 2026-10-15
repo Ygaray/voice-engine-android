@@ -426,6 +426,9 @@ class BackendSelectorTryWindowTest {
         assertEquals(1013, line.getInt("closeCode"))
         assertTrue(line.getBoolean("sawOpen"))
         assertTrue(line.isNull("exception"))
+        // Let the native fallback's start() complete.
+        h.fakeHandle.reachListening()
+        h.started.join()
     }
 
     @Test
@@ -442,6 +445,9 @@ class BackendSelectorTryWindowTest {
         assertEquals("Retryable", line.getString("class"))
         assertEquals("ProtocolException", line.getString("exception"))
         assertEquals(503, line.getInt("responseCode"))
+        // The loop is now in its backoff — end the session so start() completes.
+        launch(h.dispatcher) { h.selector.stop() }.join()
+        h.started.join()
     }
 
     @Test
