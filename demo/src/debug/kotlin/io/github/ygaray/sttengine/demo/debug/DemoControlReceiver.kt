@@ -244,6 +244,12 @@ class DemoControlReceiver : BroadcastReceiver() {
         const val ACTION_DUMP_DIAGNOSTICS =
             "io.github.ygaray.sttengine.demo.debug.DUMP_DIAGNOSTICS"
 
+        const val ACTION_CHECK_PACKS = "io.github.ygaray.sttengine.demo.debug.CHECK_PACKS"
+
+        const val ACTION_DOWNLOAD_PACK = "io.github.ygaray.sttengine.demo.debug.DOWNLOAD_PACK"
+
+        const val PACK_ACTION_BUDGET_MS = 9_000L
+
         /**
          * Boolean extra on [ACTION_START]. Enables the engine's JSONL session trace for that run.
          *
@@ -548,3 +554,18 @@ internal fun serverPathDiagnostics(
     into.put("partialUpdates", partialUpdates)
     into.put("warningCount", warningCount)
 }
+
+// RED stubs (22-04 Task 1): signatures only, replaced by the real helpers in the GREEN commit.
+internal fun packLangLabel(raw: String): String = ""
+
+internal fun packsLogLine(result: Map<String, io.github.ygaray.sttengine.LanguageAvailability>): String = ""
+
+internal fun packsDiagnostics(
+    into: JSONObject,
+    result: Map<String, io.github.ygaray.sttengine.LanguageAvailability>,
+    elapsedMs: Long,
+) = Unit
+
+internal fun downloadLogLine(label: String, accepted: Boolean, elapsedMs: Long): String = ""
+
+internal fun downloadDiagnostics(into: JSONObject, label: String, accepted: Boolean, elapsedMs: Long) = Unit
