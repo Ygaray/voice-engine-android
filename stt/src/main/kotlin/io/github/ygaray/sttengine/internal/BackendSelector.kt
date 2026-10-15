@@ -218,6 +218,23 @@ internal class BackendSelector(
         startNative()
     }
 
+    /**
+     * Ends the session at the host's request.
+     *
+     * On the server path this now waits for the server's flush (Phase 21, SRV-05, D-04):
+     * [ServerBackend.stop] sends the protocol `stop` token and suspends until the server's close
+     * 1000, bounded by [ServerBackend.STOP_FLUSH_TIMEOUT_MS] (~2.5 s) — on timeout it commits the
+     * open partial locally. So a server-path `stop()` can take up to ~2.5 s; the native path's
+     * `stop()` is unchanged.
+     *
+     * **Detach before await.** The committed server is read into a local and [activeServer] is
+     * cleared BEFORE that suspending flush starts. Any socket failure, abnormal close or error frame
+     * during the wait then reaches [handleServerDrop] with an instance that is no longer
+     * [activeServer], so its identity guard makes it a no-op: a stop can never start the native
+     * recognizer. The forwarding collectors from [forwardServer] keep running after the detach, so
+     * the server's flushed tail final still reaches [finals] and [state] still follows the backend
+     * to [EngineState.Idle].
+     */
     override suspend fun stop() {
         // CR-03: cancel whatever `start()` sequence is still in flight FIRST — before touching
         // activeServer/activeNative — so nothing further in that sequence (a still-pending
@@ -228,7 +245,10 @@ internal class BackendSelector(
         // points where cancellation has not yet been delivered. abandon() is idempotent.
         pendingServer?.abandon()
         pendingServer = null
-        activeServer?.stop()
+        // D-04: detach first, then await the flush (see the KDoc above).
+        val srv = activeServer
+        activeServer = null
+        srv?.stop()
         activeNative?.stop()
     }
 
@@ -279,12 +299,10 @@ internal class BackendSelector(
             }
         }
         // CR-02: ServerBackend.warnings' own KDoc documents this selector as the ONLY place
-        // SttWarning surfaces on the frozen contract — this collector is that wire. Note that in the
-        // currently shipped code this is still unreachable in practice: sendPcmFrame (the only
-        // producer that feeds ServerBackpressureGate) has no production caller yet — the continuous
-        // audio-pump loop is deferred to Plan 09-03 (see ServerBackend's own KDoc). This collector
-        // makes the forwarding correct so that work lands as a pure wiring change, not a second
-        // missing wire, once the pump exists.
+        // SttWarning surfaces on the frozen contract — this collector is that wire. It is live on
+        // the server path: ServerBackend's PCM pump (Phase 21, SRV-05) feeds every captured frame
+        // through sendPcmFrame, so ServerBackpressureGate's shed/clear notices reach the host here
+        // as SttEvent.Warning whenever the socket falls behind.
         scope.launch {
             serverBackend.warnings.collect { warning -> _events.tryEmit(SttEvent.Warning(warning)) }
         }
