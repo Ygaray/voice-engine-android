@@ -10,11 +10,12 @@
     app. The Android 14 RECEIVER_EXPORTED/RECEIVER_NOT_EXPORTED requirement applies to
     runtime-registered receivers, not to manifest-declared ones like this.
 
-    ⚠ The three action strings below are DUPLICATED from DemoControlReceiver.kt's companion object.
+    ⚠ The five action strings below are DUPLICATED from DemoControlReceiver.kt's companion object.
     A manifest <action android:name> cannot reference a Kotlin constant, so this is the one place
     the two can drift apart. The Kotlin file is the source a later plan copies from; if you change a
-    name, change it in both. Plan 08's harness is authored against these exact strings and its
-    automated verify cross-greps them against this source tree.
+    name, change it in both. Plan 08's harness and the Gate-1 scripts are authored against these
+    exact strings, plan 08's automated verify cross-greps them against this source tree, and
+    DemoPackActionsTest fails when a Kotlin ACTION_* constant has no matching <action> here.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -28,6 +29,8 @@
                 <action android:name="io.github.ygaray.sttengine.demo.debug.START" />
                 <action android:name="io.github.ygaray.sttengine.demo.debug.STOP" />
                 <action android:name="io.github.ygaray.sttengine.demo.debug.DUMP_DIAGNOSTICS" />
+                <action android:name="io.github.ygaray.sttengine.demo.debug.CHECK_PACKS" />
+                <action android:name="io.github.ygaray.sttengine.demo.debug.DOWNLOAD_PACK" />
             </intent-filter>
         </receiver>
 
