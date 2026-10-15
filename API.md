@@ -13,14 +13,14 @@ file ever disagree, the file is right and this document is a bug.
 | Symbol | Kind | Purpose |
 |---|---|---|
 | `createSttEngine(context, config, diagnosticLogging)` | top-level function | the library's **only** entry point |
-| `SttEngine` | interface | six flow properties + `start()` / `stop()` |
+| `SttEngine` | interface | seven flow properties, the `lastFinal` snapshot, `start()` / `stop()` |
 | `EngineState` | enum (5 entries + `wireName`) | the observable state machine |
-| `SttConfig` | class | recognition settings (`language`) |
+| `SttConfig` | class | recognition settings (`language`, backend preference, server URL, try window, corrections, vocabulary) |
 | `FinalSegment` | class | a committed, immutable transcript segment |
 | `ReconnectInfo` | class | which bounded recovery attempt is in flight |
 | `SttError` | class | a typed terminal failure (`code`, `message`, `platformDetail`) |
 | `SttErrorCode` | value class + companion | the error taxonomy; 14 constants, two named sets |
-| `SttWarning` | class | non-fatal transient warning — **never emitted on this backend** |
+| `SttWarning` | class | non-fatal transient warning — emitted only on the server backend (`backpressure`); never on-device |
 | `SttEvent` | sealed interface (7 members) | the same seven events as one union, for a shared `when` |
 | `RecorderConfig` | class (`:recorder`) | host-configurable level cadence + MediaRecorder encoding params — see [Recorder](#recorder) |
 | `RecorderForegroundService` | `Service` + binder (`:recorder`) | binder-only bound/started foreground-service seam, host-supplied notification via `RecorderNotificationConfig` — see [Recorder](#recorder) |
@@ -63,17 +63,19 @@ Configuration is taken at **construction**, not reconfigurable afterwards. That 
 means enabling a diagnostic that records speech is a decision made in writing at one call site, and
 that a language change is a new engine rather than a mutation of a live session.
 
-No network is used and none can be. The engine constructs only the system-resolved **on-device**
-recognizer and never falls back to the network-backed one; an unavailable on-device recognizer is a
-typed `recognizer-unavailable` failure, not a reason to switch backends.
+With no `serverUrl` (the default), no network is used and none can be. The native path constructs
+only the system-resolved **on-device** recognizer and never falls back to the platform's
+network-backed one; an unavailable on-device recognizer is a typed `recognizer-unavailable` failure,
+not a reason to switch backends. The only network the library ever touches is the self-hosted server
+a host opts into through `SttConfig.serverUrl`.
 
 ---
 
 ## `SttEngine` — the contract
 
-Seven flow properties and two suspend functions. **The delivery semantics differ per property, and
-they are part of the contract, not an implementation detail** — choosing the wrong one silently
-loses dictated text.
+Seven flow properties, one read-only snapshot (`lastFinal`) and two suspend functions. **The
+delivery semantics differ per property, and they are part of the contract, not an implementation
+detail** — choosing the wrong one silently loses dictated text.
 
 | Member | Type | Delivery | Why |
 |---|---|---|---|
@@ -82,8 +84,9 @@ loses dictated text.
 | `partial` | `StateFlow<String>` | **replays**, conflated | "replaces the previous partial" *is* StateFlow conflation; a superseded partial is worthless and dropping it is correct |
 | `finals` | `Flow<FinalSegment>` | **lossless, single-consumer** | see below |
 | `errors` | `Flow<SttError>` | at most one per session | first-error-wins; `state == Error` is reached exactly once |
-| `level` | `Flow<Float>` | conflated, **drops oldest** | a level frame is meaningful only at the instant it is produced; back-pressuring the recognizer callback to deliver a stale one is strictly worse than dropping it. Only meaningful while `state == Listening`. |
+| `level` | `Flow<Float>` | conflated, **drops oldest** | a level frame is meaningful only at the instant it is produced; back-pressuring the recognizer callback to deliver a stale one is strictly worse than dropping it. Only meaningful while `state == Listening`. Emitted on **both** backends: on the server path the engine computes it from the same audio it streams, so a meter does not go dead when `backend == Server`. |
 | `events` | `Flow<SttEvent>` | ordered mirror of all seven | the convenience union, for one shared `when` |
+| `lastFinal` | `FinalSegment?` | a plain read, **no flow** | the final the last `stop()` flushed, readable synchronously the moment `stop()` returns; see [`lastFinal`](#lastfinal--the-tail-after-stop) below |
 
 ### `finals` is lossless, and that is why it has exactly one consumer
 
@@ -110,9 +113,49 @@ public suspend fun stop()
   **returns rather than throwing**, having already emitted the typed error on `errors`. That is what
   stops a mic-denied or recognizer-less device from parking the caller forever on a state it will
   never reach. Inspect `state` after it returns, or collect `errors`; do not rely on an exception.
+- **A second `start()` while a session is starting or live is ignored** — it returns at once and
+  opens nothing (no second socket, no second recognizer). This is the same rule on both backends.
+  After `stop()` or a terminal error, `start()` begins a fresh session.
 - **`stop()` flushes the open segment as a final first**, then tears down and returns to `Idle`, so
   text the user had already spoken is committed rather than dropped. Safe to call in any state,
-  including from a terminal error.
+  including from a terminal error. Its signature is unchanged (`suspend fun stop()`, returning
+  `Unit`).
+
+**`stop()` latency on the server backend.** On the server path, `stop()` stops capture, sends the
+remaining audio, sends the protocol's `stop` token, and then **waits up to about 2.5 s** for the
+server to flush the tail of the utterance and close the connection normally. The flushed tail is
+delivered on `finals` as usual, and it is readable from `lastFinal` as soon as `stop()` returns. If
+the server does not finish within that bound, the engine commits the open partial locally as the
+final instead, so the tail is never dropped. A requested stop never emits on `errors`, even if the
+connection fails during the flush. On the native on-device backend `stop()` is unchanged and
+returns promptly. A host that calls `stop()` from a UI handler should launch it in a coroutine
+rather than block on it.
+
+### `lastFinal` — the tail after `stop()`
+
+```kotlin
+public val lastFinal: FinalSegment? get() = null
+```
+
+A read-only snapshot of the final the most recent `stop()` flushed — or, if nothing was open at
+stop, the session's latest final.
+
+- **Readable synchronously as soon as `stop()` returns**, with no `finals` collector kept alive
+  across the stop. A host that wants the tail of a dictation (to insert into a note, say) reads it
+  here instead of racing the lossless flow.
+- It is the **same `FinalSegment` instance** that `finals` delivers (same `text`, `segmentId` and
+  `language`). `finals` is unchanged and still delivers it, so a host that already collects `finals`
+  keeps working.
+- **`null` before the first final** of the current session. **`start()` resets it**, so a reused
+  engine never reports a previous session's text. A terminal error does **not** clear it; only
+  `start()` does.
+- Works on both backends, including across a mid-session server-to-native handoff.
+- `language` can be `null` for a stop-flushed native tail under `"auto"` (API 34+) when the session
+  closed before a confident detection — "unknown", not "English".
+
+**Migration:** `lastFinal` is a new **non-abstract** interface member with a default of `null`.
+Existing implementers and test fakes need no change; they stay source- and binary-compatible
+through the `SttEngine$DefaultImpls` bridge. A fake may override `lastFinal` to drive host logic.
 
 ---
 
@@ -152,14 +195,16 @@ public class SttConfig @JvmOverloads constructor(
     public val serverUrl: String? = null,
     corrections: CorrectionRuleset? = null,
     vocabulary: List<String>? = null,
+    serverTryTimeoutMs: Long = 5_000L,
 )
 ```
 
-Five fields (Phase 9 D-01 for `prefer`/`serverUrl`; Phase 13 CORR-01/D-05 for `corrections`; Phase 17
-REL-03/BIAS-01 for `vocabulary`). `prefer` (`BackendPreference`) selects which `Backend` to prefer —
-`Auto` (default) tries the self-hosted server first with a bounded timeout and falls back to native
-silently; `Server` forces server-only (surfacing exactly one typed error on failure, no native
-fallback); `OnDevice` skips the server phase entirely, byte-identical to the v1.0 default path.
+Six fields (Phase 9 D-01 for `prefer`/`serverUrl`; Phase 13 CORR-01/D-05 for `corrections`; Phase 17
+REL-03/BIAS-01 for `vocabulary`; Phase 21 TRY-01 for `serverTryTimeoutMs`). `prefer`
+(`BackendPreference`) selects which `Backend` to prefer — `Auto` (default) tries the self-hosted
+server first within the `serverTryTimeoutMs` window and falls back to native silently; `Server`
+forces server-only (surfacing exactly one typed error on failure, no native fallback); `OnDevice`
+skips the server phase entirely, byte-identical to the v1.0 default path.
 `serverUrl` is the self-hosted STT server's WebSocket URL (e.g. `wss://host.ts.net:8444/`), or `null`
 to disable the server backend entirely — a session with a `null` `serverUrl` always runs native,
 regardless of `prefer`. There is no safe default hostname on Android the way `location.hostname`
@@ -180,6 +225,37 @@ parity `TranscriptionClient.submitJob`'s batch `vocabulary` parameter already ha
 `corrections` gets, for the same concurrent-mutation reason, and is silently inert on a session that
 never reaches the server backend (native on-device recognition has no concept of biasing hotwords).
 
+`serverTryTimeoutMs` (TRY-01) is how long, in milliseconds, a server-eligible engine (`serverUrl`
+set and `prefer` not `OnDevice`) keeps trying the server at session start before giving up. The
+window bounds the whole connect → config → `ready` sequence, retries included, as **one deadline**.
+**Defaults to 5 000 ms.** Any value is **clamped into 1 000..10 000 ms rather than rejected**, and
+the property reports the clamped value. How a failed try is treated depends on how far the
+connection got:
+
+- **Fails fast — before the host answers.** A DNS failure, no network, a refused connection, a
+  server that reports itself busy, a rejected config or a TLS certificate failure gives up
+  immediately rather than waiting out the window: `Auto` falls back to on-device at once, `Server`
+  reports its error at once. This also holds when such a failure arrives wrapped inside another
+  exception.
+- **Retried within the window — the host answered but is not ready yet.** For example a server that
+  is still starting up behind its TLS proxy, which accepts the connection and then drops it. The
+  engine retries with a short backoff (250 ms, 500 ms, then 1 s) until the server is ready or the
+  window ends.
+- **Waits the full window — a black-holed host.** A host that never answers at all (packets
+  silently dropped) cannot be told apart from a slow one, so it waits out the whole window before
+  `Auto` falls back or `Server` reports an error.
+
+No audio is captured while the window runs, so a longer window means more deaf time at session
+start when the server is off. Ignored when no server is configured.
+
+**Migration for `serverTryTimeoutMs`:** it is a trailing defaulted parameter, so existing Kotlin and
+Java call sites compile unchanged (all earlier `@JvmOverloads` constructors remain; Java gains one
+6-argument constructor). The synthetic `$default` constructor did change, so **Kotlin consumers must
+recompile against the new artifact when they repin**. Behavior change: a server-eligible engine that
+does not set the knob now gets a 5 000 ms window instead of the previous 2 500 ms. Refused and
+DNS-class failures still fail fast; only a black-holed host or a slow cold start uses the longer
+window.
+
 `sampleRate` from the TypeScript options object stays **dropped, not stubbed**: the wire protocol's
 sample rate is fixed (`16_000`) and is never a host-settable knob on either backend.
 
@@ -196,7 +272,10 @@ multilingual is **additive** rather than a breaking contract change.
 
 **Bilingual EN/ES `"auto"` works on BOTH backends.** On the **server** backend (LANG-01), `language`
 accepts `"en"` or `"auto"` — `"auto"` opts into a server-detected-per-segment bilingual EN<->ES
-session; the server does not currently accept a bare `"es"` here. On the **native on-device** backend
+session; the server does not currently accept a bare `"es"` here. **The server path accepts only
+`"en"` or `"auto"`.** Any other tag — including a region-qualified one such as `"en-US"` — is
+rejected by the server during the try window: under `Auto` the session fails fast and runs on
+native instead, and under `Server` it surfaces `unsupported-language`. On the **native on-device** backend
 (v3.1 / `v0.7.0`, NBIL-01..11), `SttConfig(language = "auto")` is now a first-class **offline** EN<->ES
 mode, **runtime-gated to API 34+** (`SDK_INT >= 34`): it enables the platform's on-device
 language-switch over the fixed `[en-US, es-US]` allowlist and labels each committed segment. **Below
@@ -267,14 +346,16 @@ hint copy is deliberately **not** part of this type — see the parity section.
 
 ### `SttWarning(code: String, active: Boolean, message: String)`
 
-A non-fatal transient warning. **Structurally present and never emitted in this version, on either
-backend.** On-device, the recognition service owns the microphone, so there is no outbound send
-buffer and therefore no backpressure analog to warn about — that one is permanent by construction.
-On the server backend, `BackendSelector` already forwards `ServerBackend.warnings` onto this event
-(Phase 9), but nothing yet drives the outbound audio pump that would ever feed the backpressure gate
-in production — that gap is temporary, deferred to a later phase. The type is kept anyway so a host
-can share **one exhaustive `when`** across both backends without a platform fork in its rendering
-code — which is the whole reason the event union survived translation unchanged.
+A non-fatal transient warning. **Emitted only on the server backend**, by the outbound backpressure
+gate: the server path streams microphone audio over its socket, and when that send buffer runs
+over its soft ceiling the engine sheds the oldest audio to keep up and emits
+`SttWarning(code = "backpressure", active = true, …)` on `events`; once the buffer drains it emits
+the matching `active = false`. A sustained overrun is not a warning but the terminal
+`send-backpressure` error. **On-device it is never emitted, and that is permanent by construction**:
+the recognition service owns the microphone, so there is no outbound send buffer to warn about. The
+type is shared by both backends so a host can keep **one exhaustive `when`** across them without a
+platform fork in its rendering code — which is the whole reason the event union survived
+translation unchanged.
 
 ---
 
@@ -343,7 +424,7 @@ only — events are transient envelopes and their payloads carry the equality.
 | `SttEvent.Error` | `error: SttError` | typed terminal failure; exactly once per session |
 | `SttEvent.Level` | `value: Float` | input level `0.0..1.0`; conflated, drops expected |
 | `SttEvent.Reconnecting` | `info: ReconnectInfo` | bounded recovery only — **not** ordinary restarts |
-| `SttEvent.Warning` | `warning: SttWarning` | **structurally wired end-to-end (Phase 9), never actually emitted in this version**: `BackendSelector` forwards `ServerBackend.warnings` onto this event, but the only producer that would feed it — the outbound backpressure gate under a continuous audio-pump loop — is deferred to a later phase; see `SttWarning` |
+| `SttEvent.Warning` | `warning: SttWarning` | non-fatal, transient; emitted on the server backend by the outbound backpressure gate (`backpressure`, active then cleared), never on-device; see `SttWarning` |
 
 `events` is an ordered **mirror** of the six properties, not a second consumer of them, so collecting
 `events` and `finals` together is safe and neither steals from the other.
@@ -880,15 +961,15 @@ error string was copied across.
 | `EngineState` union (5 strings) | `EngineState` enum + `wireName` (5) | **identical strings** |
 | `FinalSegment { text, segmentId }` | `FinalSegment(text, segmentId)` | identical |
 | `ReconnectInfo { attempt, max }` | `ReconnectInfo(attempt, max)` | identical, `attempt` 1-based on both |
-| `SttWarning { code, active, message }` | `SttWarning(code, active, message)` | identical shape; never emitted while on-device, and **still never emitted on the server backend either** in this version — the forwarding wire exists (Phase 9), but its only producer (the outbound audio pump) is deferred |
+| `SttWarning { code, active, message }` | `SttWarning(code, active, message)` | identical shape; emitted on the server backend (`backpressure`, as on the web client), never while on-device |
 | `SttError { code, message }` | `SttError(code, message, platformDetail)` | **+1 field** — divergence 2 |
 | `SttErrorCode` union (7 server + 4 client = 11) | `SttErrorCode.SHARED` (11) | **byte-identical** |
 | — | `SttErrorCode.ANDROID_ONLY` (3) | **additive** — divergence 1 |
 | `SttEventMap` (7 events) | `SttEvent` sealed interface (7 members) | same names, same payloads |
 | `on(event, cb)` returning an unsubscribe handle | seven `Flow` / `StateFlow` properties + `events` | mechanism differs, event set identical |
-| `SttEngineOptions { serverUrl?, language? }` | `SttConfig(language, prefer, serverUrl)` | `serverUrl` re-added (Phase 9, D-01) — `prefer`/`backend` are Android-only additive; `sampleRate` stays **dropped, not stubbed** |
+| `SttEngineOptions { serverUrl?, language? }` | `SttConfig(language, prefer, serverUrl, corrections, vocabulary, serverTryTimeoutMs)` | `serverUrl` re-added (Phase 9, D-01) — `prefer`/`backend`/`serverTryTimeoutMs` are Android-only additive; `sampleRate` stays **dropped, not stubbed** |
 | engine requests microphone access itself | **host** holds `RECORD_AUDIO` | divergence 3 |
-| `start(): Promise<void>` / `stop()` | `suspend fun start()` / `suspend fun stop()` | same settle semantics |
+| `start(): Promise<void>` / `stop()` | `suspend fun start()` / `suspend fun stop()` | same settle semantics; on the server path Android's `stop()` waits up to ~2.5 s for the server's flush (see [`start()` and `stop()`](#start-and-stop)) |
 
 A three-way guard (`scripts/check-error-code-parity.sh` in the development mono-repo, plus a Kotlin
 test that runs in the release path) fails the build if the Python, TypeScript and Kotlin error sets

@@ -167,6 +167,66 @@ Configuration is fixed at construction. A language change or a diagnostic run mi
 rather than mutating a live one, so if your host offers either, hold the engine in something the UI
 observes. Reference: `DictationViewModel.engine` is a `StateFlow<SttEngine>` for exactly this reason.
 
+### 4a. Opt into the self-hosted server backend (optional)
+
+Supply your server's WebSocket URL and, if you like, a preference and a try window:
+
+```kotlin
+val engine = createSttEngine(
+    context = getApplication(),
+    config = SttConfig(
+        language = "auto",                      // the server path accepts only "en" or "auto"
+        prefer = BackendPreference.Auto,        // server first, silent on-device fallback
+        serverUrl = "wss://host.ts.net:8444/",
+        serverTryTimeoutMs = 5_000L,            // the default; clamped into 1 000..10 000 ms
+    ),
+)
+```
+
+What to know before shipping this:
+
+- **The server path streams the microphone.** Once the server reports ready, the engine captures
+  audio itself and streams it over the socket; `partial`, `finals` and `level` all flow exactly as
+  on-device. `backend` tells you which path is live.
+- **Language.** The server accepts only `"en"` or `"auto"`. A region-qualified tag such as
+  `"en-US"` is rejected by the server: under `Auto` the session quietly runs on-device instead,
+  under `Server` you get `unsupported-language`.
+- **Tuning `serverTryTimeoutMs`.** This is how long session start keeps trying the server. A host
+  that is down hard (DNS failure, no network, connection refused, busy) fails fast whatever the
+  window is, and a server that answers but is still starting up is retried within it. Only a
+  black-holed host (one that never answers) waits the full window, and no audio is captured
+  meanwhile. **Raise it** (up to 10 000 ms) if your server cold-starts slowly and you would rather
+  wait than fall back; **lower it** (down to 1 000 ms) if a dead network should hand the user to
+  on-device dictation quickly. Values outside the range are clamped, never rejected.
+- **`stop()` can take up to ~2.5 s on the server path.** It sends the protocol's `stop` token and
+  waits for the server to flush the tail of the utterance, so the last words the user spoke are not
+  lost. On-device `stop()` is unchanged. Call it from a coroutine, not a blocking UI path.
+- **A second `start()` while a session is starting or live is ignored**, on both backends. Call
+  `stop()` first if you want a fresh session.
+
+**Reading the final after `stop()`.** To insert the tail of a dictation into a note when the user
+taps Stop, read `lastFinal` right after `stop()` returns. No `finals` collector needs to be alive
+across the stop, and `finals` still delivers the same segment to the collector you already have.
+Unlike the snippets above, these two are illustrative rather than lifted from `:demo` (the demo has
+no note to insert into, and it starts on-device by default):
+
+```kotlin
+scope.launch {
+    engine.stop()                       // server path: waits up to ~2.5 s for the flush
+    val tail: FinalSegment? = engine.lastFinal
+    tail?.let { note.append(it.text) }  // null if the session produced no final
+}
+```
+
+`lastFinal` is reset by the next `start()`, so a reused engine never hands you a previous
+session's text.
+
+**Repinning from an earlier tag.** `SttConfig` gained the trailing defaulted
+`serverTryTimeoutMs`: existing call sites compile unchanged, but its synthetic default constructor
+changed, so **recompile** against the new artifact. `SttEngine` gained the non-abstract
+`lastFinal` member with a default of `null`: an existing implementer or test fake needs no change.
+See `API.md` for both.
+
 ## 5. Collect the flows
 
 `state` and `partial` are `StateFlow`s a recomposing host reads directly. The three
@@ -600,11 +660,11 @@ element — it inherits it — and its diagnostics panel prints both the install
   design exists to hide. The demo decays its meter instead; see `DictationViewModel.startLevelDecay`.
 - **`segmentId` is opaque and per-session.** It starts at 0 and is monotonic within one session. It
   is not a stable identifier and is **not comparable across backends**.
-- **`SttWarning` never fires in this version, on either backend.** On-device, that's permanent — the
-  recognition service owns the microphone, so there is no outbound send buffer to warn about. On the
-  server backend (Phase 9, `prefer`/`serverUrl` on `SttConfig`), the forwarding wire from
-  `ServerBackend.warnings` exists, but nothing yet drives the outbound audio pump that would feed the
-  backpressure gate in production, so it is temporarily unreachable rather than permanently absent.
-  Keep the branch for cross-backend code regardless. See `API.md`.
+- **`SttWarning` fires only on the server backend.** The server path streams audio over its socket,
+  so when the send buffer runs over its soft ceiling the engine sheds the oldest audio and emits
+  `SttWarning(code = "backpressure", active = true, …)` on `events`, then `active = false` once it
+  drains. Render it as a transient notice, not an error. On-device it never fires, and that is
+  permanent: the recognition service owns the microphone, so there is no outbound send buffer to
+  warn about. Keep the branch for cross-backend code regardless. See `API.md`.
 - **Bumping to a new library version is human-gated.** Change the coordinate to a new immutable tag,
   sync, rebuild, and re-verify on a real device before shipping. See `CLAUDE.md`.
