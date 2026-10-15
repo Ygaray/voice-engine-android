@@ -157,6 +157,10 @@ dependencies {
     // seam, with no device and no Robolectric.
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
+    // Phase 21 (SRV-05): ServerBackendRealSocketTest drives a real OkHttp socket against a local
+    // mockwebserver3 WS server. Test-only, same pinned Square release train as `libs.okhttp`
+    // (5.2.1, already resolved for :transcription) — no runtime dependency change.
+    testImplementation(libs.mockwebserver3)
     // Robolectric — JVM host runner for the thin platform adapter only.
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)

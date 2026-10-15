@@ -5,6 +5,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.util.Collections
 import okio.ByteString
 
 /**
@@ -65,9 +66,9 @@ internal class FakeWebSocketFactory : WebSocketFactory {
         target.listener.onClosed(target, code, reason)
     }
 
-    fun fireFailure(t: Throwable, socket: FakeWebSocket? = null) {
+    fun fireFailure(t: Throwable, response: Response? = null, socket: FakeWebSocket? = null) {
         val target = target(socket)
-        target.listener.onFailure(target, t, null)
+        target.listener.onFailure(target, t, response)
     }
 
     private fun target(socket: FakeWebSocket?): FakeWebSocket =
@@ -99,6 +100,19 @@ internal class FakeWebSocket(
     /** Every binary frame sent on this socket, oldest first (Task 2's outbound PCM send path). */
     val sentBinary: MutableList<ByteString> = mutableListOf()
 
+    /**
+     * Phase 21 (D-04): ONE interleaved, ordered log of everything the subject did to this socket —
+     * `text:<payload>` / `binary:<size>` for each successful send, `close:<code>` and `cancel` — so a
+     * test can assert the stop-flush ORDER (frames, then the `stop` token, then the close reply)
+     * rather than per-kind counts. Synchronized: a starved-drain test touches the socket from the
+     * test thread while the backend's executor is parked.
+     */
+    val sendLog: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+    /** Invoked after every successful text send — lets a test script a server's reaction (e.g. to
+     *  the `stop` token). */
+    var onTextSent: ((String) -> Unit)? = null
+
     var cancelCount: Int = 0
         private set
     var closeCount: Int = 0
@@ -122,22 +136,27 @@ internal class FakeWebSocket(
     override fun send(text: String): Boolean {
         if (!sendSucceeds) return false
         sent += text
+        sendLog += "text:$text"
+        onTextSent?.invoke(text)
         return true
     }
 
     override fun send(bytes: ByteString): Boolean {
         if (!sendSucceeds) return false
         sentBinary += bytes
+        sendLog += "binary:${bytes.size}"
         return true
     }
 
     override fun close(code: Int, reason: String?): Boolean {
         closeCount++
         lastCloseCode = code
+        sendLog += "close:$code"
         return true
     }
 
     override fun cancel() {
         cancelCount++
+        sendLog += "cancel"
     }
 }
