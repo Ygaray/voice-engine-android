@@ -47,6 +47,10 @@ failure and a mysterious one:
 - `SpeechRecognizer.triggerModelDownload` (API 33) — the **recovery** the host can offer once that
   is known. A diagnosis with no action attached is only half a diagnosis.
 
+The library wraps both for the host as two top-level functions, `checkLanguageAvailability` and
+`requestLanguagePackDownload` (see [`API.md`](API.md)), so an app checks and fixes its `en` / `es`
+packs before a session without ever holding a `SpeechRecognizer` of its own.
+
 Below API 31 there is no on-device recognizer at all (`createOnDeviceSpeechRecognizer` and
 `isOnDeviceRecognitionAvailable` are both API 31), so the offline, free-and-unlimited premise this
 library is built on does not exist there. On 31–32 you can go on-device but cannot preflight support

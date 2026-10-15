@@ -610,9 +610,41 @@ integration.
 
 **The correct response is to trigger the download, not to give up.** That is precisely why this code
 exists as a separate additive code instead of being folded into `unsupported-language` — the two
-demand opposite host actions. The library's floor of `minSdk 33` is what makes
-`triggerModelDownload` reachable at all, so a host can offer the recovery inline; failing that, send
-the user to the system speech settings.
+demand opposite host actions. The library wraps the whole recovery for you, so a host never holds a
+`SpeechRecognizer` of its own:
+
+1. **Before the first session**, call `checkLanguageAvailability(context)`. It answers per language
+   (`INSTALLED`, `DOWNLOADABLE`, `PENDING`, `UNSUPPORTED`, `UNKNOWN`) without starting anything, and
+   on API 34+ it agrees with what a native `"auto"` session start will do.
+2. **For a `DOWNLOADABLE` language**, offer the download and call
+   `requestLanguagePackDownload(context, lang)`. It returns whether the platform *accepted* the
+   request — not whether the pack has arrived — and is a no-op returning `true` for a pack that is
+   already installed or pending.
+3. **Then re-query** `checkLanguageAvailability` (on resume, on a "check again" button, after a
+   delay) instead of calling the download again in a loop. The pack can keep reading `DOWNLOADABLE`
+   for a while after an accepted request, and a `PENDING` one may take hours.
+
+```kotlin
+lifecycleScope.launch {
+    val packs = checkLanguageAvailability(context)        // default: setOf("en", "es")
+    when (packs["es"]) {
+        LanguageAvailability.INSTALLED -> startDictation()
+        LanguageAvailability.DOWNLOADABLE -> {
+            val accepted = requestLanguagePackDownload(context, "es")
+            showStatus(if (accepted) "Downloading Spanish…" else "Couldn't start the download")
+        }
+        LanguageAvailability.PENDING -> showStatus("Spanish is still downloading")
+        LanguageAvailability.UNSUPPORTED -> showStatus("Spanish isn't available on this device")
+        else -> startDictation()  // UNKNOWN: the session still tries to start
+    }
+}
+```
+
+Both functions hop to the main thread themselves: call them from a coroutine, never from
+`runBlocking` on the main thread, and call them while no dictation session is active. Only the exact
+keys `"en"` and `"es"` are recognized. If the user declines, or the request is not accepted, send
+them to the system speech settings instead. Full semantics are in
+[`API.md`](API.md#language-packs--checklanguageavailability--requestlanguagepackdownload).
 
 > **⚠ Ordering trap: the download REQUIRES network.** The engine is offline, the *model acquisition*
 > is not. If you are validating offline behaviour, download the pack **while online first**, then go

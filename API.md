@@ -13,6 +13,9 @@ file ever disagree, the file is right and this document is a bug.
 | Symbol | Kind | Purpose |
 |---|---|---|
 | `createSttEngine(context, config, diagnosticLogging)` | top-level function | the library's **only** entry point |
+| `checkLanguageAvailability(context, langs)` | top-level `suspend` function | ask whether the `en` / `es` on-device packs are usable, with no session — see [Language packs](#language-packs--checklanguageavailability--requestlanguagepackdownload) |
+| `requestLanguagePackDownload(context, lang)` | top-level `suspend` function | ask the platform to download a missing `en` / `es` pack; reports acceptance only |
+| `LanguageAvailability` | enum (5 entries) | one language's on-device pack state, as the preflight and a native `"auto"` start read it |
 | `SttEngine` | interface | seven flow properties, the `lastFinal` snapshot, `start()` / `stop()` |
 | `EngineState` | enum (5 entries + `wireName`) | the observable state machine |
 | `SttConfig` | class | recognition settings (`language`, backend preference, server URL, try window, corrections, vocabulary) |
@@ -68,6 +71,90 @@ only the system-resolved **on-device** recognizer and never falls back to the pl
 network-backed one; an unavailable on-device recognizer is a typed `recognizer-unavailable` failure,
 not a reason to switch backends. The only network the library ever touches is the self-hosted server
 a host opts into through `SttConfig.serverUrl`.
+
+---
+
+## Language packs — `checkLanguageAvailability` / `requestLanguagePackDownload`
+
+```kotlin
+public suspend fun checkLanguageAvailability(
+    context: Context,
+    langs: Set<String> = setOf("en", "es"),
+): Map<String, LanguageAvailability>
+
+public suspend fun requestLanguagePackDownload(context: Context, lang: String): Boolean
+```
+
+Two top-level functions in `SttEngineFactory.kt`, next to `createSttEngine` (from Java, static
+methods on `SttEngineFactoryKt`). Together they let a host find out **before** starting a session
+whether the English and Spanish on-device packs are usable, and fix a missing one — without the host
+ever holding a `SpeechRecognizer` of its own.
+
+```kotlin
+lifecycleScope.launch {
+    val packs = checkLanguageAvailability(context)        // {en=INSTALLED, es=DOWNLOADABLE}
+    if (packs["es"] == LanguageAvailability.DOWNLOADABLE) {
+        val accepted = requestLanguagePackDownload(context, "es")
+        // later: call checkLanguageAvailability(context) again to see whether it has arrived
+    }
+}
+```
+
+### Keys are strict
+
+Only the exact, case-sensitive keys **`"en"`** and **`"es"`** are recognized. Anything else —
+including a region-qualified tag such as `"en-US"` and a case variant such as `"EN"` — reads
+`UNSUPPORTED` from the preflight and makes the download return `false`, **without contacting the
+recognition service**. The result map is keyed by the caller's own strings, in the iteration order of
+`langs`, with one value per requested key.
+
+### The preflight agrees with session start
+
+The preflight and a native `"auto"` session start ask the platform the same question and classify the
+answer the same way, so on **API 34+** a value read here predicts what `start()` does:
+
+| `LanguageAvailability` | What a native `"auto"` session start does (API 34+) |
+|---|---|
+| `INSTALLED` | starts (`listening`) |
+| `DOWNLOADABLE` | fails `no-offline-model` |
+| `PENDING` | fails `no-offline-model` |
+| `UNSUPPORTED` | fails `unsupported-language` |
+| `UNKNOWN` | starts — a query that could not answer never blocks a session |
+| recognizer unavailable (the preflight reads every key `UNSUPPORTED`) | fails `recognizer-unavailable` |
+
+Below API 34 an `"auto"` session uses a single language (see `SttConfig.language`), so only that
+language's value predicts it.
+
+### What the download result means
+
+`requestLanguagePackDownload` reports whether the platform **accepted** the request, not whether the
+download finished.
+
+- **Idempotent.** If the pack is already `INSTALLED` or a download is already `PENDING`, it returns
+  `true` without asking the platform again, so no system prompt appears for a pack the user already
+  has.
+- **`true` on Android 14 and later** means the platform acknowledged, scheduled or started the
+  download (a lost progress feed still counts as accepted). **On Android 13** it only means the request
+  was handed to the platform without an error — that version reports nothing back.
+- **`false`** means the request was refused, the language is unsupported on this device, or
+  acceptance was not confirmed within about five seconds (a user-approval prompt can outlast that).
+  **Re-query with `checkLanguageAvailability` rather than calling the download again in a loop.**
+- The download itself **needs a network connection** and may wait for an unmetered one, and the pack
+  can keep reading `DOWNLOADABLE` while it downloads. No progress is reported — any download UI is
+  the host's job.
+
+### Threading, timing and caching
+
+- **Both functions hop to the main thread themselves.** Call them from a coroutine — `lifecycleScope`,
+  `viewModelScope`, a background scope — and the calling coroutine resumes in its own context.
+  **Never call either from `runBlocking` on the main thread**: that blocks the very thread the answer
+  needs.
+- **Call them when no dictation session is active.** Each briefly creates and destroys its own
+  on-device recognizer to ask.
+- **Nothing is cached.** Every call asks the recognition service again, so query again after a
+  download instead of reusing an earlier answer.
+- Neither throws, except for cancellation of the calling coroutine. Cancelling the download call does
+  not recall a request already handed to the platform. No `RECORD_AUDIO` grant is needed for either.
 
 ---
 
@@ -360,6 +447,28 @@ the recognition service owns the microphone, so there is no outbound send buffer
 type is shared by both backends so a host can keep **one exhaustive `when`** across them without a
 platform fork in its rendering code — which is the whole reason the event union survived
 translation unchanged.
+
+### `LanguageAvailability`
+
+```kotlin
+public enum class LanguageAvailability { INSTALLED, DOWNLOADABLE, PENDING, UNSUPPORTED, UNKNOWN }
+```
+
+One language's on-device pack state, returned per key by `checkLanguageAvailability` — the same
+classification a native `"auto"` session start uses, so the two agree (see
+[Language packs](#language-packs--checklanguageavailability--requestlanguagepackdownload)).
+
+| Entry | Meaning |
+|---|---|
+| `INSTALLED` | the on-device model is installed; dictation in this language can start, offline |
+| `DOWNLOADABLE` | supported here, but the model is not installed yet; `requestLanguagePackDownload` can fix it, and until then a session fails `no-offline-model` |
+| `PENDING` | a download is already scheduled and may take hours (for example while waiting for an unmetered network); a session fails `no-offline-model` until it completes — query again later instead of requesting another download |
+| `UNSUPPORTED` | no on-device model for this language on this device, and no download will help; a session fails `unsupported-language` |
+| `UNKNOWN` | the recognition service could not tell (the query failed, timed out, or came back empty); a session still tries to start |
+
+The entry order is frozen. **Keep an `else` (or an explicit `UNKNOWN`) branch in every `when`** over
+it: `UNKNOWN` is a real answer, not an error, and a host that folds it into "missing" will tell a user
+their language is unavailable on a device that can dictate in it.
 
 ---
 
@@ -1025,3 +1134,6 @@ rather than smoothed over. `INTEGRATION.md` step 3 has the worked snippet.
   budget and the segmentation strategy are the library's own business and are free to change. A
   public accessor would invite hosts to build behaviour on an implementation detail.
 - **`SttEngineImpl` and every lifecycle core.** `internal`, and the frozen dump proves it.
+- **A language-pack download progress stream.** `requestLanguagePackDownload` reports acceptance
+  only. Progress, percentages and "still downloading" UI are the host's job; re-query
+  `checkLanguageAvailability` to learn when a pack has arrived.
