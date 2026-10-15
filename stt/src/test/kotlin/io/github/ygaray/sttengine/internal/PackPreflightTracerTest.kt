@@ -3,12 +3,15 @@ package io.github.ygaray.sttengine.internal
 import android.content.Context
 import android.os.Looper
 import android.speech.RecognitionSupport
+import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.test.core.app.ApplicationProvider
 import io.github.ygaray.sttengine.LanguageAvailability
 import io.github.ygaray.sttengine.checkLanguageAvailability
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -111,15 +114,45 @@ class PackPreflightTracerTest {
         )
     }
 
+    // --- the model download ------------------------------------------------------------------
+
+    @Test
+    fun `a background-thread download request puts the main-only seam on the main thread`() {
+        // sdkInt 33 is injected because Robolectric shadows only the 1-arg triggerModelDownload.
+        // If the orchestration ran the trigger off main, the seam's check would throw and the
+        // result would read false.
+        val packs = LanguagePacks(
+            handleFactory = RecognizerHandleFactory {
+                PlatformRecognizerHandle(SpeechRecognizer.createOnDeviceSpeechRecognizer(it), sdkInt = 33)
+            },
+            mainDispatcher = Dispatchers.Main.immediate,
+        )
+        val support = RecognitionSupport.Builder()
+            .setInstalledOnDeviceLanguages(listOf("en-US"))
+            .setSupportedOnDeviceLanguages(listOf("en-US", "es-US"))
+            .build()
+
+        val call = PreflightCall { packs.requestDownload(context, "es") }
+        val recognizer = call.awaitRecognizer()
+        shadowOf(recognizer).triggerSupportResult(support)
+        val accepted = call.awaitResult()
+
+        assertTrue("es-US supported but not installed → the trigger ran and was handed over", accepted)
+        val intent = shadowOf(recognizer).latestModelDownloadIntent
+        assertNotNull("the platform must have received a model-download intent", intent)
+        assertEquals("es-US", intent!!.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE))
+        assertTrue("the transient recognizer was not destroyed", shadowOf(recognizer).isDestroyed)
+    }
+
     // -------------------------------------------------------------------------------------------
 
     /**
      * Runs [block] under `runBlocking` on a fresh background thread, while the test (main) thread
      * drives the paused main looper so the function's own main-thread hop can execute.
      */
-    private class PreflightCall(block: suspend () -> Map<String, LanguageAvailability>) {
+    private class PreflightCall<T : Any>(block: suspend () -> T) {
 
-        @Volatile private var result: Map<String, LanguageAvailability>? = null
+        @Volatile private var result: T? = null
         @Volatile private var thrown: Throwable? = null
 
         private val thread = Thread {
@@ -142,7 +175,7 @@ class PackPreflightTracerTest {
         }
 
         /** Idles the main looper until the background call finishes (5 s deadline). */
-        fun awaitResult(): Map<String, LanguageAvailability> {
+        fun awaitResult(): T {
             val deadline = System.currentTimeMillis() + DEADLINE_MS
             while (thread.isAlive && System.currentTimeMillis() < deadline) {
                 shadowOf(Looper.getMainLooper()).idle()

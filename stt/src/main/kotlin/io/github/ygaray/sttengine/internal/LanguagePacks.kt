@@ -106,6 +106,10 @@ internal class LanguagePacks(
         }
     }
 
+    /** RED stub — replaced in the GREEN commit. */
+    @Suppress("UNUSED_PARAMETER")
+    suspend fun requestDownload(context: Context, lang: String): Boolean = false
+
     /**
      * The single create/use/destroy skeleton for a transient recognizer handle.
      *
