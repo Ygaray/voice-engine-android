@@ -29,6 +29,7 @@ import kotlin.math.min
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -156,7 +157,7 @@ internal class BackendSelector(
     private var terminal = false
 
     // `@Volatile` (LAST-01): [lastFinal]'s getter reads these, and a host may call it off the main
-    // thread. Writes stay main-confined as before.
+    // thread. Writes are main-confined: [start]'s guard and [stop] hop onto [mainDispatcher].
     @Volatile
     private var activeServer: ServerBackend? = null
 
@@ -227,18 +228,32 @@ internal class BackendSelector(
      * attempt loops, two sockets, an older job [stop] could no longer cancel, and two native
      * recognizers. After [stop] or a terminal failure, `start()` begins a fresh session as before.
      *
+     * **Threading.** The public contract does not confine callers to the main thread (D-09: "the
+     * caller is never required to be on the main thread"), so two hosts' coroutines may call
+     * `start()` at the same moment. The guard is therefore a check-and-install executed ON
+     * [mainDispatcher] — the dispatcher every other piece of this selector's session bookkeeping
+     * ([runStart], the forwarding collectors, [handleServerDrop], [stop]) already runs on. That
+     * dispatcher is single-threaded (production: `Dispatchers.Main.immediate`), and the block has no
+     * suspension point, so no other check, install, stop or session transition can interleave with
+     * it: of two concurrent calls exactly one installs a job and the other sees it. On a caller that
+     * is already on the main thread the hop is free — the immediate dispatcher runs it in place.
+     *
      * The job is launched LAZY and recorded in [startJob] BEFORE it runs, so a nested `start()`
      * issued while [runStart] is executing eagerly (an immediate main dispatcher) still sees it.
      */
     override suspend fun start() {
-        if (sessionActive()) return
-        val job = scope.launch(start = CoroutineStart.LAZY) { runStart() }
-        startJob = job
-        job.start()
+        val job = withContext(mainDispatcher) {
+            if (sessionActive()) return@withContext null
+            scope.launch(start = CoroutineStart.LAZY) { runStart() }.also {
+                startJob = it
+                it.start()
+            }
+        } ?: return
         job.join()
     }
 
-    /** See [start]. A cancelled [startJob] (one [stop] ended) no longer counts as in flight. */
+    /** See [start]. A cancelled [startJob] (one [stop] ended) no longer counts as in flight.
+     *  Main-confined: called only from [start]'s block on [mainDispatcher]. */
     private fun sessionActive(): Boolean {
         val starting = startJob?.let { !it.isCompleted && !it.isCancelled } == true
         return starting || activeServer != null || activeNative?.isRunning == true
@@ -398,8 +413,16 @@ internal class BackendSelector(
      * recognizer. The forwarding collectors from [forwardServer] keep running after the detach, so
      * the server's flushed tail final still reaches [finals] and [state] still follows the backend
      * to [EngineState.Idle].
+     *
+     * **Threading.** Runs on [mainDispatcher], like [start]'s guard (see its KDoc): the cancel, the
+     * abandon and the detach below are one uninterrupted main-thread step, so a [runStart] that is
+     * committing a server or a native session cannot interleave with them from another thread.
      */
     override suspend fun stop() {
+        withContext(mainDispatcher) { stopOnMain() }
+    }
+
+    private suspend fun stopOnMain() {
         // CR-03: cancel whatever `start()` sequence is still in flight FIRST — before touching
         // activeServer/activeNative — so nothing further in that sequence (a still-pending
         // startNative() call, most notably) can mutate state/backend after this stop() returns.
