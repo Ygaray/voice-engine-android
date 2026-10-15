@@ -129,7 +129,11 @@ the server does not finish within that bound, the engine commits the open partia
 final instead, so the tail is never dropped. A requested stop never emits on `errors`, even if the
 connection fails during the flush. On the native on-device backend `stop()` is unchanged and
 returns promptly. A host that calls `stop()` from a UI handler should launch it in a coroutine
-rather than block on it.
+rather than block on it. `stop()` cannot be cut short by cancelling its caller: a caller whose scope
+is torn down mid-stop still waits out the flush bound and only then sees its cancellation, so the
+socket and microphone are always released. The flushed tail is on `finals` before `stop()` returns.
+A `stop()` issued while the server try window is still connecting ends at `Idle`, like any other
+stop.
 
 ### `lastFinal` — the tail after `stop()`
 
