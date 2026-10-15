@@ -110,6 +110,44 @@ class ServerBackendPumpTest {
         assertEquals(3, frames)
     }
 
+    @Test
+    fun `a read that returns after running was cleared is dropped, never emitted`() {
+        // 21 W12 review, finding 1(a): teardown clears the flag while a read is in flight; the bytes
+        // that read returns are post-stop capture and must not become a frame (or a level).
+        val running = AtomicBoolean(true)
+        val source = object : PcmSource {
+            override fun read(buffer: ByteArray): Int {
+                running.set(false) // teardown lands while this read is blocked
+                buffer.fill(7)
+                return buffer.size // ...and the read still returns a whole frame
+            }
+            override fun stop() = Unit
+            override fun release() = Unit
+        }
+        val frames = mutableListOf<ByteArray>()
+
+        pumpFrames(source, running, ServerBackend.FRAME_BYTES) { frames += it }
+
+        assertTrue("a late read must be dropped: ${frames.size} frame(s) emitted", frames.isEmpty())
+        assertFalse(running.get())
+    }
+
+    // --- release ownership (21 W12 review, finding 1(b)) ----------------------------------------
+
+    @Test
+    fun `release handoff - a pump that exits first leaves the release to teardown`() {
+        val handoff = PumpReleaseHandoff()
+        assertFalse("the pump exited before any hand-off: it must not release", handoff.pumpExited())
+        assertFalse("teardown after the pump exited must release itself", handoff.handOffToPump())
+    }
+
+    @Test
+    fun `release handoff - teardown that gives up first hands the release to the pump`() {
+        val handoff = PumpReleaseHandoff()
+        assertTrue("teardown with the pump still reading hands the release over", handoff.handOffToPump())
+        assertTrue("the pump must then release on its way out", handoff.pumpExited())
+    }
+
     // --- the real backend (the D-13 missing test) ----------------------------------------------
 
     private suspend fun awaitOn(
@@ -215,6 +253,9 @@ class ServerBackendPumpTest {
 
                     assertTrue("abandon() must stop the source", source.stopped)
                     assertTrue("abandon() must release the source", source.released)
+                    // A repeat teardown is a no-op: release runs exactly once.
+                    withContext(mainExec) { backend.releaseAudioSource() }
+                    assertEquals("release() must run exactly once", 1, source.releaseCount)
                     assertEquals(
                         "release() must run only after the pump thread was joined",
                         false,
@@ -226,6 +267,120 @@ class ServerBackendPumpTest {
                     val after = withContext(mainExec) { socket.sentBinary.size }
                     delay(100)
                     assertEquals(after, withContext(mainExec) { socket.sentBinary.size })
+                }
+            }
+        } finally {
+            mainExec.close()
+        }
+    }
+
+    @Test
+    fun `a pump wedged in read past the join bound releases the source itself, once, and emits nothing late`() {
+        // 21 W12 review, finding 1: a vendor read that ignores stop(). Teardown must stay bounded,
+        // must NOT release the recorder under the live reader, and the late read's audio must
+        // reach neither the level flow nor the socket. Once the read returns, the pump thread
+        // releases the source — exactly once.
+        val executor = Executors.newSingleThreadExecutor()
+        val mainExec = executor.asCoroutineDispatcher()
+        try {
+            runBlocking {
+                withTimeout(10_000) {
+                    val fakeWs = FakeWebSocketFactory()
+                    // Two free frames prime the 3-frame level window; the wedged read is the 3rd,
+                    // so without the post-read recheck it would complete a window and emit a level.
+                    val source = WedgedPcmSource(freeReads = 2, sample = 0x2000)
+                    val backend = ServerBackend(
+                        webSocketFactory = fakeWs,
+                        serverUrl = "wss://example.ts.net:8444/",
+                        language = "en",
+                        mainDispatcher = mainExec,
+                        pcmSourceFactory = SingleSourceFactory(source),
+                    )
+                    val levels: MutableList<Float> = Collections.synchronizedList(mutableListOf())
+                    val levelScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+                    levelScope.launch { backend.level.collect { levels += it } }
+                    try {
+                        connectToReady(backend, fakeWs, mainExec)
+                        val socket = checkNotNull(fakeWs.lastSocket)
+                        awaitOn(mainExec, "the two free frames on the socket") { socket.sentBinary.size >= 2 }
+                        assertTrue("the pump never reached the wedged read", source.awaitWedged(2_000))
+                        val pump = assertNotNullAndGet(source.readerThread)
+
+                        val startedNs = System.nanoTime()
+                        withContext(mainExec) { backend.abandon() }
+                        val tookMs = (System.nanoTime() - startedNs) / 1_000_000
+
+                        assertTrue("teardown must stay bounded (took $tookMs ms)", tookMs < 2_000)
+                        assertTrue("abandon() must still stop the source", source.stopped)
+                        assertTrue("the wedged pump is still alive", pump.isAlive)
+                        assertEquals(
+                            "the source must not be released under a reader still inside read()",
+                            0,
+                            source.releaseCount,
+                        )
+                        // A repeat teardown must not release it either: ownership was handed over.
+                        withContext(mainExec) { backend.releaseAudioSource() }
+                        assertEquals(0, source.releaseCount)
+
+                        source.unblock()
+                        pump.join(2_000)
+                        assertFalse("the pump must exit once its read returns", pump.isAlive)
+
+                        assertEquals("release() must run exactly once", 1, source.releaseCount)
+                        assertEquals("the pump thread owns the release now", pump, source.releaseThread)
+                        assertEquals("no read may be in flight at release", false, source.inReadAtRelease)
+
+                        delay(100)
+                        assertTrue("the late read must not emit a level: $levels", levels.isEmpty())
+                        assertEquals(
+                            "the late read must not reach the socket",
+                            2,
+                            withContext(mainExec) { socket.sentBinary.size },
+                        )
+                    } finally {
+                        source.unblock()
+                        levelScope.cancel()
+                    }
+                }
+            }
+        } finally {
+            mainExec.close()
+        }
+    }
+
+    @Test
+    fun `a pump that ended on its own is released by teardown, exactly once, after the join`() {
+        val executor = Executors.newSingleThreadExecutor()
+        val mainExec = executor.asCoroutineDispatcher()
+        try {
+            runBlocking {
+                withTimeout(10_000) {
+                    val fakeWs = FakeWebSocketFactory()
+                    val sources = finitePcmSourceFactory(frames = 2)
+                    val backend = ServerBackend(
+                        webSocketFactory = fakeWs,
+                        serverUrl = "wss://example.ts.net:8444/",
+                        language = "en",
+                        mainDispatcher = mainExec,
+                        pcmSourceFactory = sources,
+                    )
+                    connectToReady(backend, fakeWs, mainExec)
+                    awaitOn(mainExec, "the source to be exhausted") {
+                        sources.opened.isNotEmpty() && sources.last.exhausted
+                    }
+                    val source = sources.last
+                    val pump = assertNotNullAndGet(source.readerThread)
+                    pump.join(2_000)
+                    assertFalse(pump.isAlive)
+                    assertEquals("an ended pump must not release on its own", 0, source.releaseCount)
+
+                    withContext(mainExec) {
+                        backend.abandon()
+                        backend.releaseAudioSource()
+                    }
+
+                    assertEquals("release() must run exactly once", 1, source.releaseCount)
+                    assertEquals(false, source.readerAliveAtRelease)
                 }
             }
         } finally {

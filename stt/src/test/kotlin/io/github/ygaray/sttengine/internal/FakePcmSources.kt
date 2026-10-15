@@ -43,6 +43,10 @@ internal class FinitePcmSource(
     @Volatile var released: Boolean = false
         private set
 
+    /** How many times [release] ran. The teardown discipline requires exactly one. */
+    @Volatile var releaseCount: Int = 0
+        private set
+
     /** The thread that last called [read] — the pump thread, in a backend test. */
     @Volatile var readerThread: Thread? = null
         private set
@@ -77,6 +81,100 @@ internal class FinitePcmSource(
     override fun release() {
         readerAliveAtRelease = readerThread?.isAlive
         released = true
+        releaseCount++
+    }
+}
+
+/**
+ * A [PcmSource] that models a vendor `AudioRecord.read()` which does NOT unblock on `stop()`
+ * (21 W12 review, finding 1).
+ *
+ * The first [freeReads] reads each return one full frame of [sample] immediately. The next read
+ * blocks — ignoring [stop] — until the test calls [unblock], then returns one more full frame of
+ * [sample]: the "late" capture that must never be emitted. Every read after that returns `-1`.
+ *
+ * Records what the teardown discipline is judged by: how many times [release] ran, on which thread,
+ * and whether a read was in flight at that moment.
+ */
+internal class WedgedPcmSource(
+    private val freeReads: Int,
+    private val sample: Short = 0x2000,
+) : PcmSource {
+
+    private val wedged = java.util.concurrent.CountDownLatch(1)
+    private val gate = java.util.concurrent.CountDownLatch(1)
+    private val reads = java.util.concurrent.atomic.AtomicInteger(0)
+    private val releases = java.util.concurrent.atomic.AtomicInteger(0)
+
+    @Volatile var inRead: Boolean = false
+        private set
+
+    @Volatile var stopped: Boolean = false
+        private set
+
+    /** The thread that called [read] — the pump thread. */
+    @Volatile var readerThread: Thread? = null
+        private set
+
+    /** The thread [release] last ran on. */
+    @Volatile var releaseThread: Thread? = null
+        private set
+
+    /** Whether a read was in flight when [release] last ran. Must be `false`. */
+    @Volatile var inReadAtRelease: Boolean? = null
+        private set
+
+    val releaseCount: Int get() = releases.get()
+
+    /** Blocks until the pump is parked in the wedged read. */
+    fun awaitWedged(timeoutMs: Long): Boolean =
+        wedged.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+
+    /** Lets the wedged read return (with a full frame of audio). */
+    fun unblock() = gate.countDown()
+
+    override fun read(buffer: ByteArray): Int {
+        readerThread = Thread.currentThread()
+        val n = reads.incrementAndGet()
+        if (n > freeReads + 1) return -1
+        inRead = true
+        try {
+            if (n == freeReads + 1) {
+                wedged.countDown()
+                gate.await() // deliberately deaf to stop(): the vendor wedge
+            }
+            fill(buffer)
+            return buffer.size
+        } finally {
+            inRead = false
+        }
+    }
+
+    private fun fill(buffer: ByteArray) {
+        val lo = (sample.toInt() and 0xFF).toByte()
+        val hi = ((sample.toInt() shr 8) and 0xFF).toByte()
+        for (i in buffer.indices) buffer[i] = if (i % 2 == 0) lo else hi
+    }
+
+    override fun stop() {
+        stopped = true
+    }
+
+    override fun release() {
+        inReadAtRelease = inRead
+        releaseThread = Thread.currentThread()
+        releases.incrementAndGet()
+    }
+}
+
+/** A [PcmSourceFactory] that always hands out [source] and counts how often it was asked. */
+internal class SingleSourceFactory(private val source: PcmSource) : PcmSourceFactory {
+    @Volatile var openCount: Int = 0
+        private set
+
+    override fun open(sampleRateHz: Int): PcmSource {
+        openCount++
+        return source
     }
 }
 

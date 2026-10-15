@@ -8,6 +8,7 @@ import io.github.ygaray.sttengine.SttWarning
 import io.github.ygaray.sttengine.corrections.Corrections
 import io.github.ygaray.sttengine.corrections.CorrectionRuleset
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -58,6 +59,11 @@ internal fun interface WebSocketFactory {
  * exactly as `AudioSourcePipe.pumpInto` treats it; a partial frame left over at that point is
  * dropped (less than 32 ms of audio, and the server's frame contract is whole 512-sample frames).
  *
+ * [running] is rechecked the moment each `read()` returns, before the bytes are accumulated: a read
+ * that was still in flight when teardown cleared the flag (a vendor `AudioRecord.read()` that does
+ * not unblock promptly on `stop()`) is dropped, so no frame and no level is ever emitted after a
+ * teardown asked the pump to stop.
+ *
  * `catch (Exception)` only, never `Throwable` (mirrors `AudioSourcePipe` CR-03): a read failure —
  * typically an `IllegalStateException` from a recorder released under a wedged read — is the ordinary
  * end of capture, but an `Error` such as `OutOfMemoryError` must not be swallowed. [running] is
@@ -75,6 +81,9 @@ internal fun pumpFrames(
         while (running.get()) {
             val chunk = ByteArray(frameBytes - filled)
             val read = source.read(chunk)
+            // Teardown may have cleared the flag while this read was blocked: whatever it returned
+            // is post-stop capture and must not reach the level meter or the socket.
+            if (!running.get()) break
             if (read <= 0) break
             val count = minOf(read, chunk.size)
             System.arraycopy(chunk, 0, frame, filled, count)
@@ -88,6 +97,39 @@ internal fun pumpFrames(
         // The ordinary end of a capture session, never a fault — see the KDoc above.
     } finally {
         running.set(false)
+    }
+}
+
+/**
+ * Who calls `release()` on a pump's [PcmSource] — exactly once, and never while a read may still
+ * be in flight (21 W12 review, finding 1).
+ *
+ * Teardown ([ServerBackend.releaseAudioSource]) waits only a bounded [ServerBackend.PUMP_JOIN_MS]
+ * for the pump thread, because it can run on the main looper. If the pump is still inside a wedged
+ * `read()` when that bound expires, releasing the recorder under it is unsafe — so teardown hands
+ * release ownership to the pump thread, which releases the source on its own way out. One atomic
+ * transition decides the owner, so the two sides can never both release, or both skip it:
+ *
+ * - the pump thread calls [pumpExited] when it has finished reading; it owns the release only if
+ *   teardown already handed it over ([handOffToPump] won first);
+ * - teardown calls [handOffToPump] after its bounded join; it gets `true` (the pump now owns it)
+ *   only while the pump is still reading, and `false` once the pump has exited — then teardown
+ *   releases the source itself.
+ */
+internal class PumpReleaseHandoff {
+    private val phase = AtomicInteger(READING)
+
+    /** Pump side, once reading is over. `true` = teardown handed the release over: release now. */
+    fun pumpExited(): Boolean = !phase.compareAndSet(READING, EXITED)
+
+    /** Teardown side, after the bounded join. `true` = the pump is still reading and now owns the
+     *  release; `false` = the pump has exited, so the caller must release. */
+    fun handOffToPump(): Boolean = phase.compareAndSet(READING, HANDED_OFF)
+
+    private companion object {
+        const val READING = 0
+        const val EXITED = 1
+        const val HANDED_OFF = 2
     }
 }
 
@@ -142,7 +184,10 @@ internal class OkHttpWebSocketFactory(
  * pump itself never blocks on main. The pump thread also computes the input level with a
  * [LevelMeter] (D-03, parity with the web worklet) and emits it on [level]. Teardown copies `AudioSourcePipe`: clear the run flag, `source.stop()`, a bounded
  * `join(PUMP_JOIN_MS)`, and only then `source.release()` — never release while a read may still be
- * in flight (CR-02). Every teardown path ([stop], [abandon], [fail], [releaseAudioSource]) runs it.
+ * in flight (CR-02). If the join times out with the pump still inside a wedged read, release
+ * ownership passes to the pump thread instead ([PumpReleaseHandoff]): it releases the source itself
+ * once the read returns, so the source is released exactly once and never under a live reader.
+ * Every teardown path ([stop], [abandon], [fail], [releaseAudioSource]) runs it.
  *
  * ## Outbound backpressure (Phase 9 Task 2, T-09-05)
  *
@@ -236,6 +281,10 @@ internal class ServerBackend(
 
     /** The daemon pump thread, or `null` before `Ready` and after [releaseAudioSource]. */
     private var pumpThread: Thread? = null
+
+    /** Decides whether [releaseAudioSource] or the pump thread releases the source; set with
+     *  [pumpThread], cleared with it. */
+    private var pumpHandoff: PumpReleaseHandoff? = null
 
     /** Pump thread → main hand-off. UNLIMITED: the pump must never block on main (D-02 keeps
      *  network backpressure in [backpressureGate], not here). */
@@ -392,6 +441,14 @@ internal class ServerBackend(
      * a blocking read on the same recorder is unsafe. Each step is nested in `finally` so a throwing
      * step cannot skip the next.
      *
+     * The join stays bounded, so it can return with the pump still blocked in a read that ignored
+     * `stop()` (a vendor recorder that does not unblock promptly). This then does NOT release the
+     * source: [PumpReleaseHandoff] passes release ownership to the pump thread, which releases it
+     * on its own way out once that read returns. Whatever such a late read returned is dropped by
+     * [pumpFrames]'s post-read recheck, never sent. Either way the source is released exactly once.
+     * A read that never returns at all leaves the source unreleased on its parked daemon thread —
+     * the deliberate trade against releasing a recorder under a live reader.
+     *
      * [BackendSelector]'s mid-session handoff calls this EXPLICITLY, BEFORE constructing the native
      * fallback (release-then-acquire, D-03/T-09-06) — two mic clients cannot coexist. [fail],
      * [abandon] and [stop] also call it as part of their own teardown, so a terminal failure or a
@@ -401,8 +458,10 @@ internal class ServerBackend(
         pumping.set(false)
         val source = audioSource ?: return
         val pump = pumpThread
+        val handoff = pumpHandoff
         audioSource = null
         pumpThread = null
+        pumpHandoff = null
         try {
             runCatching { source.stop() }
         } finally {
@@ -410,7 +469,11 @@ internal class ServerBackend(
                 // Bounded — never unbounded: this can run on the main looper.
                 runCatching { pump?.join(PUMP_JOIN_MS) }
             } finally {
-                runCatching { source.release() }
+                // A pump still reading past the bound now owns the release (see the KDoc above);
+                // otherwise — it exited, or there never was one — release here, exactly once.
+                // (`pump != null`: a thread that never started cannot release anything.)
+                val pumpOwnsRelease = pump != null && handoff?.handOffToPump() == true
+                if (!pumpOwnsRelease) runCatching { source.release() }
             }
         }
     }
@@ -423,13 +486,21 @@ internal class ServerBackend(
             for (frame in channel) sendPcmFrame(frame)
         }
         pumping.set(true)
+        val handoff = PumpReleaseHandoff()
+        pumpHandoff = handoff
         pumpThread = Thread(
             {
-                pumpFrames(source, pumping, FRAME_BYTES) { frame ->
-                    // D-03: level from the pump thread (tryEmit is thread-safe; the meter is
-                    // touched by this thread only), then hand the frame to main.
-                    levelMeter.accept(frame)?.let { _level.tryEmit(it) }
-                    channel.trySend(frame)
+                try {
+                    pumpFrames(source, pumping, FRAME_BYTES) { frame ->
+                        // D-03: level from the pump thread (tryEmit is thread-safe; the meter is
+                        // touched by this thread only), then hand the frame to main.
+                        levelMeter.accept(frame)?.let { _level.tryEmit(it) }
+                        channel.trySend(frame)
+                    }
+                } finally {
+                    // Reading is over. If teardown gave up waiting and handed the release over,
+                    // this thread is now the only one that may release the source.
+                    if (handoff.pumpExited()) runCatching { source.release() }
                 }
             },
             PUMP_THREAD_NAME,
