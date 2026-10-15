@@ -169,6 +169,56 @@ class BackendSelectorStopTest {
         assertEquals("close:1000", h.log().last())
     }
 
+    // --- start() against a stop() that is still flushing (21-W46 cycle 2, finding A) ----------------
+    //
+    // The re-entrant start() is launched and asserted complete at once, never joined: without the
+    // guard it suspends in a fresh try window on a second socket, and the assertion must end the test
+    // there rather than wait on it.
+
+    @Test
+    fun `a start during the stop flush is ignored and lastFinal is the flushed tail when stop returns`() = runTest {
+        val h = committedServerSession()
+        val stopJob = stopUntilTokenSent(h)
+
+        val second = launch(h.main) { h.selector.start() }
+        runCurrent()
+        assertTrue("a start() during the flush returns at once", second.isCompleted)
+        assertEquals("a start() during the flush must not open a second socket", 1, h.fakeWs.createCount)
+
+        h.fakeWs.fireMessage("""{"type":"final","text":"tail","segmentId":5}""", socket = h.fakeWs.sockets[0])
+        h.fakeWs.fireClosing(1000, socket = h.fakeWs.sockets[0])
+        runCurrent()
+
+        assertStoppedWithoutNative(h, stopJob)
+        assertEquals("LAST-01: the flushed tail is readable as stop() returns", FinalSegment("tail", 5), h.selector.lastFinal)
+        assertEquals(listOf(FinalSegment("tail", 5)), h.finals)
+    }
+
+    @Test
+    fun `a start after stop returns begins a fresh session and retires the old session's forwarders`() = runTest {
+        val h = committedServerSession()
+        val oldForwarders = h.selector.sessionForwarders
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+        assertStoppedWithoutNative(h, stopJob)
+        assertFalse("the forwarders outlive the detach, so the flush still reaches the host", oldForwarders.isCancelled)
+
+        val again = launch(h.main) { h.selector.start() }
+        runCurrent()
+        assertEquals("a start() after stop() returned opens a fresh attempt", 2, h.fakeWs.createCount)
+        assertEquals(EngineState.Connecting, h.selector.state.value)
+        assertTrue("the previous session's forwarders are cancelled", oldForwarders.isCancelled)
+        assertTrue("…and none is left running", oldForwarders.children.none())
+
+        h.fakeWs.fireOpen()
+        h.fakeWs.fireMessage("""{"type":"ready"}""")
+        runCurrent()
+        assertTrue(again.isCompleted)
+        assertEquals(Backend.Server, h.selector.backend.value)
+        assertEquals(EngineState.Listening, h.selector.state.value)
+    }
+
     @Test
     fun `an open partial is committed onto selector finals when the flush fails`() = runTest {
         val h = committedServerSession()

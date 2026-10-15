@@ -120,7 +120,26 @@ internal class BackendSelector(
     },
 ) : SttEngine {
 
-    private val scope = CoroutineScope(SupervisorJob() + mainDispatcher)
+    private val scopeJob = SupervisorJob()
+    private val scope = CoroutineScope(scopeJob + mainDispatcher)
+
+    /**
+     * How many [stop] calls are still running — main-confined (every [stop] runs on
+     * [mainDispatcher]). While it is above zero the session is still tearing down (the server flush
+     * can take ~2.5 s), so [start]'s guard treats the session as active. See [start].
+     */
+    private var stopsInFlight = 0
+
+    /**
+     * Parent of the CURRENT session's forwarding collectors ([forwardServer], [startNative]) — every
+     * one except the two `finals` collectors. Cancelled and replaced at the top of [runStart], so a
+     * previous session's state/partial/level/warning/error collectors can never write into the next
+     * session's flows (and no longer pile up on a reused engine). The `finals` collectors stay on
+     * [scope] instead: [finals] is LOSSLESS, so a previous session's committed text is delivered
+     * rather than risk being cancelled away. `internal` only so a test can observe the cancellation.
+     */
+    internal var sessionForwarders: Job = SupervisorJob(scopeJob)
+        private set
 
     private val _state = MutableStateFlow(EngineState.Idle)
     override val state: StateFlow<EngineState> = _state.asStateFlow()
@@ -238,6 +257,15 @@ internal class BackendSelector(
      * it: of two concurrent calls exactly one installs a job and the other sees it. On a caller that
      * is already on the main thread the hop is free — the immediate dispatcher runs it in place.
      *
+     * **A `start()` during a `stop()` is ignored too.** A server-path [stop] suspends for the flush
+     * (up to ~2.5 s) after detaching [activeServer] (D-04), and the session is not over until it
+     * returns. Admitting a `start()` in that window would open a second socket mid-flush, and its
+     * [runStart] would clear [lastServer] before the original `stop()` returned — breaking LAST-01's
+     * promise that [lastFinal] holds the flushed tail as soon as `stop()` returns. So [stopsInFlight]
+     * counts as an active session, the same "ignore while active" rule as above (rather than
+     * queueing the start behind the teardown, which would race the stop caller's [lastFinal] read).
+     * A host that awaits `stop()` before calling `start()` is unaffected.
+     *
      * The job is launched LAZY and recorded in [startJob] BEFORE it runs, so a nested `start()`
      * issued while [runStart] is executing eagerly (an immediate main dispatcher) still sees it.
      */
@@ -256,7 +284,7 @@ internal class BackendSelector(
      *  Main-confined: called only from [start]'s block on [mainDispatcher]. */
     private fun sessionActive(): Boolean {
         val starting = startJob?.let { !it.isCompleted && !it.isCancelled } == true
-        return starting || activeServer != null || activeNative?.isRunning == true
+        return stopsInFlight > 0 || starting || activeServer != null || activeNative?.isRunning == true
     }
 
     private suspend fun runStart() {
@@ -264,7 +292,11 @@ internal class BackendSelector(
         // previous session left behind — its backends, its handoff commit, its terminal flag — must
         // be cleared here, or [lastFinal] would hand a host a previous session's text and the
         // one-shot handoff guard would stay spent. [start] runs this only when no session is
-        // starting or live (see its re-entry guard), so clearing the active references is safe.
+        // starting, live or stopping (see its re-entry guard), so clearing the active references is
+        // safe. The previous session's forwarding collectors are cancelled first, so none of them can
+        // write into this session's state/partial/level/warnings/errors (see [sessionForwarders]).
+        sessionForwarders.cancel()
+        sessionForwarders = SupervisorJob(scopeJob)
         terminal = false
         handoffStarted = false
         handoffFinal = null
@@ -417,12 +449,25 @@ internal class BackendSelector(
      * **Threading.** Runs on [mainDispatcher], like [start]'s guard (see its KDoc): the cancel, the
      * abandon and the detach below are one uninterrupted main-thread step, so a [runStart] that is
      * committing a server or a native session cannot interleave with them from another thread.
+     *
+     * **The detach does not open the start guard.** [stopsInFlight] stays above zero until this
+     * returns, so a concurrent [start] during the flush is ignored (see [start]); [lastServer] — and
+     * so [lastFinal] — is still this session's when `stop()` returns.
      */
     override suspend fun stop() {
         withContext(mainDispatcher) { stopOnMain() }
     }
 
     private suspend fun stopOnMain() {
+        stopsInFlight += 1
+        try {
+            detachAndFlush()
+        } finally {
+            stopsInFlight -= 1
+        }
+    }
+
+    private suspend fun detachAndFlush() {
         // CR-03: cancel whatever `start()` sequence is still in flight FIRST — before touching
         // activeServer/activeNative — so nothing further in that sequence (a still-pending
         // startNative() call, most notably) can mutate state/backend after this stop() returns.
@@ -463,25 +508,27 @@ internal class BackendSelector(
      * touches `Error`, let alone `Reconnecting`), exactly like an ordinary native restart already is.
      */
     private fun forwardServer(serverBackend: ServerBackend) {
-        scope.launch {
+        val forwarders = sessionForwarders
+        scope.launch(forwarders) {
             serverBackend.state.collect { next -> if (next != EngineState.Error) setState(next) }
         }
-        scope.launch {
+        scope.launch(forwarders) {
             serverBackend.partial.collect { text ->
                 _partial.value = text
                 _events.tryEmit(SttEvent.Partial(text))
             }
         }
+        // Not under [forwarders]: [finals] is lossless (see [sessionForwarders]).
         scope.launch {
             serverBackend.finals.collect { segment ->
                 finalsChannel.trySend(segment)
                 _events.tryEmit(SttEvent.Final(segment))
             }
         }
-        scope.launch {
+        scope.launch(forwarders) {
             serverBackend.errors.collect { handleServerDrop(serverBackend) }
         }
-        scope.launch {
+        scope.launch(forwarders) {
             serverBackend.level.collect { level ->
                 _level.tryEmit(level)
                 _events.tryEmit(SttEvent.Level(level))
@@ -492,7 +539,7 @@ internal class BackendSelector(
         // the server path: ServerBackend's PCM pump (Phase 21, SRV-05) feeds every captured frame
         // through sendPcmFrame, so ServerBackpressureGate's shed/clear notices reach the host here
         // as SttEvent.Warning whenever the socket falls behind.
-        scope.launch {
+        scope.launch(forwarders) {
             serverBackend.warnings.collect { warning -> _events.tryEmit(SttEvent.Warning(warning)) }
         }
     }
@@ -566,7 +613,8 @@ internal class BackendSelector(
             mainDispatcher = mainDispatcher,
         )
         activeNative = native
-        scope.launch {
+        val forwarders = sessionForwarders
+        scope.launch(forwarders) {
             native.state.collect { next ->
                 // Only flip `backend` once native audio is ACTUALLY flowing (SEL-04) — never
                 // before, so a host reading `backend` never observes Native ahead of native audio.
@@ -576,25 +624,26 @@ internal class BackendSelector(
                 setState(next)
             }
         }
-        scope.launch {
+        scope.launch(forwarders) {
             native.partial.collect { text ->
                 _partial.value = text
                 _events.tryEmit(SttEvent.Partial(text))
             }
         }
+        // Not under [forwarders]: [finals] is lossless (see [sessionForwarders]).
         scope.launch {
             native.finals.collect { segment ->
                 finalsChannel.trySend(segment)
                 _events.tryEmit(SttEvent.Final(segment))
             }
         }
-        scope.launch {
+        scope.launch(forwarders) {
             native.errors.collect { error ->
                 errorsChannel.trySend(error)
                 _events.tryEmit(SttEvent.Error(error))
             }
         }
-        scope.launch {
+        scope.launch(forwarders) {
             native.level.collect { level ->
                 _level.tryEmit(level)
                 _events.tryEmit(SttEvent.Level(level))
