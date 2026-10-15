@@ -378,6 +378,81 @@ class BackendSelectorTryWindowTest {
         assertEquals(0, h.fakeHandle.startCount)
     }
 
+    // --- start() re-entry (21-W46 review): mirrors SttEngineImpl.start()'s `if (running) return` ----
+
+    @Test
+    fun `a second start during the try window is a no-op and stop still ends everything`() = runTest {
+        val h = startSelector()
+        h.fakeWs.fireFailure(eof(), socket = h.socket(0))
+        advanceTimeBy(100)
+        runCurrent()
+
+        val second = launch(h.dispatcher) { h.selector.start() }
+        assertTrue("a re-entrant start() returns at once", second.isCompleted)
+        assertEquals("a re-entrant start() must not open a second socket", 1, h.fakeWs.createCount)
+
+        advanceTimeBy(150)
+        runCurrent()
+        assertEquals("only the one loop retries at 250 ms", 2, h.fakeWs.createCount)
+
+        launch(h.dispatcher) { h.selector.stop() }.join()
+        assertTrue("stop() cancels the in-flight retry", h.socket(1).cancelCount >= 1)
+        h.started.join()
+        advanceUntilIdle()
+        assertEquals("no loop may retry after stop()", 2, h.fakeWs.createCount)
+        assertEquals("no loop may start native after stop()", 0, h.fakeHandle.startCount)
+        assertTrue(h.errors.isEmpty())
+    }
+
+    @Test
+    fun `a second start on a committed server session is a no-op`() = runTest {
+        val h = startSelector()
+        h.fakeWs.fireOpen(h.socket(0))
+        h.fakeWs.fireMessage("""{"type":"ready"}""", socket = h.socket(0))
+        runCurrent()
+        assertTrue(h.started.isCompleted)
+
+        launch(h.dispatcher) { h.selector.start() }.join()
+        runCurrent()
+
+        assertEquals("no second socket while the server session is live", 1, h.fakeWs.createCount)
+        assertEquals(0, h.socket(0).cancelCount)
+        assertEquals(Backend.Server, h.selector.backend.value)
+        assertEquals(EngineState.Listening, h.selector.state.value)
+        assertEquals(0, h.fakeHandle.startCount)
+    }
+
+    @Test
+    fun `a second start on a live native fallback is a no-op`() = runTest {
+        val h = startSelector()
+        h.fakeWs.fireFailure(ConnectException("Failed to connect to x"), socket = h.socket(0))
+        assertFastFailToNative(h)
+
+        launch(h.dispatcher) { h.selector.start() }.join()
+        runCurrent()
+
+        assertEquals("no new server attempt while native is live", 1, h.fakeWs.createCount)
+        assertEquals("never a second native recognizer", 1, h.fakeHandle.startCount)
+        assertEquals(EngineState.Listening, h.selector.state.value)
+    }
+
+    @Test
+    fun `start after a prefer=Server terminal error begins a fresh session`() = runTest {
+        val h = startSelector(prefer = BackendPreference.Server)
+        h.fakeWs.fireFailure(ConnectException("Failed to connect to x"), socket = h.socket(0))
+        runCurrent()
+        assertEquals(EngineState.Error, h.selector.state.value)
+
+        val again = launch(h.dispatcher) { h.selector.start() }
+        assertEquals("a terminal error ends the session, so start() runs again", 2, h.fakeWs.createCount)
+        h.fakeWs.fireOpen(h.socket(1))
+        h.fakeWs.fireMessage("""{"type":"ready"}""", socket = h.socket(1))
+        runCurrent()
+        assertTrue(again.isCompleted)
+        assertEquals(Backend.Server, h.selector.backend.value)
+        assertEquals(EngineState.Listening, h.selector.state.value)
+    }
+
     // --- the server-attempt trace line (D-09 capture input, T-21-15) ---------------------------------
 
     @Test

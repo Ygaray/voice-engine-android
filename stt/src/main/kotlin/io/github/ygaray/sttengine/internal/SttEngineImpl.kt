@@ -287,6 +287,13 @@ internal class SttEngineImpl(
     /** The live session epoch, so a diagnostic can tag a line with the session it belongs to. */
     val currentEpoch: Long get() = epoch.current
 
+    /**
+     * `true` from [start] until [stop] or a terminal [fail] — exactly the flag [start]'s re-entry
+     * guard reads. [BackendSelector] reads it so its own `start()` makes the same no-op decision
+     * while a native session it constructed is still starting or live.
+     */
+    val isRunning: Boolean get() = running
+
     /** Where the last committed final's text came from — `PLATFORM_FINAL` or the last partial. */
     val lastCommitSource: FinalTextSource get() = accumulator.lastCommitSource
 

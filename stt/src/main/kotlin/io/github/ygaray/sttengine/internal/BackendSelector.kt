@@ -13,6 +13,7 @@ import io.github.ygaray.sttengine.SttEvent
 import io.github.ygaray.sttengine.corrections.Corrections
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -218,18 +219,37 @@ internal class BackendSelector(
      */
     private var startJob: Job? = null
 
+    /**
+     * Re-entry mirrors [SttEngineImpl.start]'s own `if (running) return`: a `start()` while this
+     * selector's session is still starting (the try-server loop, its backoffs, the native start) or
+     * live (a committed server, or a native session that has not stopped or failed) is a no-op that
+     * returns at once. Without it a second call ran a second [runStart] beside the first — two
+     * attempt loops, two sockets, an older job [stop] could no longer cancel, and two native
+     * recognizers. After [stop] or a terminal failure, `start()` begins a fresh session as before.
+     *
+     * The job is launched LAZY and recorded in [startJob] BEFORE it runs, so a nested `start()`
+     * issued while [runStart] is executing eagerly (an immediate main dispatcher) still sees it.
+     */
     override suspend fun start() {
-        val job = scope.launch { runStart() }
+        if (sessionActive()) return
+        val job = scope.launch(start = CoroutineStart.LAZY) { runStart() }
         startJob = job
+        job.start()
         job.join()
+    }
+
+    /** See [start]. A cancelled [startJob] (one [stop] ended) no longer counts as in flight. */
+    private fun sessionActive(): Boolean {
+        val starting = startJob?.let { !it.isCompleted && !it.isCancelled } == true
+        return starting || activeServer != null || activeNative?.isRunning == true
     }
 
     private suspend fun runStart() {
         // Per-session reset (D-05, LAST-01). `:demo` reuses ONE engine across runs, so everything a
         // previous session left behind — its backends, its handoff commit, its terminal flag — must
         // be cleared here, or [lastFinal] would hand a host a previous session's text and the
-        // one-shot handoff guard would stay spent. A `start()` while a session is still live is
-        // outside the [SttEngine] contract (stop first), so clearing the active references is safe.
+        // one-shot handoff guard would stay spent. [start] runs this only when no session is
+        // starting or live (see its re-entry guard), so clearing the active references is safe.
         terminal = false
         handoffStarted = false
         handoffFinal = null
@@ -286,15 +306,22 @@ internal class BackendSelector(
         lastTryError = null
         var attempt = 0
         var gaveUp = false
+        // This loop's OWN in-flight attempt. [pendingServer] is the shared handle [stop] reads; every
+        // clear below goes through [releasePending], which only clears it while it still names this
+        // loop's attempt, and the `finally` abandons only this local — so a loop that is still
+        // settling its cancellation can never clear or abandon a later session's attempt.
+        var inFlight: ServerBackend? = null
         try {
             val connected = withTimeoutOrNull(tryServerTimeoutMs) {
                 var retryIndex = 0
                 while (true) {
                     attempt += 1
                     val backend = serverBackendFactory(url)
+                    inFlight = backend
                     pendingServer = backend
                     if (backend.connect()) {
-                        pendingServer = null
+                        inFlight = null
+                        releasePending(backend)
                         logAttempt(attempt, "Connected", backend.connectObservation)
                         return@withTimeoutOrNull backend
                     }
@@ -303,7 +330,8 @@ internal class BackendSelector(
                     backend.lastError?.let { lastTryError = it }
                     // Never leak the half-open socket — abandon BEFORE deciding what happens next.
                     backend.abandon()
-                    pendingServer = null
+                    inFlight = null
+                    releasePending(backend)
                     logAttempt(attempt, cls.name, observation)
                     if (cls == ConnectFailureClass.FastFail) {
                         gaveUp = true
@@ -317,20 +345,28 @@ internal class BackendSelector(
             }
             if (connected == null && !gaveUp) {
                 // D-14: the window — not a socket timeout, not a backoff — ran out.
-                val inFlight = pendingServer
-                pendingServer = null
-                val observation = inFlight?.connectObservation ?: ConnectObservation()
-                inFlight?.lastError?.let { lastTryError = it }
-                inFlight?.abandon()
+                val expired = inFlight
+                inFlight = null
+                if (expired != null) releasePending(expired)
+                val observation = expired?.connectObservation ?: ConnectObservation()
+                expired?.lastError?.let { lastTryError = it }
+                expired?.abandon()
                 logAttempt(attempt, WINDOW_EXPIRED, observation)
             }
             return connected
         } finally {
-            // A stop()-triggered cancellation: abandon the in-flight attempt (cancels its socket,
-            // releases any mic it opened). Idempotent; a no-op on every other path.
-            pendingServer?.abandon()
-            pendingServer = null
+            // A stop()-triggered cancellation: abandon THIS loop's in-flight attempt (cancels its
+            // socket, releases any mic it opened). Idempotent; a no-op on every other path.
+            inFlight?.let {
+                it.abandon()
+                releasePending(it)
+            }
         }
+    }
+
+    /** Clears [pendingServer] only while it still names [backend] — see [tryServer]'s ownership note. */
+    private fun releasePending(backend: ServerBackend) {
+        if (pendingServer === backend) pendingServer = null
     }
 
     /** One `server-attempt` trace line — the throwable's simple class name only, never its
