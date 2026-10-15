@@ -2,6 +2,7 @@ package io.github.ygaray.sttengine.internal
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.speech.RecognitionListener
@@ -42,6 +43,12 @@ internal class PlatformRecognizerHandle(
      */
     private val checkSupport: (Intent, Executor, RecognitionSupportCallback) -> Unit =
         delegate::checkRecognitionSupport,
+    /**
+     * The device's API level, injectable so a test can drive the API-33 download branch under a
+     * newer Robolectric sdk (Robolectric shadows only the 1-arg `triggerModelDownload`). Production
+     * always takes the default.
+     */
+    private val sdkInt: Int = Build.VERSION.SDK_INT,
 ) : RecognizerHandle {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -197,6 +204,9 @@ internal class PlatformRecognizerHandle(
          * CONTRACTUAL.
          */
         const val LANGUAGE_SUPPORT_TIMEOUT_MS: Long = 2_000L
+
+        /** RED placeholder — KDoc lands with the GREEN implementation. */
+        const val DOWNLOAD_ACCEPT_TIMEOUT_MS: Long = 5_000L
 
         /** Run the callback on whichever thread the service delivers it — we only resume a coroutine. */
         val DIRECT_EXECUTOR: Executor = Executor { it.run() }

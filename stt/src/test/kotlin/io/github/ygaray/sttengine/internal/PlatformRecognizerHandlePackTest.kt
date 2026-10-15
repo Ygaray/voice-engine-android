@@ -3,11 +3,15 @@ package io.github.ygaray.sttengine.internal
 import android.content.Context
 import android.os.Looper
 import android.speech.RecognitionSupport
+import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.test.core.app.ApplicationProvider
 import io.github.ygaray.sttengine.LanguageAvailability
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -29,6 +33,9 @@ import org.robolectric.shadows.ShadowSpeechRecognizer
  *    looper) AND on the posted path (caller off the main looper), where the throw happens inside the
  *    posted block and must neither escape onto the main looper nor leave the query waiting out its
  *    timeout.
+ * 3. The model download's API-33 branch through the shadow (the only overload Robolectric
+ *    shadows), and the download seam's main-thread requirement: an off-main call throws before any
+ *    intent is built, on both the API-33 and the API-34 branch.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -148,6 +155,55 @@ class PlatformRecognizerHandlePackTest {
                 "(took $elapsedMs ms)",
             elapsedMs in 0 until 1_000L,
         )
+    }
+
+    // --- the model download (API 33 branch) and its main-thread requirement ----------------------
+
+    @Test
+    fun `triggerModelDownload on API 33 hands the exact tag to the platform and reports true`() {
+        val recognizer = onDeviceRecognizer()
+        val handle = PlatformRecognizerHandle(recognizer, sdkInt = 33)
+
+        val accepted = runBlocking { handle.triggerModelDownload("es-US") }
+
+        assertTrue("API 33: a request handed over without a throw reads accepted", accepted)
+        val intent = shadowOf(recognizer).latestModelDownloadIntent
+        assertNotNull("the platform must have received a model-download intent", intent)
+        assertEquals(RecognizerIntent.ACTION_RECOGNIZE_SPEECH, intent!!.action)
+        assertEquals("es-US", intent.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE))
+        assertTrue(intent.getBooleanExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false))
+    }
+
+    @Test
+    fun `triggerModelDownload off main throws before any platform call`() {
+        val recognizer = onDeviceRecognizer()
+
+        for (sdkInt in listOf(33, 34)) {
+            val handle = PlatformRecognizerHandle(recognizer, sdkInt = sdkInt)
+            val thrown = AtomicReference<Throwable?>(null)
+            val returned = AtomicReference<Boolean?>(null)
+
+            val thread = Thread {
+                try {
+                    returned.set(runBlocking { handle.triggerModelDownload("es-US") })
+                } catch (t: Throwable) {
+                    thrown.set(t)
+                }
+            }
+            thread.start()
+            thread.join(5_000L)
+
+            assertTrue("sdk $sdkInt: the background call never finished", !thread.isAlive)
+            assertNull("sdk $sdkInt: an off-main call must not return a result", returned.get())
+            assertTrue(
+                "sdk $sdkInt: an off-main call must throw IllegalStateException, got ${thrown.get()}",
+                thrown.get() is IllegalStateException,
+            )
+            assertNull(
+                "sdk $sdkInt: no platform download may be attempted off main",
+                shadowOf(recognizer).latestModelDownloadIntent,
+            )
+        }
     }
 
     // -------------------------------------------------------------------------------------------

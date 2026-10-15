@@ -67,7 +67,8 @@ internal interface RecognizerHandle {
      * boolean-ish answer.
      *
      * **Why it returns a library enum rather than the platform's `RecognitionSupport`.** That is a
-     * deliberate exception to this interface's mirror-the-platform rule, and the only one.
+     * deliberate exception to this interface's mirror-the-platform rule — the first of two; the
+     * other is [triggerModelDownload], for the same can't-build-the-platform-type reason.
      * `RecognitionSupport` cannot be built on the plain-JVM mockable `android.jar`, where the
      * engine-level suites run behind [FakeRecognizerHandle]-style fakes — so a 1:1 mirror here would
      * make the whole `no-offline-model` row of D-18's preflight table unprovable there, and on this
@@ -98,6 +99,22 @@ internal interface RecognizerHandle {
      */
     suspend fun languageAvailability(languages: List<String>): Map<String, LanguageAvailability> =
         languages.associateWith { languageAvailability(it) }
+
+    /**
+     * Asks the platform to download the on-device model for [language] (an exact BCP-47 tag such as
+     * `es-US`) and reports whether the platform ACCEPTED the request — not whether the download
+     * finished.
+     *
+     * **The seam's second deliberate exception to mirror-the-platform.** The platform's
+     * `triggerModelDownload` returns nothing on API 33 and reports through a `ModelDownloadListener`
+     * on API 34+. Neither shape is something a fake can usefully supply: the listener is an API-34
+     * type, unbuildable on the plain-JVM `android.jar` and above this module's floor. So the seam
+     * returns the library-level Boolean the adapter derives from those outcomes, and the fakes
+     * script it directly.
+     *
+     * The default is `false` — "not confirmed" — so a handle that cannot download never claims it did.
+     */
+    suspend fun triggerModelDownload(language: String): Boolean = false
 }
 
 /**

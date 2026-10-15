@@ -87,6 +87,15 @@ internal class FakeRecognizerHandle : RecognizerHandle {
      */
     val languageQueries: MutableList<List<String>> = mutableListOf()
 
+    /** What [triggerModelDownload] answers — the scripted "did the platform accept it?". */
+    var downloadResult: Boolean = false
+
+    /**
+     * Every exact tag the subject asked to download, oldest first. Recorded on the FAKE ITSELF so a
+     * delegating wrapper (`PreflightHandle` is `RecognizerHandle by fake`) forwards here too.
+     */
+    val downloadRequests: MutableList<String> = mutableListOf()
+
     fun resetCounts() {
         setListenerCount = 0
         startCount = 0
@@ -95,6 +104,7 @@ internal class FakeRecognizerHandle : RecognizerHandle {
         destroyCount = 0
         calls.clear()
         languageQueries.clear()
+        downloadRequests.clear()
     }
 
     // ---------------------------------------------------------------------------------------
@@ -127,6 +137,12 @@ internal class FakeRecognizerHandle : RecognizerHandle {
     override fun destroy() {
         destroyCount++
         calls += "destroy"
+    }
+
+    override suspend fun triggerModelDownload(language: String): Boolean {
+        downloadRequests += language
+        calls += "triggerModelDownload"
+        return downloadResult
     }
 
     // ---------------------------------------------------------------------------------------
