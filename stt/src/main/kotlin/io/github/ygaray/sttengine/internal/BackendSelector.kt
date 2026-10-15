@@ -153,11 +153,42 @@ internal class BackendSelector(
     override val events: Flow<SttEvent> = _events.asSharedFlow()
 
     private var terminal = false
+
+    // `@Volatile` (LAST-01): [lastFinal]'s getter reads these, and a host may call it off the main
+    // thread. Writes stay main-confined as before.
+    @Volatile
     private var activeServer: ServerBackend? = null
+
+    @Volatile
     private var activeNative: SttEngineImpl? = null
 
     /** One-shot guard for [handleServerDrop] — SEL-04's handoff is one-way per session. */
     private var handoffStarted = false
+
+    /**
+     * The segment [handleServerDrop]'s handoff commit emitted, if any (LAST-01, D-05) — written
+     * synchronously at that emit-origin point as the SAME instance sent on [finals]. Reported by
+     * [lastFinal] after a server→native handoff until native commits its own first final.
+     */
+    @Volatile
+    private var handoffFinal: FinalSegment? = null
+
+    /**
+     * The committed [ServerBackend] after it stopped being [activeServer] — detached by [stop] (21-03)
+     * or dropped by [handleServerDrop] — kept ONLY so [lastFinal] can still read the tail it flushed.
+     * Never driven again; reset per session at the top of [runStart].
+     */
+    @Volatile
+    private var lastServer: ServerBackend? = null
+
+    /**
+     * LAST-01 (D-05): read straight from the emit-origin points' own fields — native's
+     * [SttEngineImpl.lastFinal], the handoff commit, or the server's [ServerBackend.lastFinal] —
+     * NEVER from this selector's launched forwarding collectors, which run asynchronously and would
+     * report the previous segment if read the instant [stop] returns.
+     */
+    override val lastFinal: FinalSegment?
+        get() = activeNative?.lastFinal ?: handoffFinal ?: (activeServer ?: lastServer)?.lastFinal
 
     /**
      * The in-flight [ServerBackend] under a try-server connect attempt — assigned the moment it is
@@ -194,6 +225,18 @@ internal class BackendSelector(
     }
 
     private suspend fun runStart() {
+        // Per-session reset (D-05, LAST-01). `:demo` reuses ONE engine across runs, so everything a
+        // previous session left behind — its backends, its handoff commit, its terminal flag — must
+        // be cleared here, or [lastFinal] would hand a host a previous session's text and the
+        // one-shot handoff guard would stay spent. A `start()` while a session is still live is
+        // outside the [SttEngine] contract (stop first), so clearing the active references is safe.
+        terminal = false
+        handoffStarted = false
+        handoffFinal = null
+        lastServer = null
+        activeServer = null
+        activeNative = null
+
         val serverUrl = config.serverUrl
         if (serverUrl != null && config.prefer != BackendPreference.OnDevice) {
             // CR-04: mirrors SttEngineImpl.start()'s own first line — a host rendering a
@@ -333,6 +376,8 @@ internal class BackendSelector(
         // D-04: detach first, then await the flush (see the KDoc above).
         val srv = activeServer
         activeServer = null
+        // LAST-01: keep the detached instance readable so lastFinal reports the tail it flushes.
+        if (srv != null) lastServer = srv
         srv?.stop()
         activeNative?.stop()
     }
@@ -422,6 +467,7 @@ internal class BackendSelector(
         if (serverBackend !== activeServer || handoffStarted) return
         handoffStarted = true
         activeServer = null
+        lastServer = serverBackend
 
         // 1. commit the live partial BEFORE any teardown.
         val partialText = serverBackend.partial.value
@@ -429,6 +475,7 @@ internal class BackendSelector(
             val text = config.corrections?.takeIf { it.isNotEmpty() }
                 ?.let { Corrections.apply(partialText, it) } ?: partialText
             val segment = FinalSegment(text, HANDOFF_SEGMENT_ID)
+            handoffFinal = segment // LAST-01 (D-05): before the send, same instance.
             finalsChannel.trySend(segment)
             _events.tryEmit(SttEvent.Final(segment))
         }

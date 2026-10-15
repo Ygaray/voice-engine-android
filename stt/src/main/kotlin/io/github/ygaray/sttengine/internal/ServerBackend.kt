@@ -244,6 +244,17 @@ internal class ServerBackend(
     private val finalsChannel = Channel<FinalSegment>(Channel.UNLIMITED)
     val finals: Flow<FinalSegment> = finalsChannel.receiveAsFlow()
 
+    /**
+     * The last segment this instance committed (LAST-01, D-05) — written synchronously at both of
+     * its emit-origin points (the [ServerFrame.Final] branch and [commitLivePartialLocally]) as the
+     * SAME instance sent on [finals], so [BackendSelector.lastFinal] can read the flushed tail the
+     * moment [stop] returns, without waiting on its launched forwarding collector. `@Volatile`
+     * because a host may read it off the main thread. One instance per session, so it needs no reset.
+     */
+    @Volatile
+    private var _lastFinal: FinalSegment? = null
+    val lastFinal: FinalSegment? get() = _lastFinal
+
     /** Also unlimited, and effectively single-shot: at most one error is ever sent per instance
      *  (first-error-wins via [fail]). Never observed at all when [BackendSelector] abandons this
      *  instance during the try-server window (D-04's swallow semantics: this IS the mechanism). */
@@ -570,7 +581,9 @@ internal class ServerBackend(
     private fun commitLivePartialLocally() {
         val partialText = _partial.value
         if (partialText.isBlank()) return
-        finalsChannel.trySend(FinalSegment(corrected(partialText), livePartialSegmentId ?: 0))
+        val segment = FinalSegment(corrected(partialText), livePartialSegmentId ?: 0)
+        _lastFinal = segment // LAST-01 (D-05): before the send, same instance.
+        finalsChannel.trySend(segment)
         _partial.value = ""
         livePartialSegmentId = null
     }
@@ -815,9 +828,9 @@ internal class ServerBackend(
                 is ServerFrame.Final -> {
                     _partial.value = ""
                     livePartialSegmentId = null
-                    finalsChannel.trySend(
-                        FinalSegment(corrected(frame.text), frame.segmentId, frame.language),
-                    )
+                    val segment = FinalSegment(corrected(frame.text), frame.segmentId, frame.language)
+                    _lastFinal = segment // LAST-01 (D-05): before the send, same instance.
+                    finalsChannel.trySend(segment)
                 }
 
                 // Carries the server's taxonomy code verbatim (mirrors protocol.ts) — this client
