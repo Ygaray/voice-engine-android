@@ -3,13 +3,15 @@ package io.github.ygaray.sttengine.demo.debug
 import io.github.ygaray.sttengine.FinalSegment
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * Behavioral coverage for the pure diagnostics helpers added in Phase 19 (D-02):
- * [lastSegmentLanguageOf], [segmentLanguagesOf], and [languageDiagnostics].
+ * [lastSegmentLanguageOf], [segmentLanguagesOf], and [languageDiagnostics] — plus Phase 21's
+ * [lastFinalDiagnostics] (LAST-01).
  *
  * Plain JUnit only — no Robolectric, no Context, no live [io.github.ygaray.sttengine.demo.DictationViewModel].
  * Every function under test takes a plain `List<FinalSegment>` / a bare `JSONObject`, so none of
@@ -100,5 +102,46 @@ class DemoControlReceiverDiagnosticsTest {
         for (i in 0 until array.length()) {
             assertTrue(!array.getJSONObject(i).has("text"))
         }
+    }
+
+    // --- LAST-01: lastFinalDiagnostics ------------------------------------------------------------
+
+    @Test
+    fun `lastFinalDiagnostics writes both keys as JSON null before any final`() {
+        val into = JSONObject()
+
+        lastFinalDiagnostics(into, null)
+
+        assertTrue(into.has("lastFinalSegmentId"))
+        assertTrue(into.has("lastFinalLanguage"))
+        assertTrue(into.isNull("lastFinalSegmentId"))
+        assertTrue(into.isNull("lastFinalLanguage"))
+    }
+
+    @Test
+    fun `lastFinalDiagnostics writes the id and language and never the transcript text`() {
+        val into = JSONObject()
+
+        lastFinalDiagnostics(into, FinalSegment("secret words", 7, "es"))
+
+        assertEquals(7, into.getInt("lastFinalSegmentId"))
+        assertEquals("es", into.getString("lastFinalLanguage"))
+        // Privacy invariant (D-08/SRV-05): no value anywhere in the record is the dictated text.
+        val keys = into.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            assertNotEquals("key $key leaked the transcript text", "secret words", into.get(key))
+        }
+        assertTrue(!into.toString().contains("secret words"))
+    }
+
+    @Test
+    fun `lastFinalDiagnostics writes JSON null language for an unlabeled final`() {
+        val into = JSONObject()
+
+        lastFinalDiagnostics(into, FinalSegment("mumble", 3, null))
+
+        assertEquals(3, into.getInt("lastFinalSegmentId"))
+        assertTrue(into.isNull("lastFinalLanguage"))
     }
 }

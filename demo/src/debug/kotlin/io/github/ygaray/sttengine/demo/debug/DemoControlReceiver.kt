@@ -210,6 +210,8 @@ class DemoControlReceiver : BroadcastReceiver() {
                 partialUpdates = viewModel.partialUpdates.value,
                 warningCount = viewModel.warningCount.value,
             )
+            // LAST-01: the final the last stop() flushed, by id + language only — never its text.
+            lastFinalDiagnostics(this, engine.lastFinal)
             // The file-feed facts. `fileFedConfirmed` and `fileFedOpens` are what turn "this run was
             // file-fed" from a claim into a measurement, and the harness refuses to score a
             // supposedly file-fed run without them. Counters only — still no transcript text.
@@ -423,6 +425,23 @@ internal fun segmentLanguagesOf(committed: List<FinalSegment>): JSONArray {
 internal fun languageDiagnostics(into: JSONObject, committed: List<FinalSegment>) {
     into.put("lastSegmentLanguage", lastSegmentLanguageOf(committed) ?: JSONObject.NULL)
     into.put("segmentLanguages", segmentLanguagesOf(committed))
+}
+
+/**
+ * Writes the engine's [io.github.ygaray.sttengine.SttEngine.lastFinal] identity onto [into]
+ * (LAST-01, Phase 21): `lastFinalSegmentId` (Int, or JSON `null` before the session's first final)
+ * and `lastFinalLanguage` (bare `en`/`es`, or JSON `null` when there is no final or no confident
+ * label). This is what lets a device check confirm, right after STOP, that `lastFinal` is the tail
+ * the stop flushed — by `segmentId`, against `segmentLanguages`' last entry.
+ *
+ * Reads [FinalSegment.segmentId] and [FinalSegment.language] ONLY, never `.text` — an
+ * IMPLEMENTATION INVARIANT of this function's body, not a type-level guarantee (same caveat as
+ * [lastSegmentLanguageOf]; D-08/SRV-05: the dump never carries transcript text). Plain and
+ * dependency-free so it is unit-testable in plain JUnit.
+ */
+internal fun lastFinalDiagnostics(into: JSONObject, lastFinal: FinalSegment?) {
+    into.put("lastFinalSegmentId", lastFinal?.segmentId ?: JSONObject.NULL)
+    into.put("lastFinalLanguage", lastFinal?.language ?: JSONObject.NULL)
 }
 
 /**
