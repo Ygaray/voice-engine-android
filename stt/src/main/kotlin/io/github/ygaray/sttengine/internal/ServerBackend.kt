@@ -274,6 +274,10 @@ internal class ServerBackend(
      *  until then, and after [releaseAudioSource] has run. */
     private var audioSource: PcmSource? = null
 
+    /** Set by the first [ServerFrame.Ready] this instance acts on; every later `ready` is ignored, so
+     *  at most one source and one pump are ever opened per instance. Main-confined. */
+    private var readyAccepted = false
+
     // --- the PCM pump (D-01) -------------------------------------------------------------------
 
     /** Cleared to ask the pump thread to stop. Atomic because the pump thread reads it. */
@@ -723,6 +727,15 @@ internal class ServerBackend(
                 ServerFrame.Ready -> {
                     // A Ready that arrives after stop() began must never open the mic.
                     if (stopping) return
+                    // 21 W12 review, finding 2: the server sends `ready` exactly once per session.
+                    // A repeat must not open a second source and pump (the first set would be
+                    // orphaned: never stopped, never released, sharing the run flag and the level
+                    // meter). It is ignored rather than failed: the session is healthy, the web
+                    // client already treats a repeat `ready` as idempotent, and a post-commit fail()
+                    // here would tear a live dictation down into a native handoff over a frame that
+                    // changes nothing.
+                    if (readyAccepted) return
+                    readyAccepted = true
                     // Open the server-path mic BEFORE declaring the session Listening (Task 1,
                     // SEL-04) — a session is not really live if it cannot capture audio to send.
                     // A capture failure here is routed through the SAME fail() funnel as any other

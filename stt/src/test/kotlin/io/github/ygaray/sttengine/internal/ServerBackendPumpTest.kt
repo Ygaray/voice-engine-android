@@ -1,5 +1,6 @@
 package io.github.ygaray.sttengine.internal
 
+import io.github.ygaray.sttengine.EngineState
 import java.util.Collections
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -380,6 +381,53 @@ class ServerBackendPumpTest {
                     }
 
                     assertEquals("release() must run exactly once", 1, source.releaseCount)
+                    assertEquals(false, source.readerAliveAtRelease)
+                }
+            }
+        } finally {
+            mainExec.close()
+        }
+    }
+
+    @Test
+    fun `a duplicate ready never opens a second source or pump`() {
+        // 21 W12 review, finding 2: a repeat `ready` while Listening used to open another source and
+        // start another pump, orphaning the first (never stopped, never released). It is ignored:
+        // one source, one pump, the session stays Listening with no error.
+        val executor = Executors.newSingleThreadExecutor()
+        val mainExec = executor.asCoroutineDispatcher()
+        try {
+            runBlocking {
+                withTimeout(10_000) {
+                    val fakeWs = FakeWebSocketFactory()
+                    // A factory that would happily open a second source — so only the guard stops it.
+                    val sources = finitePcmSourceFactory(frames = 100_000, readDelayMs = 5)
+                    val backend = ServerBackend(
+                        webSocketFactory = fakeWs,
+                        serverUrl = "wss://example.ts.net:8444/",
+                        language = "en",
+                        mainDispatcher = mainExec,
+                        pcmSourceFactory = sources,
+                    )
+                    connectToReady(backend, fakeWs, mainExec)
+                    val socket = checkNotNull(fakeWs.lastSocket)
+                    awaitOn(mainExec, "the pump to be streaming") { socket.sentBinary.size >= 2 }
+
+                    fakeWs.fireMessage("""{"type":"ready"}""")
+                    fakeWs.fireMessage("""{"type":"ready"}""")
+                    delay(100)
+
+                    assertEquals("a repeat ready must not open another source", 1, sources.opened.size)
+                    assertEquals(EngineState.Listening, withContext(mainExec) { backend.state.value })
+                    assertEquals(null, withContext(mainExec) { backend.lastError })
+                    // The original pump keeps streaming.
+                    val before = withContext(mainExec) { socket.sentBinary.size }
+                    awaitOn(mainExec, "the original pump to keep streaming") { socket.sentBinary.size > before }
+
+                    withContext(mainExec) { backend.abandon() }
+                    val source = sources.last
+                    assertTrue(source.stopped)
+                    assertEquals("the one source is released exactly once", 1, source.releaseCount)
                     assertEquals(false, source.readerAliveAtRelease)
                 }
             }
