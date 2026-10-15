@@ -1,6 +1,7 @@
 package io.github.ygaray.sttengine
 
 import io.github.ygaray.sttengine.corrections.CorrectionRuleset
+import io.github.ygaray.sttengine.internal.ServerTryWindow
 
 /**
  * Options for creating an engine. Translated from `web/src/types.ts:32-39`
@@ -60,6 +61,18 @@ import io.github.ygaray.sttengine.corrections.CorrectionRuleset
  *   has. `null` (the default) is a zero-cost no-op — the WS config frame's `vocabulary` key is
  *   omitted entirely, not sent empty. Takes the same immutable-snapshot treatment [corrections]
  *   already gets, for the same concurrent-mutation reason.
+ * @property serverTryTimeoutMs How long, in milliseconds, a server-eligible engine ([serverUrl] set
+ *   and [prefer] not [BackendPreference.OnDevice]) keeps trying the server at session start before
+ *   giving up (TRY-01). The window bounds the whole connect → config → `ready` sequence, retries
+ *   included, as one deadline. A failure before the host answers — DNS failure, no network,
+ *   connection refused — gives up immediately rather than waiting out the window; a host that
+ *   answers but is not ready yet (for example a cold-starting server) is retried within the window;
+ *   a black-holed host — one that never answers at all — waits the full window. When the window
+ *   ends without a ready server, [BackendPreference.Auto] falls back to the on-device backend and
+ *   [BackendPreference.Server] reports an error. Defaults to 5 000 ms. Any value is clamped into
+ *   1 000..10 000 ms rather than rejected, and this property reports the clamped value. No audio is
+ *   captured while the window runs, so a longer window means more deaf time when the server is
+ *   off. Ignored when no server is configured.
  */
 public class SttConfig @JvmOverloads constructor(
     public val language: String = "en",
@@ -67,9 +80,12 @@ public class SttConfig @JvmOverloads constructor(
     public val serverUrl: String? = null,
     corrections: CorrectionRuleset? = null,
     vocabulary: List<String>? = null,
+    serverTryTimeoutMs: Long = ServerTryWindow.DEFAULT_MS,
 ) {
     public val corrections: CorrectionRuleset? = corrections?.toList()
     public val vocabulary: List<String>? = vocabulary?.toList()
+    public val serverTryTimeoutMs: Long =
+        serverTryTimeoutMs.coerceIn(ServerTryWindow.MIN_MS, ServerTryWindow.MAX_MS)
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -78,7 +94,8 @@ public class SttConfig @JvmOverloads constructor(
             prefer == other.prefer &&
             serverUrl == other.serverUrl &&
             corrections == other.corrections &&
-            vocabulary == other.vocabulary
+            vocabulary == other.vocabulary &&
+            serverTryTimeoutMs == other.serverTryTimeoutMs
     }
 
     override fun hashCode(): Int {
@@ -87,10 +104,11 @@ public class SttConfig @JvmOverloads constructor(
         result = 31 * result + (serverUrl?.hashCode() ?: 0)
         result = 31 * result + (corrections?.hashCode() ?: 0)
         result = 31 * result + (vocabulary?.hashCode() ?: 0)
+        result = 31 * result + serverTryTimeoutMs.hashCode()
         return result
     }
 
     override fun toString(): String =
         "SttConfig(language=$language, prefer=$prefer, serverUrl=$serverUrl, " +
-            "corrections=$corrections, vocabulary=$vocabulary)"
+            "corrections=$corrections, vocabulary=$vocabulary, serverTryTimeoutMs=$serverTryTimeoutMs)"
 }
