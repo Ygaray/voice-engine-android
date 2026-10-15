@@ -62,6 +62,8 @@ internal class EngineHarness(
     private val audioPipeOpenFails: Boolean = false,
     deviceLocale: Locale = Locale.US,
     sdkInt: Int = 35,
+    /** When non-null, the preflight's language-LIST query throws this (after recording the list). */
+    languageQueryThrows: RuntimeException? = null,
 ) {
 
     /** The seam the engine actually talks to. Fire callbacks into it to drive the engine. */
@@ -86,7 +88,7 @@ internal class EngineHarness(
     val audioPipes: MutableList<AudioSourcePipe> = mutableListOf()
 
     private val handle: RecognizerHandle =
-        PreflightHandle(fake, languageAvailability, languageAvailabilityOverrides)
+        PreflightHandle(fake, languageAvailability, languageAvailabilityOverrides, languageQueryThrows)
 
     val engine: SttEngineImpl = SttEngineImpl(
         appContext = ApplicationProvider.getApplicationContext(),
@@ -201,6 +203,8 @@ internal class PreflightHandle(
     private val delegate: FakeRecognizerHandle,
     private val availability: LanguageAvailability,
     private val availabilityOverrides: Map<String, LanguageAvailability> = emptyMap(),
+    /** When non-null, [languageAvailability] (List) records its list and then throws this. */
+    private val listQueryThrows: RuntimeException? = null,
 ) : RecognizerHandle by delegate {
 
     override suspend fun languageAvailability(language: String): LanguageAvailability =
@@ -221,6 +225,7 @@ internal class PreflightHandle(
     // a native "auto" start() are proven to ask the platform the identical question.
     override suspend fun languageAvailability(languages: List<String>): Map<String, LanguageAvailability> {
         delegate.languageQueries += languages
+        listQueryThrows?.let { throw it }
         return languages.associateWith { languageAvailability(it) }
     }
 }

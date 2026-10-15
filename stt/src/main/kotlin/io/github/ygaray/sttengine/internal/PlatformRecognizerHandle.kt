@@ -33,6 +33,14 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 internal class PlatformRecognizerHandle(
     private val delegate: SpeechRecognizer,
+    /**
+     * The platform support query, `SpeechRecognizer.checkRecognitionSupport`. Internal, and exists
+     * only so a test can make that platform call THROW: `SpeechRecognizer`'s constructor is
+     * package-private (no subclass to override it) and Robolectric's shadow never throws from this
+     * call. Production always takes the default.
+     */
+    private val checkSupport: (Intent, Executor, RecognitionSupportCallback) -> Unit =
+        delegate::checkRecognitionSupport,
 ) : RecognizerHandle {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -148,7 +156,7 @@ internal class PlatformRecognizerHandle(
                 // it is routed through the same hop as every other delegate call so a reader does
                 // not have to remember which of six methods is the exception.
                 onMain {
-                    delegate.checkRecognitionSupport(intent, DIRECT_EXECUTOR, callback)
+                    checkSupport(intent, DIRECT_EXECUTOR, callback)
                 }
             }
         }
