@@ -73,11 +73,16 @@ public abstract interface class io/github/ygaray/sttengine/SttEngine {
 	public abstract fun getErrors ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun getEvents ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun getFinals ()Lkotlinx/coroutines/flow/Flow;
+	public fun getLastFinal ()Lio/github/ygaray/sttengine/FinalSegment;
 	public abstract fun getLevel ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun getPartial ()Lkotlinx/coroutines/flow/StateFlow;
 	public abstract fun getState ()Lkotlinx/coroutines/flow/StateFlow;
 	public abstract fun start (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun stop (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class io/github/ygaray/sttengine/SttEngine$DefaultImpls {
+	public static fun getLastFinal (Lio/github/ygaray/sttengine/SttEngine;)Lio/github/ygaray/sttengine/FinalSegment;
 }
 
 public final class io/github/ygaray/sttengine/SttEngineFactoryKt {
