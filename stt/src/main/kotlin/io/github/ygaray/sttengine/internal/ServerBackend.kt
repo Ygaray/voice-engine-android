@@ -158,6 +158,10 @@ internal class OkHttpWebSocketFactory(
  * as the mitigation for a late OkHttp callback arriving after [fail]/[abandon] has already retired
  * this instance (the same T-05-14 hazard `SessionEpoch`'s own KDoc documents).
  *
+ * Since Phase 21 (TRY-02) the selector may build several instances per `start()` — one per retry
+ * under one window — and each failed attempt leaves its [connectObservation] (open seen, throwable,
+ * upgrade response code, pre-ready close code, pre-ready error frame) for [classifyConnectFailure].
+ *
  * ## Threading (Common Pitfall 3)
  *
  * OkHttp's `WebSocketListener` callbacks run on OkHttp's own dispatcher thread — NOT the main looper,
@@ -323,9 +327,43 @@ internal class ServerBackend(
     var lastError: SttError? = null
         private set
 
-    /** RED stub — replaced by the recorded observation (TRY-02). */
+    // --- the connect observation (Phase 21, TRY-02, D-06) -----------------------------------------
+    // Recorded by the listener BEFORE fail() resumes connect() with `false`, so the selector reads a
+    // complete picture once connect() returns. Main-confined, like every other listener-written field.
+
+    /** `onOpen` fired — the HTTP 101 completed. */
+    private var sawOpen = false
+
+    /** The throwable OkHttp's `onFailure` delivered before `ready`. */
+    private var failureThrowable: Throwable? = null
+
+    /** The HTTP status of a rejected upgrade (`onFailure`'s non-null `Response`). */
+    private var failureResponseCode: Int? = null
+
+    /** A close code received before `ready`. */
+    private var preReadyCloseCode: Int? = null
+
+    /** The `code` of a server `error` frame received before `ready`. */
+    private var preReadyServerErrorCode: String? = null
+
+    /**
+     * What this instance's single connection attempt saw before it failed — the input to
+     * [classifyConnectFailure] that [BackendSelector] reads once [connect] has returned `false`.
+     * Read it on [mainDispatcher]. Empty (all `null`, `sawOpen == false`) when [connect] ended by a
+     * bare coroutine cancellation with no OkHttp callback at all.
+     */
     internal val connectObservation: ConnectObservation
-        get() = ConnectObservation()
+        get() = ConnectObservation(
+            throwable = failureThrowable,
+            responseCode = failureResponseCode,
+            closeCode = preReadyCloseCode,
+            serverErrorCode = preReadyServerErrorCode,
+            sawOpen = sawOpen,
+        )
+
+    /** `true` while [connect] is still waiting for `ready` (no terminal transition yet). */
+    private val connecting: Boolean
+        get() = connectContinuation != null
 
     /**
      * Opens the WebSocket, sends the config frame on `onOpen`, and resumes `true` only once a
@@ -696,7 +734,9 @@ internal class ServerBackend(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            onFenced(boundEpoch) { doOnFailure(t) }
+            // Read on OkHttp's thread: OkHttp closes the response once this callback returns.
+            val responseCode = response?.code
+            onFenced(boundEpoch) { doOnFailure(t, responseCode) }
         }
     }
 
@@ -715,6 +755,7 @@ internal class ServerBackend(
 
     private fun doOnOpen(socket: WebSocket) {
         if (terminal) return
+        sawOpen = true
         // Pitfall 2: OkHttp's send() returns false rather than throwing on failure (an already
         // closing/closed/canceled socket, or the internal queue ceiling) — checked, unlike the web
         // port's un-checked `socket.send(...)` call sites (which cannot fail synchronously there).
@@ -781,7 +822,12 @@ internal class ServerBackend(
 
                 // Carries the server's taxonomy code verbatim (mirrors protocol.ts) — this client
                 // does not reject an unknown code, it just wraps it.
-                is ServerFrame.Error -> fail(SttError(SttErrorCode(frame.code), frame.message))
+                is ServerFrame.Error -> {
+                    // TRY-02: a config reject (or any error frame) before ready is classified
+                    // FastFail by the selector.
+                    if (connecting) preReadyServerErrorCode = frame.code
+                    fail(SttError(SttErrorCode(frame.code), frame.message))
+                }
             }
 
             is ParseResult.ProtocolViolation ->
@@ -804,9 +850,15 @@ internal class ServerBackend(
             }
             return
         }
+        if (connecting && preReadyCloseCode == null) preReadyCloseCode = code
         when (code) {
-            // A normal closure with no prior frame is an ordinary teardown, not a failure.
-            NORMAL_CLOSE_CODE -> Unit
+            NORMAL_CLOSE_CODE ->
+                // Before ready, a normal close ends the attempt (TRY-02: the selector classifies it
+                // Retryable) instead of leaving connect() hanging until the window expires. After
+                // ready it is an ordinary teardown, not a failure.
+                if (connecting) {
+                    fail(SttError(SttErrorCode.SERVER_UNREACHABLE, "server closed before ready"))
+                }
             // Mirrors protocol.ts's closeCodeFor/engine.ts's failBusy(): the server closes 1013 when
             // it is already serving its single permitted session.
             BUSY_CLOSE_CODE ->
@@ -823,17 +875,23 @@ internal class ServerBackend(
             flushDone.complete(false)
             return
         }
-        if (code != NORMAL_CLOSE_CODE) {
+        if (connecting && preReadyCloseCode == null) preReadyCloseCode = code
+        // A pre-ready close resolves connect() whatever its code (see doOnClosing).
+        if (code != NORMAL_CLOSE_CODE || connecting) {
             fail(SttError(SttErrorCode.SERVER_UNREACHABLE, "connection closed unexpectedly: $code"))
         }
     }
 
-    private fun doOnFailure(t: Throwable) {
+    private fun doOnFailure(t: Throwable, responseCode: Int?) {
         if (terminal) return
         if (stopping) {
             // A socket failure mid-flush: stop() commits locally, and a requested stop never errors.
             flushDone.complete(false)
             return
+        }
+        if (connecting) {
+            failureThrowable = t
+            failureResponseCode = responseCode
         }
         fail(SttError(SttErrorCode.SERVER_UNREACHABLE, t.message ?: "server unreachable"))
     }
