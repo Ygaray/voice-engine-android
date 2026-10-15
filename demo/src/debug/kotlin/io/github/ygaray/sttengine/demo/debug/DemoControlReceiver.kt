@@ -10,6 +10,7 @@ import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.debug.DebugRungCeiling
 import io.github.ygaray.sttengine.demo.DictationViewModel
 import java.io.File
+import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -123,6 +124,12 @@ class DemoControlReceiver : BroadcastReceiver() {
                     Log.d(TAG, "rung ceiling applied: ${applied.getOrNull()}")
                 }
 
+                // Every refusal above has returned, so this START is accepted: mint the run id that
+                // every dump of this session carries (see [RunIdTracker]). A file-fed refusal below
+                // still belongs to THIS start, so its dumps carry this id along with the abort reason.
+                val runId = runIds.onStartAccepted()
+                Log.d(TAG, "START accepted runId=$runId")
+
                 if (audioSource == null) {
                     // The ordinary path, and the only one a release build could ever have had.
                     FileAudioSourceControl.stopFileFed()
@@ -175,6 +182,9 @@ class DemoControlReceiver : BroadcastReceiver() {
         val snapshot = JSONObject().apply {
             put("t", System.currentTimeMillis())
             put("kind", "demo-diagnostics")
+            // Which START this dump belongs to — what lets a Gate-1 checker pair a pre-STOP and a
+            // post-STOP dump by identity instead of by time window.
+            runIdDiagnostics(this, runIds.current)
             put("state", viewModel.engine.value.state.value.wireName)
             put("services", viewModel.recognizerServices.value.joinToString(separator = " "))
             put("selected", viewModel.selectedRecognizer.value ?: JSONObject.NULL)
@@ -311,7 +321,51 @@ class DemoControlReceiver : BroadcastReceiver() {
 
         /** The demo's own diagnostic sidecar, beside the engine's trace and pullable the same way. */
         const val DIAGNOSTICS_FILE = "demo-diagnostics.jsonl"
+
+        /**
+         * The run id of the most recently accepted START. Process-wide on purpose: Android makes a
+         * fresh receiver instance for every broadcast, so START and the later dumps never share one.
+         */
+        internal val runIds = RunIdTracker()
     }
+}
+
+/**
+ * Mints and holds the per-START run id written into every diagnostics dump as `runId`
+ * (Phase 21, W12 review cycle 2, finding 3).
+ *
+ * Every accepted [DemoControlReceiver.ACTION_START] mints a fresh id and every dump after it carries
+ * that id until the next accepted START, so STOP does not clear it: the post-STOP dump must carry
+ * the same id as the pre-STOP one. A refused START mints nothing, because it leaves the previous
+ * session running and its dumps still belong to that session. Before any START the id is `null`.
+ *
+ * The id is a random UUID: opaque, with no device, host, serial or time information in it, so it
+ * is safe in logcat and in the sidecar (D-08). [mint] is injectable only so a test can pin it.
+ *
+ * Scope: the id lives in this demo's dump only. The engine's session trace (`:stt`) has a frozen
+ * schema and does not carry it, so pairing a trace with a run is still done by time window.
+ */
+internal class RunIdTracker(private val mint: () -> String = ::newRunId) {
+
+    /** The current run's id, or `null` before the first accepted START. */
+    @Volatile
+    var current: String? = null
+        private set
+
+    /** Called once per accepted START. Returns the new id, which is now [current]. */
+    fun onStartAccepted(): String = mint().also { current = it }
+}
+
+/** A fresh opaque run id: a random (version 4) UUID string. */
+internal fun newRunId(): String = UUID.randomUUID().toString()
+
+/**
+ * Writes the `runId` key onto [into]: the id of the START this dump belongs to, or JSON `null`
+ * before any START. Always written, so a checker can tell "no id" from "an old APK without the
+ * field". Plain and dependency-free so it is unit-testable in plain JUnit.
+ */
+internal fun runIdDiagnostics(into: JSONObject, runId: String?) {
+    into.put("runId", runId ?: JSONObject.NULL)
 }
 
 /**
