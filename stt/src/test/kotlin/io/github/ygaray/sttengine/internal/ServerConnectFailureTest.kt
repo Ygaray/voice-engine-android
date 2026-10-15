@@ -128,6 +128,57 @@ class ServerConnectFailureTest {
 
     // --- deterministic rejections after the host answered: fast-fail --------------------------------
 
+    // --- an explicit outer retry shape outranks a nested connect-phase cause (21-W46 cycle 2) -------
+
+    @Test
+    fun `a top-level socket timeout over a nested ConnectException stays retryable`() {
+        val t = SocketTimeoutException("timeout").apply { initCause(ConnectException("upstream refused")) }
+        assertEquals(ConnectFailureClass.Retryable, classify(t))
+    }
+
+    @Test
+    fun `OkHttp's unexpected end of stream over a nested ConnectException stays retryable`() {
+        val t = IOException("unexpected end of stream on x", ConnectException("upstream refused"))
+        assertEquals(ConnectFailureClass.Retryable, classify(t))
+    }
+
+    @Test
+    fun `an end of stream with an EOF cause over a nested connect-phase failure stays retryable`() {
+        listOf(
+            ConnectException("upstream refused"),
+            UnknownHostException("upstream"),
+            NoRouteToHostException("upstream"),
+        ).forEach { nested ->
+            val eof = EOFException("\\n not found").apply { initCause(nested) }
+            assertEquals(
+                "EOF cause over ${nested.javaClass.simpleName}",
+                ConnectFailureClass.Retryable,
+                classify(IOException("stream closed", eof)),
+            )
+            assertEquals(
+                "bare EOF over ${nested.javaClass.simpleName}",
+                ConnectFailureClass.Retryable,
+                classify(EOFException("eof").apply { initCause(nested) }),
+            )
+        }
+    }
+
+    @Test
+    fun `a top-level connect-phase type still fast-fails whatever it wraps`() {
+        val refusedAfterTimeout = ConnectException("Failed to connect to x").apply {
+            initCause(SocketTimeoutException("connect timed out"))
+        }
+        assertEquals(ConnectFailureClass.FastFail, classify(refusedAfterTimeout))
+        val refusedAfterEof = ConnectException("Failed to connect to x").apply { initCause(EOFException()) }
+        assertEquals(ConnectFailureClass.FastFail, classify(refusedAfterEof))
+    }
+
+    @Test
+    fun `a TLS verification failure under a socket timeout still fast-fails`() {
+        val t = SocketTimeoutException("timeout").apply { initCause(CertificateException("untrusted")) }
+        assertEquals(ConnectFailureClass.FastFail, classify(t))
+    }
+
     @Test
     fun `server busy close 1013 fast-fails`() {
         assertEquals(ConnectFailureClass.FastFail, classify(closeCode = 1013, sawOpen = true))
