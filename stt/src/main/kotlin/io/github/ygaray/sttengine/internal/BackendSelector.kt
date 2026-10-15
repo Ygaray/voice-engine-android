@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -236,8 +237,11 @@ internal class BackendSelector(
      * so a `stop()`-triggered cancellation here never propagates out of `start()` to the host; it
      * simply makes `start()` return once the cancellation settles, exactly like an ordinary
      * completion would.
+     *
+     * `internal` (read-only) only so a test can prove [stop] cancelled it.
      */
-    private var startJob: Job? = null
+    internal var startJob: Job? = null
+        private set
 
     /**
      * Re-entry mirrors [SttEngineImpl.start]'s own `if (running) return`: a `start()` while this
@@ -453,18 +457,43 @@ internal class BackendSelector(
      * **The detach does not open the start guard.** [stopsInFlight] stays above zero until this
      * returns, so a concurrent [start] during the flush is ignored (see [start]); [lastServer] — and
      * so [lastFinal] — is still this session's when `stop()` returns.
+     *
+     * **Cancellation cannot skip the teardown.** The hop onto [mainDispatcher] is entered under
+     * [NonCancellable]. A plain `withContext(mainDispatcher)` is cancellable on entry: a caller that is
+     * already cancelled, or is cancelled while the hop is still queued on main, would never run the
+     * block — leaving [startJob] running, the socket or native recognizer live, and possibly the
+     * microphone held. Under [NonCancellable] the whole teardown always runs to the end, flush
+     * included. That stays bounded: [ServerBackend.stop]'s own deadline
+     * ([ServerBackend.STOP_FLUSH_TIMEOUT_MS], D-04) still applies, so a cancelled caller waits at most
+     * the same ~2.5 s as any other. A cancelled caller then sees its own cancellation once `stop()`
+     * returns, as with any suspend call.
      */
     override suspend fun stop() {
-        withContext(mainDispatcher) { stopOnMain() }
+        withContext(NonCancellable + mainDispatcher) { stopOnMain() }
     }
 
     private suspend fun stopOnMain() {
         stopsInFlight += 1
         try {
             detachAndFlush()
+            // Only the last stop still in flight settles the session. A concurrent stop that
+            // returns early (it found nothing left to detach) must not settle a session another
+            // stop is still flushing.
+            if (stopsInFlight == 1) settleStoppedSession()
         } finally {
             stopsInFlight -= 1
         }
+    }
+
+    /**
+     * The session is over: [state] ends at [EngineState.Idle], the same as [SttEngineImpl.stop].
+     * A committed backend's own forwarded state already took it there. This covers a stop during
+     * the try-server window, where [runStart] is cancelled before any backend owns [state] and it
+     * would otherwise stay at [EngineState.Connecting]. An [EngineState.Error] is left alone, as
+     * [SttEngineImpl.stop] leaves its own.
+     */
+    private fun settleStoppedSession() {
+        if (_state.value != EngineState.Error) setState(EngineState.Idle)
     }
 
     private suspend fun detachAndFlush() {

@@ -9,12 +9,16 @@ import io.github.ygaray.sttengine.PreflightHandle
 import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttError
 import java.io.IOException
+import java.net.ConnectException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -53,6 +57,7 @@ class BackendSelectorStopTest {
         val finals: MutableList<FinalSegment>,
         val errors: MutableList<SttError>,
         val states: MutableList<EngineState>,
+        val pcm: FinitePcmSourceFactory,
     ) {
         val socket: FakeWebSocket get() = checkNotNull(fakeWs.lastSocket)
         fun log(): List<String> = synchronized(socket.sendLog) { socket.sendLog.toList() }
@@ -62,9 +67,51 @@ class BackendSelectorStopTest {
 
     /** A selector committed to the server path (`ready` reached), with collectors on its flows. */
     private fun TestScope.committedServerSession(): Harness {
+        val h = session()
+        val started = launch(h.main) { h.selector.start() }
+        runCurrent()
+        h.fakeWs.fireOpen()
+        runCurrent()
+        h.fakeWs.fireMessage("""{"type":"ready"}""")
+        runCurrent()
+        assertTrue("start() must have returned once ready committed the server", started.isCompleted)
+        assertEquals(Backend.Server, h.selector.backend.value)
+        assertEquals(EngineState.Listening, h.selector.state.value)
+        return h
+    }
+
+    /** A selector whose `start()` is suspended in the try-server window: attempt 1 never answers. */
+    private fun TestScope.tryWindowSession(): Harness {
+        val h = session()
+        launch(h.main) { h.selector.start() }
+        runCurrent()
+        assertEquals("attempt 1 must be in flight", 1, h.fakeWs.createCount)
+        assertEquals(EngineState.Connecting, h.selector.state.value)
+        assertTrue("start() must still be in the try window", h.selector.startJob?.isActive == true)
+        return h
+    }
+
+    /** A selector that fell back to a live native session (attempt 1 refused, `prefer = Auto`). */
+    private fun TestScope.nativeSession(): Harness {
+        val h = session()
+        launch(h.main) { h.selector.start() }
+        runCurrent()
+        h.fakeWs.fireFailure(ConnectException("refused"))
+        runCurrent()
+        assertEquals("the refused attempt falls back to native", 1, h.fakeHandle.startCount)
+        h.fakeHandle.reachListening()
+        runCurrent()
+        assertEquals(Backend.Native, h.selector.backend.value)
+        assertEquals(EngineState.Listening, h.selector.state.value)
+        return h
+    }
+
+    /** The selector and its collectors; nothing started yet. */
+    private fun TestScope.session(): Harness {
         val main = StandardTestDispatcher(testScheduler)
         val fakeWs = FakeWebSocketFactory()
         val fakeHandle = FakeRecognizerHandle()
+        val pcm = finitePcmSourceFactory(frames = 0)
         val selector = BackendSelector(
             appContext = context(),
             config = SttConfig(serverUrl = "wss://example.ts.net:8444/"),
@@ -74,13 +121,14 @@ class BackendSelectorStopTest {
             permissions = PermissionChecker { true },
             webSocketFactory = fakeWs,
             mainDispatcher = main,
+            tryServerTimeoutMs = WINDOW_MS,
             serverBackendFactory = { url ->
                 ServerBackend(
                     webSocketFactory = fakeWs,
                     serverUrl = url,
                     language = "en",
                     mainDispatcher = main,
-                    pcmSourceFactory = finitePcmSourceFactory(frames = 0),
+                    pcmSourceFactory = pcm,
                 )
             },
         )
@@ -90,18 +138,7 @@ class BackendSelectorStopTest {
         backgroundScope.launch(main) { selector.finals.collect { finals += it } }
         backgroundScope.launch(main) { selector.errors.collect { errors += it } }
         backgroundScope.launch(main) { selector.state.collect { states += it } }
-
-        val started = launch(main) { selector.start() }
-        runCurrent()
-        fakeWs.fireOpen()
-        runCurrent()
-        fakeWs.fireMessage("""{"type":"ready"}""")
-        runCurrent()
-        assertTrue("start() must have returned once ready committed the server", started.isCompleted)
-        assertEquals(Backend.Server, selector.backend.value)
-        assertEquals(EngineState.Listening, selector.state.value)
-
-        return Harness(main, fakeWs, fakeHandle, selector, finals, errors, states)
+        return Harness(main, fakeWs, fakeHandle, selector, finals, errors, states, pcm)
     }
 
     /** Launches `selector.stop()` and runs until the `stop` token is on the wire (the flush wait). */
@@ -232,5 +269,162 @@ class BackendSelectorStopTest {
 
         assertStoppedWithoutNative(h, stopJob)
         assertEquals(listOf(FinalSegment("open words", 9)), h.finals)
+    }
+
+    // --- a cancelled stop() caller can never skip the teardown (21-W46 cycle 3, finding 1) --------
+    //
+    // stop() hops onto main to tear down. A cancellable hop would never run its block for a caller
+    // that is already cancelled, or is cancelled while the hop is still queued: the start job, the
+    // socket or native recognizer and the mic would all stay live. Every case below must end torn
+    // down. Virtual time throughout, so a regression fails at its first assertion.
+
+    /** Where every cancelled-caller case must end: nothing starting, nothing live, mic released. */
+    private fun assertTornDown(h: Harness, caller: Job) {
+        assertTrue("the caller's stop() must have finished", caller.isCompleted)
+        assertTrue(
+            "the start job must not still be running: ${h.selector.startJob}",
+            h.selector.startJob?.isActive != true,
+        )
+        h.fakeWs.sockets.forEachIndexed { i, socket ->
+            assertTrue("socket $i must be closed or cancelled", socket.closeCount + socket.cancelCount >= 1)
+        }
+        assertTrue("every server-path mic must be released", h.pcm.opened.all { it.released })
+        assertEquals(EngineState.Idle, h.selector.state.value)
+        assertTrue("a requested stop must never emit on errors: ${h.errors}", h.errors.isEmpty())
+    }
+
+    /** The try-window cases: the start job was cancelled, and nothing starts later. */
+    private fun TestScope.assertTryWindowEnded(h: Harness, caller: Job) {
+        assertTornDown(h, caller)
+        assertTrue("stop() must cancel the start job", h.selector.startJob?.isCancelled == true)
+        advanceTimeBy(WINDOW_MS + 1)
+        runCurrent()
+        assertEquals("no attempt may follow the stop", 1, h.fakeWs.createCount)
+        assertEquals("native must never start after the stop", 0, h.fakeHandle.startCount)
+        assertEquals(EngineState.Idle, h.selector.state.value)
+    }
+
+    /** Launches stop() from a coroutine that cancels itself first, then drains main. */
+    private fun TestScope.stopFromCancelledCaller(h: Harness): Job {
+        val caller = launch(h.main) {
+            cancel()
+            h.selector.stop()
+        }
+        runCurrent()
+        return caller
+    }
+
+    /** Launches stop() off main, cancels the caller while the hop onto main is still queued, then
+     *  drains main. */
+    private fun TestScope.stopCancelledWhileQueued(h: Harness): Job {
+        val caller = launch(UnconfinedTestDispatcher(testScheduler)) { h.selector.stop() }
+        assertFalse("precondition: stop()'s hop onto main is still queued", caller.isCompleted)
+        caller.cancel()
+        runCurrent()
+        return caller
+    }
+
+    /** The server flush, answered: the tail final, then the close 1000. */
+    private fun TestScope.answerFlush(h: Harness) {
+        h.fakeWs.fireMessage("""{"type":"final","text":"tail","segmentId":5}""")
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+    }
+
+    @Test
+    fun `stop from an already-cancelled caller still flushes and ends a committed server session`() = runTest {
+        val h = committedServerSession()
+
+        val caller = stopFromCancelledCaller(h)
+        assertTrue("the teardown must run: the stop token is on the wire: ${h.log()}", "text:stop" in h.log())
+        answerFlush(h)
+
+        assertTornDown(h, caller)
+        assertEquals(listOf(FinalSegment("tail", 5)), h.finals)
+        assertEquals(FinalSegment("tail", 5), h.selector.lastFinal)
+        assertEquals(0, h.fakeHandle.startCount)
+    }
+
+    @Test
+    fun `stop from an already-cancelled caller still ends the try window`() = runTest {
+        val h = tryWindowSession()
+
+        val caller = stopFromCancelledCaller(h)
+
+        assertTryWindowEnded(h, caller)
+    }
+
+    @Test
+    fun `stop from an already-cancelled caller still stops a native session`() = runTest {
+        val h = nativeSession()
+
+        val caller = stopFromCancelledCaller(h)
+
+        assertTornDown(h, caller)
+        assertTrue("the native recognizer must be released", h.fakeHandle.destroyCount >= 1)
+    }
+
+    @Test
+    fun `a caller cancelled while the stop hop is queued still ends a committed server session`() = runTest {
+        val h = committedServerSession()
+
+        val caller = stopCancelledWhileQueued(h)
+        assertTrue("the teardown must run: the stop token is on the wire: ${h.log()}", "text:stop" in h.log())
+        answerFlush(h)
+
+        assertTornDown(h, caller)
+        assertEquals(listOf(FinalSegment("tail", 5)), h.finals)
+    }
+
+    @Test
+    fun `a caller cancelled while the stop hop is queued still ends the try window`() = runTest {
+        val h = tryWindowSession()
+
+        val caller = stopCancelledWhileQueued(h)
+
+        assertTryWindowEnded(h, caller)
+    }
+
+    @Test
+    fun `a caller cancelled during the flush still receives the flushed tail and a full teardown`() = runTest {
+        val h = committedServerSession()
+        h.fakeWs.fireMessage("""{"type":"partial","text":"open words","segmentId":5}""")
+        runCurrent()
+        val caller = stopUntilTokenSent(h)
+
+        caller.cancel()
+        runCurrent()
+        assertFalse("a cancelled caller must not cut the flush short", caller.isCompleted)
+        answerFlush(h)
+
+        assertTornDown(h, caller)
+        assertEquals("the server's flushed tail, not a local commit", listOf(FinalSegment("tail", 5)), h.finals)
+        assertEquals(FinalSegment("tail", 5), h.selector.lastFinal)
+        assertEquals("close:1000", h.log().last())
+    }
+
+    @Test
+    fun `a caller cancelled during an unanswered flush still returns at the D-04 bound`() = runTest {
+        val h = committedServerSession()
+        h.fakeWs.fireMessage("""{"type":"partial","text":"open words","segmentId":9}""")
+        runCurrent()
+        val caller = stopUntilTokenSent(h)
+        val flushStartedAt = testScheduler.currentTime
+
+        caller.cancel()
+        runCurrent()
+        advanceTimeBy(ServerBackend.STOP_FLUSH_TIMEOUT_MS - 1)
+        runCurrent()
+        assertFalse("the flush keeps its full bound", caller.isCompleted)
+        advanceTimeBy(1)
+        runCurrent()
+
+        assertEquals(ServerBackend.STOP_FLUSH_TIMEOUT_MS, testScheduler.currentTime - flushStartedAt)
+        assertTornDown(h, caller)
+        assertEquals(listOf(FinalSegment("open words", 9)), h.finals)
+    }
+
+    private companion object {
+        const val WINDOW_MS = 5_000L
     }
 }
