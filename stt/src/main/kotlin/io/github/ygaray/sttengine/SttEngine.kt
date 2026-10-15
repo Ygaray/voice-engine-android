@@ -112,6 +112,27 @@ public interface SttEngine {
     public val events: Flow<SttEvent>
 
     /**
+     * The final the most recent [stop] flushed — or, if nothing was open at stop, the session's
+     * latest final (LAST-01, D-05, D-15). `null` before the first final of the current session: it
+     * is reset by [start], so a reused engine never reports a previous session's text.
+     *
+     * Readable **synchronously as soon as [stop] returns**, with no [finals] collector kept alive
+     * across the stop — a host that wants the tail of a dictation (to insert into a note, say) reads
+     * it here instead of racing the lossless flow. It is the SAME [FinalSegment] instance that
+     * [finals] delivers (same text, `segmentId` and `language`); [finals] is unchanged and still
+     * delivers it.
+     *
+     * `language` can be `null` for a stop-flushed native tail under `"auto"` on API 34+ when the
+     * session closed before a confident detection (NBIL-02) — "unknown", not "English".
+     *
+     * A terminal error does not clear it; only [start] does. [stop] still returns `Unit`.
+     *
+     * Defaulted to `null` so existing implementers (including host test fakes) stay source- and
+     * binary-compatible; a fake may override it to drive host logic.
+     */
+    public val lastFinal: FinalSegment? get() = null
+
+    /**
      * Begin a session: preflight, construct the recognizer, and start recognizing.
      *
      * **Completes when the engine reaches [EngineState.Listening] OR on a terminal error (D-10)** —

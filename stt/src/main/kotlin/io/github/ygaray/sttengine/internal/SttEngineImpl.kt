@@ -177,6 +177,16 @@ internal class SttEngineImpl(
     private val finalsChannel = Channel<FinalSegment>(Channel.UNLIMITED)
     override val finals: Flow<FinalSegment> = finalsChannel.receiveAsFlow()
 
+    /**
+     * The last segment [emitFinal] committed this session (LAST-01, D-05) — written synchronously at
+     * the one native emit point, as the SAME instance [finals] delivers, so a host reads the tail
+     * [stop] flushed the moment [stop] returns. `@Volatile` because a host may read it off the main
+     * thread. Cleared only by [start] (a terminal error leaves it in place).
+     */
+    @Volatile
+    private var _lastFinal: FinalSegment? = null
+    override val lastFinal: FinalSegment? get() = _lastFinal
+
     /** Also channel-backed: at most one error is ever emitted per session, and losing it is losing
      *  the only explanation the host will ever get. Single-consumer for the same reason as [finals]. */
     private val errorsChannel = Channel<SttError>(Channel.UNLIMITED)
@@ -294,6 +304,8 @@ internal class SttEngineImpl(
      */
     override suspend fun start() {
         if (running) return
+        // Per-session reset (D-05): a reused engine must never report a previous session's final.
+        _lastFinal = null
         running = true
         terminal = false
         audioErrorAlreadyOccurred = false
@@ -750,6 +762,9 @@ internal class SttEngineImpl(
             config.corrections?.takeIf { it.isNotEmpty() }
                 ?.let { FinalSegment(Corrections.apply(rawSegment.text, it), rawSegment.segmentId, label) }
                 ?: FinalSegment(rawSegment.text, rawSegment.segmentId, label)
+        // LAST-01 (D-05): written BEFORE the send, as the same instance, so it is already visible
+        // when the commit's caller (e.g. stop()) returns.
+        _lastFinal = segment
         finalsChannel.trySend(segment)
         _events.tryEmit(SttEvent.Final(segment))
         log.final(segment)
