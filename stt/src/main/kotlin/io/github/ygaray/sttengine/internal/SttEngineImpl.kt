@@ -360,8 +360,13 @@ internal class SttEngineImpl(
         //    which language's error surfaces when both are missing is deterministic. Non-"auto" and
         //    sub-34-"auto" sessions still issue exactly one languageAvailability call, byte-identical
         //    to before this plan (NBIL-05/NBIL-07).
+        //
+        //    The "auto" query is autoPackAvailability() — THE query the public pack preflight also
+        //    calls (PACK-01, D-02), so a preflight answer and this start() can never disagree. It
+        //    also owns the shared failure fold: a query that throws reads UNKNOWN for every tag, so
+        //    the session proceeds (D-10) instead of the exception escaping start().
         val preflightError = if (autoDetectionActive) {
-            val availabilities = created.languageAvailability(RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES)
+            val availabilities = created.autoPackAvailability()
             RecognizerIntents.AUTO_SWITCH_ALLOWED_LANGUAGES.firstNotNullOfOrNull { lang ->
                 preflightErrorFor(lang, availabilities[lang] ?: LanguageAvailability.UNKNOWN)
             }

@@ -97,6 +97,8 @@ public final class io/github/ygaray/sttengine/SttEngine$DefaultImpls {
 }
 
 public final class io/github/ygaray/sttengine/SttEngineFactoryKt {
+	public static final fun checkLanguageAvailability (Landroid/content/Context;Ljava/util/Set;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun checkLanguageAvailability$default (Landroid/content/Context;Ljava/util/Set;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public static final fun createSttEngine (Landroid/content/Context;Lio/github/ygaray/sttengine/SttConfig;Z)Lio/github/ygaray/sttengine/SttEngine;
 	public static synthetic fun createSttEngine$default (Landroid/content/Context;Lio/github/ygaray/sttengine/SttConfig;ZILjava/lang/Object;)Lio/github/ygaray/sttengine/SttEngine;
 }

@@ -1,5 +1,6 @@
 package io.github.ygaray.sttengine
 
+import android.content.Context
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -100,6 +101,15 @@ public class ContractSurfaceTest {
             listOf("INSTALLED", "DOWNLOADABLE", "PENDING", "UNSUPPORTED", "UNKNOWN"),
             LanguageAvailability.entries.map { it.name },
         )
+    }
+
+    @Test
+    public fun `pack preflight keeps its frozen shape`() {
+        // A shape change (parameter types, order, return type, suspend-ness) stops this compiling.
+        // The function is deliberately not called: this pins the signature, not the behavior.
+        val preflight: suspend (Context, Set<String>) -> Map<String, LanguageAvailability> =
+            ::checkLanguageAvailability
+        assertNotNull(preflight)
     }
 
     // --- SttConfig (web/src/types.ts:32-39, D-13) -----------------------------------------------

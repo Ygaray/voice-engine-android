@@ -3,6 +3,7 @@ package io.github.ygaray.sttengine
 import android.content.Context
 import io.github.ygaray.sttengine.internal.BackendSelector
 import io.github.ygaray.sttengine.internal.ContextPermissionChecker
+import io.github.ygaray.sttengine.internal.LanguagePacks
 import io.github.ygaray.sttengine.internal.OkHttpWebSocketFactory
 import io.github.ygaray.sttengine.internal.PlatformRecognizerHandleFactory
 import io.github.ygaray.sttengine.internal.SessionLog
@@ -104,3 +105,51 @@ public fun createSttEngine(
         mainDispatcher = Dispatchers.Main.immediate,
     )
 }
+
+/**
+ * Ask this device's recognition service whether the on-device language packs for [langs] are
+ * usable — without starting a dictation session and without the host holding a `SpeechRecognizer`
+ * of its own.
+ *
+ * ```kotlin
+ * lifecycleScope.launch {
+ *     val packs = checkLanguageAvailability(context)          // {en=INSTALLED, es=DOWNLOADABLE}
+ *     if (packs["es"] == LanguageAvailability.DOWNLOADABLE) offerSpanishDownload()
+ * }
+ * ```
+ *
+ * **One value per requested key, keyed by the caller's own string**, in the iteration order of
+ * [langs]. Only the exact keys `"en"` and `"es"` are recognized. Any other string — including a
+ * region-qualified tag such as `en-US` or a case variant such as `EN` — reads
+ * [LanguageAvailability.UNSUPPORTED] without contacting the recognition service.
+ *
+ * **The answer agrees with a native `"auto"` session start on API 34+**: the two use the same query
+ * and the same classification, so [LanguageAvailability.INSTALLED] and
+ * [LanguageAvailability.UNKNOWN] mean such a session starts, [LanguageAvailability.DOWNLOADABLE]
+ * and [LanguageAvailability.PENDING] mean it fails with [SttErrorCode.NO_OFFLINE_MODEL], and
+ * [LanguageAvailability.UNSUPPORTED] means it fails with [SttErrorCode.UNSUPPORTED_LANGUAGE] (or,
+ * when on-device recognition is unavailable altogether, with
+ * [SttErrorCode.RECOGNIZER_UNAVAILABLE]). Below API 34 an `"auto"` session uses a single language,
+ * so only that language's value predicts it.
+ *
+ * **Threading.** Call it from a coroutine — `lifecycleScope`, a `viewModelScope`, a background
+ * scope. It enters the main thread itself to talk to the recognition service, and the calling
+ * coroutine resumes in its own context. **Never call it from `runBlocking` on the main thread**:
+ * that blocks the very thread the answer needs.
+ *
+ * **When.** Call it when no dictation session is active; it briefly creates and destroys its own
+ * on-device recognizer to ask.
+ *
+ * **Not cached.** Every call asks the recognition service again — query again after a download
+ * rather than reusing an earlier answer.
+ *
+ * It never throws, except for cancellation of the calling coroutine. No `RECORD_AUDIO` grant is
+ * needed to ask.
+ *
+ * @param context any context; only its application context is used, and nothing is retained.
+ * @param langs the languages to ask about, as bare keys. Defaults to both supported languages.
+ */
+public suspend fun checkLanguageAvailability(
+    context: Context,
+    langs: Set<String> = setOf("en", "es"),
+): Map<String, LanguageAvailability> = LanguagePacks().check(context, langs)
