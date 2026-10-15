@@ -96,19 +96,16 @@ internal class BackendSelector(
     private val log: SessionLog = SessionLog(),
     private val webSocketFactory: WebSocketFactory,
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
-    /** **DEFERRED, not tuned** (D-05). Plan 09-03 built `ServerHandoffProbeTest` (the on-device
-     *  probe meant to measure this) but could NOT run it: at execution time the only adb-visible
-     *  device did not match the tester's documented tailnet IP, so device identity could not be
-     *  confirmed — see
-     *  `.planning/phases/09-android-server-backed-live-backend-backend-selection/09-HANDOFF-EVIDENCE.md`
-     *  for the full record and the exact reproduction procedure a later Gate-1 run should follow.
-     *  This value therefore remains the SAME unmeasured placeholder Plan 09-01 introduced — it is
-     *  explicitly NOT "measured, then happened to keep the same number." Do not read the absence of
-     *  the word PLACEHOLDER-in-caps as evidence this was tuned; re-run the deferred probe and update
-     *  this KDoc (and the value, per D-05: 2x the measured median RTT, never less than the measured
-     *  worst-case trial) once real numbers exist. It bounds the FULL connect→config→`ready`
-     *  sequence, not just the TCP+TLS handshake. */
-    private val tryServerTimeoutMs: Long = DEFAULT_TRY_SERVER_TIMEOUT_MS,
+    /** The try-server window: the host's [SttConfig.serverTryTimeoutMs] (TRY-01; default 5 000 ms,
+     *  clamped to 1 000..10 000 ms by the config itself per D-07). It bounds the WHOLE attempt loop —
+     *  connect → config → `ready`, retries and their backoffs included — as ONE deadline, not just
+     *  the TCP+TLS handshake. The Phase-9 on-device probe that was meant to measure a fixed value
+     *  (`ServerHandoffProbeTest`, never run) is superseded by connection-phase classification
+     *  (D-06): a refused/DNS-class failure fails fast regardless of the window, so the window only
+     *  has to cover a cold-starting host; the live cold-start capture is plan 21-08. `internal` (not
+     *  private) so the factory-level test can prove the host's value arrives here; tests that pass
+     *  an explicit value keep doing so. */
+    internal val tryServerTimeoutMs: Long = config.serverTryTimeoutMs,
     private val serverBackendFactory: (String) -> ServerBackend = { url ->
         ServerBackend(
             webSocketFactory = webSocketFactory,
@@ -513,11 +510,6 @@ internal class BackendSelector(
     }
 
     private companion object {
-        /** DEFERRED, not tuned — see the constructor parameter's KDoc and 09-HANDOFF-EVIDENCE.md.
-         *  Plan 09-03's on-device measurement could not be taken (device identity unconfirmed); this
-         *  is still the same unmeasured value Plan 09-01 introduced. */
-        const val DEFAULT_TRY_SERVER_TIMEOUT_MS: Long = 2_500L
-
         /** The synthetic [FinalSegment.segmentId] the SEL-04 handoff's own commit-on-drop uses.
          *  `segmentId` is opaque and per-session (API.md) — this is not part of [ServerBackend]'s own
          *  server-numbered sequence, just a safe fixed value for the one-off commit this path makes. */

@@ -73,6 +73,8 @@ public fun createSttEngine(
             // publicly trusted, so a hand-rolled trust control here would be the anti-pattern.
             webSocketFactory = OkHttpWebSocketFactory(OkHttpClient()),
             mainDispatcher = Dispatchers.Main.immediate,
+            // TRY-01 (Pitfall 14): the try-server window is threaded from the host's config.
+            tryServerTimeoutMs = config.serverTryTimeoutMs,
         )
     }
 
