@@ -78,6 +78,15 @@ internal class FakeRecognizerHandle : RecognizerHandle {
      */
     val calls: MutableList<String> = mutableListOf()
 
+    /**
+     * Every language LIST the subject asked the pack preflight about, oldest first — one entry per
+     * `languageAvailability(List)` call. Recorded by `PreflightHandle`'s List override (the fake's own
+     * inherited default is never reached through that delegating wrapper). This is how a test proves
+     * the public preflight and a native `"auto"` start ask the platform the IDENTICAL question: the
+     * full allowlist, never just the one language a caller cares about.
+     */
+    val languageQueries: MutableList<List<String>> = mutableListOf()
+
     fun resetCounts() {
         setListenerCount = 0
         startCount = 0
@@ -85,6 +94,7 @@ internal class FakeRecognizerHandle : RecognizerHandle {
         cancelCount = 0
         destroyCount = 0
         calls.clear()
+        languageQueries.clear()
     }
 
     // ---------------------------------------------------------------------------------------
