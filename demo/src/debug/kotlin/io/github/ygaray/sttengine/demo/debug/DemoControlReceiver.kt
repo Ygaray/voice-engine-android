@@ -3,14 +3,24 @@ package io.github.ygaray.sttengine.demo.debug
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import android.util.Log
 import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.BackendPreference
 import io.github.ygaray.sttengine.FinalSegment
+import io.github.ygaray.sttengine.LanguageAvailability
+import io.github.ygaray.sttengine.checkLanguageAvailability
 import io.github.ygaray.sttengine.debug.DebugRungCeiling
 import io.github.ygaray.sttengine.demo.DictationViewModel
+import io.github.ygaray.sttengine.requestLanguagePackDownload
 import java.io.File
 import java.util.UUID
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -40,10 +50,14 @@ import org.json.JSONObject
  *
  * ## Usage
  *
- * The demo screen must be up — the receiver drives the live view model and cannot conjure one:
+ * `<serial>` below is a placeholder: take the adb serial from your own device config at run time.
+ * A real serial or address is never committed to this file.
+ *
+ * START, STOP and DUMP_DIAGNOSTICS need the demo screen up — they drive the live view model and
+ * cannot conjure one:
  *
  * ```bash
- * S=100.113.42.22:1496
+ * S=<serial>
  * adb -s $S shell am start -n io.github.ygaray.sttengine.demo/.MainActivity
  * adb -s $S shell am broadcast -n io.github.ygaray.sttengine.demo/io.github.ygaray.sttengine.demo.debug.DemoControlReceiver \
  *   -a io.github.ygaray.sttengine.demo.debug.START \
@@ -64,15 +78,41 @@ import org.json.JSONObject
  *   --es io.github.ygaray.sttengine.demo.debug.extra.AUDIO_SOURCE /sdcard/Android/data/io.github.ygaray.sttengine.demo/files/and02-stimulus.wav
  * ```
  *
- * **The six strings below are a cross-plan interface.** Plan 08's harness and plan 10's device run
- * are authored against them verbatim and plan 08's automated verify cross-greps its own strings
- * against this file. Renaming one here silently breaks both. `src/debug/AndroidManifest.xml` repeats
- * the three action names as literals because a manifest `<action android:name>` cannot reference a
- * Kotlin constant — that duplication is the one place drift can start, and both files say so.
+ * The language-pack actions (Phase 22, D-06) need only a Context, so they work with or without the
+ * demo screen — and while a session is listening, which is the point of the contention check. Each
+ * writes one logcat line and one sidecar line, and nothing else:
+ *
+ * ```bash
+ * adb -s $S shell am broadcast -n … -a io.github.ygaray.sttengine.demo.debug.CHECK_PACKS
+ * adb -s $S shell am broadcast -n … -a io.github.ygaray.sttengine.demo.debug.DOWNLOAD_PACK \
+ *   --es io.github.ygaray.sttengine.demo.debug.extra.LANGUAGE es
+ * ```
+ *
+ * **The eleven strings below (five actions, six extras) are a cross-plan interface.** Plan 08's
+ * harness, plan 10's device run and the Phase 21/22 Gate-1 scripts are authored against them
+ * verbatim, and plan 08's automated verify cross-greps its own strings against this file. Renaming
+ * one here silently breaks them. `src/debug/AndroidManifest.xml` repeats the five action names as
+ * literals because a manifest `<action android:name>` cannot reference a Kotlin constant — that
+ * duplication is the one place drift can start, both files say so, and `DemoPackActionsTest` fails
+ * if a constant has no matching manifest action.
  */
 class DemoControlReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
+        // The pack actions need only a Context, so they are answered BEFORE the live-screen check:
+        // they must work with no demo screen, and the D-06 contention leg sends CHECK_PACKS while a
+        // session is listening in this same process.
+        when (intent.action) {
+            ACTION_CHECK_PACKS -> {
+                checkPacks(context)
+                return
+            }
+            ACTION_DOWNLOAD_PACK -> {
+                downloadPack(context, intent)
+                return
+            }
+        }
+
         val viewModel = DictationViewModel.live
         if (viewModel == null) {
             // Not an error worth crashing over, but it IS the single most likely reason a harness
@@ -228,6 +268,93 @@ class DemoControlReceiver : BroadcastReceiver() {
         }
     }
 
+    /**
+     * [ACTION_CHECK_PACKS]: ask the library for the default `{en, es}` pack state, off the main
+     * thread under `goAsync()`, bounded by [PACK_ACTION_BUDGET_MS], always finishing the broadcast.
+     */
+    private fun checkPacks(context: Context) {
+        val appContext = context.applicationContext
+        val pending = goAsync()
+        packScope.launch {
+            try {
+                val started = SystemClock.elapsedRealtime()
+                val result = withTimeoutOrNull(PACK_ACTION_BUDGET_MS) {
+                    checkLanguageAvailability(appContext)
+                }
+                val elapsedMs = SystemClock.elapsedRealtime() - started
+                if (result == null) {
+                    Log.d(TAG, "PACKS timeout elapsedMs=$elapsedMs")
+                } else {
+                    Log.d(TAG, packsLogLine(result))
+                    appendPackLine(appContext) { packsDiagnostics(it, result, elapsedMs) }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                // The library promises not to throw; if it ever does, say so instead of crashing the
+                // demo. The class name only — a message could carry anything.
+                Log.d(TAG, "PACKS failed: ${failure.javaClass.simpleName}")
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+
+    /**
+     * [ACTION_DOWNLOAD_PACK]: ask the library to download the pack named by [EXTRA_LANGUAGE], off the
+     * main thread under `goAsync()`, bounded by [PACK_ACTION_BUDGET_MS], always finishing the
+     * broadcast. The raw extra goes to the library only; logcat and the sidecar get [packLangLabel].
+     */
+    private fun downloadPack(context: Context, intent: Intent) {
+        val raw = intent.getStringExtra(EXTRA_LANGUAGE)
+        if (raw.isNullOrBlank()) {
+            // Refused before goAsync(), so there is nothing to finish and nothing else happens.
+            Log.d(TAG, "DOWNLOAD_PACK refused: LANGUAGE extra required")
+            return
+        }
+        // Sanitized ONCE, before the call (review round 1 LOW): this is the only form of the value
+        // that reaches logcat or the sidecar.
+        val label = packLangLabel(raw)
+        val appContext = context.applicationContext
+        val pending = goAsync()
+        packScope.launch {
+            try {
+                val started = SystemClock.elapsedRealtime()
+                val accepted = withTimeoutOrNull(PACK_ACTION_BUDGET_MS) {
+                    requestLanguagePackDownload(appContext, raw)
+                }
+                val elapsedMs = SystemClock.elapsedRealtime() - started
+                if (accepted == null) {
+                    Log.d(TAG, "DOWNLOAD $label timeout elapsedMs=$elapsedMs")
+                } else {
+                    Log.d(TAG, downloadLogLine(label, accepted, elapsedMs))
+                    appendPackLine(appContext) { downloadDiagnostics(it, label, accepted, elapsedMs) }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.d(TAG, "DOWNLOAD $label failed: ${failure.javaClass.simpleName}")
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+
+    /**
+     * Append one pack-action line (with `t`) to the demo sidecar. Best-effort, exactly like
+     * [dumpDiagnostics]: a diagnostic that can break the app it is diagnosing is worse than none.
+     */
+    private fun appendPackLine(context: Context, fill: (JSONObject) -> Unit) {
+        val directory = context.getExternalFilesDir(null) ?: return
+        runCatching {
+            val line = JSONObject().apply {
+                put("t", System.currentTimeMillis())
+                fill(this)
+            }
+            File(directory, DIAGNOSTICS_FILE).appendText(line.toString() + "\n")
+        }
+    }
+
     companion object {
 
         private const val TAG = "SttDemoControl"
@@ -243,6 +370,30 @@ class DemoControlReceiver : BroadcastReceiver() {
         /** Write the current diagnostic values to logcat and to the sidecar trace. */
         const val ACTION_DUMP_DIAGNOSTICS =
             "io.github.ygaray.sttengine.demo.debug.DUMP_DIAGNOSTICS"
+
+        /**
+         * Ask the library which on-device language packs this device has (Phase 22, D-06): runs
+         * `checkLanguageAvailability(context)` for the default `{en, es}` and writes a
+         * `PACKS {"en":"…","es":"…"}` logcat line plus one `demo-packs` sidecar line.
+         *
+         * Needs only a Context, so it works with or without the demo screen — including WHILE a
+         * session is listening, which is the D-06 contention check. Debug-only, like every action
+         * here: it never reaches a release build.
+         */
+        const val ACTION_CHECK_PACKS = "io.github.ygaray.sttengine.demo.debug.CHECK_PACKS"
+
+        /**
+         * Ask the library to download one on-device language pack (Phase 22, D-06): runs
+         * `requestLanguagePackDownload(context, lang)` with [EXTRA_LANGUAGE] — a bare `en` or `es` —
+         * and writes a `DOWNLOAD <lang> accepted=<bool> elapsedMs=<n>` logcat line plus one
+         * `demo-pack-download` sidecar line.
+         *
+         * Anything other than a bare key is passed through and the library itself refuses it without
+         * touching the platform; a missing or blank LANGUAGE is refused here and does nothing. The
+         * logged language is always [packLangLabel]'s bounded form, never the raw extra. Works without
+         * the demo screen. Debug-only: it never reaches a release build.
+         */
+        const val ACTION_DOWNLOAD_PACK = "io.github.ygaray.sttengine.demo.debug.DOWNLOAD_PACK"
 
         /**
          * Boolean extra on [ACTION_START]. Enables the engine's JSONL session trace for that run.
@@ -323,6 +474,20 @@ class DemoControlReceiver : BroadcastReceiver() {
 
         /** The demo's own diagnostic sidecar, beside the engine's trace and pullable the same way. */
         const val DIAGNOSTICS_FILE = "demo-diagnostics.jsonl"
+
+        /**
+         * The overall budget for one pack action under `goAsync()`. Below the ~10 s a broadcast
+         * receiver may hold before the system treats it as unresponsive; the library's own worst case
+         * is about 2 s for the query plus 5 s for download acceptance.
+         */
+        const val PACK_ACTION_BUDGET_MS = 9_000L
+
+        /**
+         * Where the pack actions run. A fresh receiver instance handles every broadcast and is gone
+         * once `goAsync()` is finished, so the work needs a scope that outlives it; the supervisor
+         * keeps one failed action from cancelling the next.
+         */
+        private val packScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
         /**
          * The run id of the most recently accepted START. Process-wide on purpose: Android makes a
@@ -547,4 +712,87 @@ internal fun serverPathDiagnostics(
     into.put("partialLive", partialLive)
     into.put("partialUpdates", partialUpdates)
     into.put("warningCount", warningCount)
+}
+
+/** The longest LANGUAGE value [packLangLabel] passes through unchanged. */
+private const val PACK_LANG_LABEL_MAX = 16
+
+/** What [packLangLabel] writes in place of a value it will not repeat. */
+private const val PACK_LANG_UNRECOGNIZED = "(unrecognized)"
+
+/** Letters, optionally followed by hyphen-separated alphanumeric subtags: `es`, `en-US`, `EN`. */
+private val PACK_LANG_SHAPE = Regex("[A-Za-z]+(-[A-Za-z0-9]+)*")
+
+/**
+ * The bounded form of a [DemoControlReceiver.ACTION_DOWNLOAD_PACK] LANGUAGE value (Phase 22, D-06;
+ * review round 1 LOW).
+ *
+ * Returns [raw] unchanged when it is language-tag shaped and at most 16 characters long, and
+ * `(unrecognized)` otherwise. The receiver computes this ONCE per broadcast, and the result is the
+ * only form of the value that reaches logcat or the sidecar. The receiver is exported, so anything
+ * with adb access can send it any string; bounding the value here keeps such a caller from inflating
+ * the sidecar or the log.
+ *
+ * Shape only: `EN` and `en-US` pass through even though the library refuses both. That refusal
+ * belongs to [io.github.ygaray.sttengine.requestLanguagePackDownload], which is handed the raw value.
+ * The length is checked before the pattern, so an oversized value is never scanned. Plain and
+ * dependency-free so it is unit-testable in plain JUnit.
+ */
+internal fun packLangLabel(raw: String): String =
+    if (raw.length <= PACK_LANG_LABEL_MAX && PACK_LANG_SHAPE.matches(raw)) raw else PACK_LANG_UNRECOGNIZED
+
+/**
+ * The logcat line for a [DemoControlReceiver.ACTION_CHECK_PACKS] result, keys in [result]'s own
+ * order: `PACKS {"en":"INSTALLED","es":"DOWNLOADABLE"}`.
+ *
+ * Built by hand rather than through [JSONObject], whose key order is not guaranteed on every
+ * implementation; the line is read by people and by grep, so a stable order matters. Language keys
+ * and enum names only. Plain and dependency-free so it is unit-testable in plain JUnit.
+ */
+internal fun packsLogLine(result: Map<String, LanguageAvailability>): String =
+    result.entries.joinToString(separator = ",", prefix = "PACKS {", postfix = "}") { (lang, availability) ->
+        "${JSONObject.quote(lang)}:${JSONObject.quote(availability.name)}"
+    }
+
+/**
+ * Writes a [DemoControlReceiver.ACTION_CHECK_PACKS] result onto [into] as exactly three keys:
+ * `kind` = `demo-packs`, `packs` (an object of language key to [LanguageAvailability] name) and
+ * `elapsedMs`. The receiver adds `t` when it appends the line to the sidecar.
+ *
+ * Language keys, enum names and a duration only — no transcript text exists on this path. Plain and
+ * dependency-free so it is unit-testable in plain JUnit.
+ */
+internal fun packsDiagnostics(into: JSONObject, result: Map<String, LanguageAvailability>, elapsedMs: Long) {
+    into.put("kind", "demo-packs")
+    into.put(
+        "packs",
+        JSONObject().apply { result.forEach { (lang, availability) -> put(lang, availability.name) } },
+    )
+    into.put("elapsedMs", elapsedMs)
+}
+
+/**
+ * The logcat line for a [DemoControlReceiver.ACTION_DOWNLOAD_PACK] result:
+ * `DOWNLOAD es accepted=true elapsedMs=412`.
+ *
+ * [label] must be the [packLangLabel] of the LANGUAGE extra, never the raw value. Plain and
+ * dependency-free so it is unit-testable in plain JUnit.
+ */
+internal fun downloadLogLine(label: String, accepted: Boolean, elapsedMs: Long): String =
+    "DOWNLOAD $label accepted=$accepted elapsedMs=$elapsedMs"
+
+/**
+ * Writes a [DemoControlReceiver.ACTION_DOWNLOAD_PACK] result onto [into] as exactly four keys:
+ * `kind` = `demo-pack-download`, `lang`, `accepted` and `elapsedMs`. The receiver adds `t` when it
+ * appends the line to the sidecar.
+ *
+ * [label] must be the [packLangLabel] of the LANGUAGE extra, never the raw value, so the sidecar line
+ * stays bounded whatever an exported-receiver caller sends. Plain and dependency-free so it is
+ * unit-testable in plain JUnit.
+ */
+internal fun downloadDiagnostics(into: JSONObject, label: String, accepted: Boolean, elapsedMs: Long) {
+    into.put("kind", "demo-pack-download")
+    into.put("lang", label)
+    into.put("accepted", accepted)
+    into.put("elapsedMs", elapsedMs)
 }
