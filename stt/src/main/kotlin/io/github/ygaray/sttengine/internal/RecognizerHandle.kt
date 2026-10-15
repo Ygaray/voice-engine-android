@@ -68,12 +68,16 @@ internal interface RecognizerHandle {
      *
      * **Why it returns a library enum rather than the platform's `RecognitionSupport`.** That is a
      * deliberate exception to this interface's mirror-the-platform rule, and the only one.
-     * `RecognitionSupport` cannot be constructed by a test on either the mockable `android.jar` or
-     * under Robolectric, so a 1:1 mirror here would make the whole `no-offline-model` row of D-18's
-     * preflight table structurally unprovable — and on this phase's tester it is *already*
-     * unprovable from the device, because `en-US` is installed there
-     * (`05-PROBE-REPORT.json` → `part1.languageSupport.installedOnDeviceLanguages`). Mapping in the
-     * adapter is what lets the branch be exercised at all.
+     * `RecognitionSupport` cannot be built on the plain-JVM mockable `android.jar`, where the
+     * engine-level suites run behind [FakeRecognizerHandle]-style fakes — so a 1:1 mirror here would
+     * make the whole `no-offline-model` row of D-18's preflight table unprovable there, and on this
+     * phase's tester it is *already* unprovable from the device, because `en-US` is installed there
+     * (`05-PROBE-REPORT.json` → `part1.languageSupport.installedOnDeviceLanguages`). Under
+     * Robolectric sdk 35 the real `RecognitionSupport.Builder` DOES work (there is no shadow for it),
+     * and `PlatformRecognizerHandlePackTest` uses it to prove the adapter's `classify` on real
+     * platform objects. The library enum on the seam is still the right call: the engine-level fakes
+     * and the public pack preflight need one shared type, and mapping in the adapter is what lets
+     * every branch be exercised at all.
      *
      * The default is [LanguageAvailability.UNKNOWN], and the engine treats that as "proceed".
      * A failed capability query must never stop a session that is otherwise working — the same

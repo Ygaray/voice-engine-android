@@ -12,6 +12,7 @@ import android.speech.SpeechRecognizer
 import io.github.ygaray.sttengine.LanguageAvailability
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -129,6 +130,10 @@ internal class PlatformRecognizerHandle(
      * The intent-build + `suspendCancellableCoroutine` + `withTimeoutOrNull` machinery shared by
      * both [languageAvailability] overrides. Returns the raw platform answer — `null` on a timeout
      * or a failed query — leaving classification to the caller.
+     *
+     * A support call that throws synchronously is a query that could not answer — the same reading
+     * as `onError` — so it also resumes `null`, and both overloads report
+     * [LanguageAvailability.UNKNOWN].
      */
     private suspend fun querySupport(language: String): RecognitionSupport? {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -155,8 +160,19 @@ internal class PlatformRecognizerHandle(
                 // checkIsCalledFromMainThread() [VERIFIED: SpeechRecognizerImpl.java:428-430], but
                 // it is routed through the same hop as every other delegate call so a reader does
                 // not have to remember which of six methods is the exception.
+                //
+                // The try/catch sits INSIDE the onMain lambda on purpose. Called off the main
+                // looper, onMain POSTS the block, so a catch around it would never see a throw: the
+                // exception would escape on the main looper and this query would hang until the
+                // timeout. Inside, both the inline and the posted path fold it.
                 onMain {
-                    checkSupport(intent, DIRECT_EXECUTOR, callback)
+                    try {
+                        checkSupport(intent, DIRECT_EXECUTOR, callback)
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (failure: RuntimeException) {
+                        if (continuation.isActive) continuation.resume(null)
+                    }
                 }
             }
         }
