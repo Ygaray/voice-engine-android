@@ -75,6 +75,57 @@ class ServerConnectFailureTest {
         assertEquals(ConnectFailureClass.FastFail, classify(wrapped))
     }
 
+    // --- the same connect-phase failures handed over wrapped: still fast-fail (21-W46 review) -------
+
+    @Test
+    fun `every connect-phase failure wrapped in an IOException fast-fails`() {
+        listOf(
+            UnknownHostException("x"),
+            ConnectException("Failed to connect to x"),
+            NoRouteToHostException("x"),
+            UnknownServiceException("CLEARTEXT communication not permitted"),
+        ).forEach { cause ->
+            assertEquals(
+                "IOException wrapping ${cause.javaClass.simpleName}",
+                ConnectFailureClass.FastFail,
+                classify(IOException("wrapped", cause)),
+            )
+        }
+    }
+
+    @Test
+    fun `a connect-phase failure several wrappers deep fast-fails`() {
+        val inner = SocketException("inner").apply { initCause(UnknownHostException("x")) }
+        val t = IOException("outer", IOException("middle", inner))
+        assertEquals(ConnectFailureClass.FastFail, classify(t))
+    }
+
+    @Test
+    fun `a connect-phase reset under a ConnectException under a wrapper fast-fails`() {
+        val connect = ConnectException("Failed to connect to x").apply {
+            initCause(SocketException("Connection reset"))
+        }
+        assertEquals(ConnectFailureClass.FastFail, classify(IOException("wrapped", connect)))
+    }
+
+    @Test
+    fun `a reset under a plain wrapper with no connect-phase cause stays retryable`() {
+        val t = IOException("wrapped", SocketException("Connection reset"))
+        assertEquals(ConnectFailureClass.Retryable, classify(t))
+        assertEquals(
+            "a top-level established-connection reset stays retryable",
+            ConnectFailureClass.Retryable,
+            classify(SocketException("Connection reset")),
+        )
+    }
+
+    @Test
+    fun `a connect-phase cause past the depth bound is not reached`() {
+        var t: Throwable = UnknownHostException("x")
+        repeat(8) { t = IOException("wrapper $it", t) }
+        assertEquals(ConnectFailureClass.Retryable, classify(t))
+    }
+
     // --- deterministic rejections after the host answered: fast-fail --------------------------------
 
     @Test

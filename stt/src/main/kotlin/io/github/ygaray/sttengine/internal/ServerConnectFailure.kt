@@ -54,6 +54,8 @@ internal class ConnectObservation(
  * 3. [UnknownHostException] (DNS / no network) → FastFail
  * 4. [ConnectException] or [NoRouteToHostException] → FastFail
  * 5. [UnknownServiceException] (cleartext not permitted — refused before any connection) → FastFail
+ *
+ *    Rules 3-5 match the throwable OR any link of its cause chain (see "Why the cause chain" below).
  * 6. a TLS certificate or hostname verification failure → FastFail
  * 7. a 5xx upgrade answer → [ConnectFailureClass.Retryable]
  * 8. any other upgrade answer → FastFail
@@ -94,6 +96,15 @@ internal class ConnectObservation(
  * fast-fails (rule 4), while a bare reset on an established connection retries (rule 10). `sawOpen`
  * is still recorded for the trace line.
  *
+ * **Why the cause chain, for rules 3-5 as for rule 6.** A transport layer may hand the failure over
+ * wrapped — an [IOException] whose cause is the [UnknownHostException] or [ConnectException] — and
+ * that wrapper is still a host that never answered. Matching only the top-level type would class it
+ * rule 10 and spend the whole window retrying a host that cannot answer before falling back. So
+ * rules 3-5 walk the same bounded, cycle-checked chain rule 6 does. The connect-phase distinction
+ * above is unchanged: a reset is retried only when no connect-phase exception sits anywhere in its
+ * chain — a reset alone (top-level or under a plain wrapper) is rule 10, a reset under a
+ * [ConnectException] is rule 4.
+ *
  * **Why no `EventListener`.** OkHttp forces `EventListener.NONE` on WebSocket calls, so no
  * handshake-phase callback can be observed; classification reads only the exceptions and codes
  * OkHttp already surfaces, and no TLS behavior is changed.
@@ -104,9 +115,7 @@ internal fun classifyConnectFailure(observation: ConnectObservation): ConnectFai
     return when {
         observation.serverErrorCode != null -> ConnectFailureClass.FastFail
         observation.closeCode == BUSY_CLOSE_CODE -> ConnectFailureClass.FastFail
-        t is UnknownHostException -> ConnectFailureClass.FastFail
-        t is ConnectException || t is NoRouteToHostException -> ConnectFailureClass.FastFail
-        t is UnknownServiceException -> ConnectFailureClass.FastFail
+        t != null && isConnectPhaseFailure(t) -> ConnectFailureClass.FastFail
         t != null && isTlsVerificationFailure(t) -> ConnectFailureClass.FastFail
         responseCode != null && responseCode in 500..599 -> ConnectFailureClass.Retryable
         responseCode != null -> ConnectFailureClass.FastFail
@@ -118,16 +127,31 @@ internal fun classifyConnectFailure(observation: ConnectObservation): ConnectFai
 }
 
 /**
- * `true` for a certificate or hostname verification failure — see [classifyConnectFailure] rule 6.
- * Walks at most [MAX_CAUSE_DEPTH] links and stops on a self or repeated cause, so a cyclic chain
- * cannot hang the selector.
+ * `true` when the throwable or any link of its cause chain is a connect-phase failure — the host
+ * never answered — see [classifyConnectFailure] rules 3-5.
  */
-private fun isTlsVerificationFailure(t: Throwable): Boolean {
-    if (t is SSLPeerUnverifiedException) return true
+private fun isConnectPhaseFailure(t: Throwable): Boolean =
+    causeChainContains(t) {
+        it is UnknownHostException || it is ConnectException || it is NoRouteToHostException ||
+            it is UnknownServiceException
+    }
+
+/**
+ * `true` for a certificate or hostname verification failure — see [classifyConnectFailure] rule 6.
+ */
+private fun isTlsVerificationFailure(t: Throwable): Boolean =
+    t is SSLPeerUnverifiedException ||
+        causeChainContains(t) { it is CertificateException || it is CertPathValidatorException }
+
+/**
+ * `true` when [t] or one of its causes satisfies [match]. Walks at most [MAX_CAUSE_DEPTH] links and
+ * stops on a self or repeated cause, so a cyclic chain cannot hang the selector.
+ */
+private inline fun causeChainContains(t: Throwable, match: (Throwable) -> Boolean): Boolean {
     val seen = ArrayList<Throwable>(MAX_CAUSE_DEPTH)
     var current: Throwable? = t
     while (current != null && seen.size < MAX_CAUSE_DEPTH && seen.none { it === current }) {
-        if (current is CertificateException || current is CertPathValidatorException) return true
+        if (match(current)) return true
         seen += current
         current = current.cause
     }
