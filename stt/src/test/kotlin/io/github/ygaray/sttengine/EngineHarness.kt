@@ -216,6 +216,11 @@ internal class PreflightHandle(
     // it here makes `languageAvailability(it)` resolve virtually to THIS class's override, composing
     // through `availabilityOverrides` — proven by a hang-reproducing PreflightTest run before this
     // override was added.
-    override suspend fun languageAvailability(languages: List<String>): Map<String, LanguageAvailability> =
-        languages.associateWith { languageAvailability(it) }
+    //
+    // It also records the list into `delegate.languageQueries`, which is how the pack preflight and
+    // a native "auto" start() are proven to ask the platform the identical question.
+    override suspend fun languageAvailability(languages: List<String>): Map<String, LanguageAvailability> {
+        delegate.languageQueries += languages
+        return languages.associateWith { languageAvailability(it) }
+    }
 }

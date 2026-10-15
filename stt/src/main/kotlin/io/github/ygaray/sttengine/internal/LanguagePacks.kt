@@ -140,7 +140,7 @@ internal class LanguagePacks(
             try {
                 handle.destroy()
             } catch (cleanup: RuntimeException) {
-                failure.addSuppressed(cleanup)
+                attachCleanupFailure(failure, cleanup)
             }
             throw failure
         }
@@ -154,6 +154,28 @@ internal class LanguagePacks(
     }
 
     private companion object {
+
+        /**
+         * Attaches a cleanup failure to the exception [block][withTransientHandle] threw, as a
+         * suppressed exception — never as the primary one.
+         *
+         * When that exception is a cancellation, the cleanup failure is ALSO attached to every
+         * cancellation further down its cause chain. With coroutine debug mode on (stack-trace
+         * recovery, common in debug builds), a suspended call is resumed with a COPY of the job's
+         * cancellation whose `cause` is the original, and the job then completes with the original.
+         * Attaching only to the copy would silently drop the cleanup failure in exactly the builds
+         * a developer debugs with. Without debug mode the chain is the single original exception.
+         */
+        fun attachCleanupFailure(failure: Throwable, cleanup: Throwable) {
+            failure.addSuppressed(cleanup)
+            if (failure !is CancellationException) return
+            val seen = mutableSetOf(failure)
+            var link = failure.cause
+            while (link is CancellationException && seen.add(link)) {
+                link.addSuppressed(cleanup)
+                link = link.cause
+            }
+        }
 
         /**
          * The bilingual allowlist tag a host key names, or null when it names none.
