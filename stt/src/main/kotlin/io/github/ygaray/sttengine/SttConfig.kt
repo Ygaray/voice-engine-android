@@ -73,6 +73,15 @@ import io.github.ygaray.sttengine.internal.ServerTryWindow
  *   1 000..10 000 ms rather than rejected, and this property reports the clamped value. No audio is
  *   captured while the window runs, so a longer window means more deaf time when the server is
  *   off. Ignored when no server is configured.
+ * @property retainForCorpus Opt this SERVER session into the host's voice corpus (CORR-06). Only a
+ *   server session retains anything; the default `false` retains nothing and puts no new key on the
+ *   wire. When `true`, the session's audio and its committed finals are kept on the server host for
+ *   later correction (see [SttEngine.lastSessionId] and `submitCorrection`). A native session — no
+ *   [serverUrl], [prefer] set to [BackendPreference.OnDevice], or a mid-session fallback to the
+ *   on-device recognizer — and a server that is older or has retention switched off all produce no
+ *   record and no error, and the host cannot tell which of these happened from
+ *   [SttEngine.lastSessionId] alone (null is "no record claimed"). The corpus lives on the server
+ *   host, and the host app owns the user's consent for retaining their voice.
  */
 public class SttConfig @JvmOverloads constructor(
     public val language: String = "en",
@@ -81,6 +90,7 @@ public class SttConfig @JvmOverloads constructor(
     corrections: CorrectionRuleset? = null,
     vocabulary: List<String>? = null,
     serverTryTimeoutMs: Long = ServerTryWindow.DEFAULT_MS,
+    public val retainForCorpus: Boolean = false,
 ) {
     public val corrections: CorrectionRuleset? = corrections?.toList()
     public val vocabulary: List<String>? = vocabulary?.toList()
@@ -95,7 +105,8 @@ public class SttConfig @JvmOverloads constructor(
             serverUrl == other.serverUrl &&
             corrections == other.corrections &&
             vocabulary == other.vocabulary &&
-            serverTryTimeoutMs == other.serverTryTimeoutMs
+            serverTryTimeoutMs == other.serverTryTimeoutMs &&
+            retainForCorpus == other.retainForCorpus
     }
 
     override fun hashCode(): Int {
@@ -105,10 +116,12 @@ public class SttConfig @JvmOverloads constructor(
         result = 31 * result + (corrections?.hashCode() ?: 0)
         result = 31 * result + (vocabulary?.hashCode() ?: 0)
         result = 31 * result + serverTryTimeoutMs.hashCode()
+        result = 31 * result + retainForCorpus.hashCode()
         return result
     }
 
     override fun toString(): String =
         "SttConfig(language=$language, prefer=$prefer, serverUrl=$serverUrl, " +
-            "corrections=$corrections, vocabulary=$vocabulary, serverTryTimeoutMs=$serverTryTimeoutMs)"
+            "corrections=$corrections, vocabulary=$vocabulary, serverTryTimeoutMs=$serverTryTimeoutMs, " +
+            "retainForCorpus=$retainForCorpus)"
 }

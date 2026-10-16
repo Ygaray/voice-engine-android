@@ -119,6 +119,7 @@ internal class BackendSelector(
             mainDispatcher = mainDispatcher,
             corrections = config.corrections,
             vocabulary = config.vocabulary,
+            retainForCorpus = config.retainForCorpus,
         )
     },
 ) : SttEngine {
@@ -235,6 +236,16 @@ internal class BackendSelector(
      */
     override val lastFinal: FinalSegment?
         get() = activeNative?.lastFinal ?: handoffFinal ?: (activeServer ?: lastServer)?.lastFinal
+
+    /**
+     * CORR-07 (D-09, D-04 refined by D-17(c)): read synchronously from the detached or active
+     * server backend, the same way [lastFinal] is. [ServerBackend.endedSessionId] is non-null only
+     * after that backend finished a flushed `stop()`, so a live session, a failed or handed-off one
+     * (whose backend never ran a stop) and a native session all read null. [runStart] clearing
+     * [lastServer] at the top of a new session is the reset.
+     */
+    override val lastSessionId: String?
+        get() = (activeServer ?: lastServer)?.endedSessionId
 
     /**
      * The in-flight [ServerBackend] under a try-server connect attempt — assigned the moment it is

@@ -133,6 +133,30 @@ public interface SttEngine {
     public val lastFinal: FinalSegment? get() = null
 
     /**
+     * The corpus session id of the session that just ended (CORR-07), or `null`.
+     *
+     * Non-null only after [stop] on a session that opted in with [SttConfig.retainForCorpus], ran on
+     * the server backend, never failed and was never handed off to the on-device recognizer, and whose
+     * server finished its stop path by closing cleanly. The server attempts the corpus commit before
+     * that close, so the observed clean close is the earliest moment the record can exist. This does
+     * NOT guarantee the record was stored: a server-side retention failure is not signalled to the
+     * client, and a later `submitCorrection` for such an id returns `UNKNOWN_SESSION`.
+     *
+     * Readable after [stop] returns, and also once the engine has reported [EngineState.Idle] after
+     * it (the id is published before Idle). Reset by [start]. `null` on every other path: while a
+     * session is live, after a flush that timed out, an error, an abnormal close, a mid-session
+     * fallback to the on-device recognizer, a stop during the try-server window, any native session,
+     * a server that sent no id, and a session that did not request retention.
+     *
+     * The id is the handle for `submitCorrection` and is a capability to append corrections to that
+     * record: treat it like any identifier you would not publish.
+     *
+     * Defaulted to `null` so existing implementers (including host test fakes) stay source- and
+     * binary-compatible; a fake may override it to drive host logic.
+     */
+    public val lastSessionId: String? get() = null
+
+    /**
      * Begin a session: preflight, construct the recognizer, and start recognizing.
      *
      * **Completes when the engine reaches [EngineState.Listening] OR on a terminal error (D-10)** —

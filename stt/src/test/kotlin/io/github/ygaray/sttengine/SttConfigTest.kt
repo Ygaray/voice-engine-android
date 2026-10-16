@@ -1,6 +1,7 @@
 package io.github.ygaray.sttengine
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -70,10 +71,60 @@ class SttConfigTest {
     fun `toString includes the clamped window last`() {
         val s = SttConfig(serverTryTimeoutMs = 7_000L).toString()
         assertTrue(s, s.contains("serverTryTimeoutMs=7000"))
-        assertTrue(s, s.endsWith("vocabulary=null, serverTryTimeoutMs=7000)"))
+        assertTrue(s, s.endsWith("serverTryTimeoutMs=7000, retainForCorpus=false)"))
 
         val clamped = SttConfig(serverTryTimeoutMs = 99_999L).toString()
         assertTrue(clamped, clamped.contains("serverTryTimeoutMs=10000"))
+    }
+
+    // --- Phase 25 (CORR-06, D-08): the trailing defaulted retainForCorpus ----------------------------
+
+    @Test
+    fun `retainForCorpus defaults to false`() {
+        assertFalse(SttConfig().retainForCorpus)
+        assertFalse(SttConfig(serverUrl = "wss://host.example:8444/").retainForCorpus)
+    }
+
+    @Test
+    fun `the 7th positional argument sets retainForCorpus`() {
+        val seven = SttConfig("en", BackendPreference.Auto, null, null, null, 4_000L, true)
+        assertTrue(seven.retainForCorpus)
+        assertEquals(4_000L, seven.serverTryTimeoutMs)
+        assertTrue(SttConfig(retainForCorpus = true).retainForCorpus)
+    }
+
+    @Test
+    fun `configs differing only in retainForCorpus are not equal and toString shows the flag last`() {
+        val off = SttConfig()
+        val on = SttConfig(retainForCorpus = true)
+        assertNotEquals(off, on)
+        assertNotEquals(off.hashCode(), on.hashCode())
+        assertEquals(on, SttConfig(retainForCorpus = true))
+        assertEquals(on.hashCode(), SttConfig(retainForCorpus = true).hashCode())
+
+        assertTrue(off.toString(), off.toString().endsWith("retainForCorpus=false)"))
+        assertTrue(on.toString(), on.toString().endsWith("retainForCorpus=true)"))
+    }
+
+    @Test
+    fun `SttConfig keeps a public constructor of every arity 0 through 7`() {
+        // Guards the @JvmOverloads binary shape: dropping the annotation, or adding the 7th parameter
+        // without it, would silently remove the in-between arities Java and old callers link against.
+        val arities = SttConfig::class.java.constructors
+            .filter { java.lang.reflect.Modifier.isPublic(it.modifiers) && !it.isSynthetic }
+            .map { it.parameterCount }
+            .toSet()
+        for (n in 0..7) {
+            assertTrue("missing a public constructor of arity $n; have $arities", n in arities)
+        }
+    }
+
+    @Test
+    fun `SttConfig is still a plain class, never a data class`() {
+        // A data class generates copy() and componentN(); a plain class has neither.
+        val names = SttConfig::class.java.methods.map { it.name }
+        assertFalse("copy() would make SttConfig a data class", "copy" in names)
+        assertFalse("component1() would make SttConfig a data class", "component1" in names)
     }
 
     @Test

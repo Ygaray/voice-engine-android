@@ -77,11 +77,13 @@ public final class io/github/ygaray/sttengine/SttConfig {
 	public fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;Ljava/util/List;)V
 	public fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;Ljava/util/List;Ljava/util/List;)V
 	public fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;Ljava/util/List;Ljava/util/List;J)V
-	public synthetic fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;Ljava/util/List;Ljava/util/List;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;Ljava/util/List;Ljava/util/List;JZ)V
+	public synthetic fun <init> (Ljava/lang/String;Lio/github/ygaray/sttengine/BackendPreference;Ljava/lang/String;Ljava/util/List;Ljava/util/List;JZILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getCorrections ()Ljava/util/List;
 	public final fun getLanguage ()Ljava/lang/String;
 	public final fun getPrefer ()Lio/github/ygaray/sttengine/BackendPreference;
+	public final fun getRetainForCorpus ()Z
 	public final fun getServerTryTimeoutMs ()J
 	public final fun getServerUrl ()Ljava/lang/String;
 	public final fun getVocabulary ()Ljava/util/List;
@@ -95,6 +97,7 @@ public abstract interface class io/github/ygaray/sttengine/SttEngine {
 	public abstract fun getEvents ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun getFinals ()Lkotlinx/coroutines/flow/Flow;
 	public fun getLastFinal ()Lio/github/ygaray/sttengine/FinalSegment;
+	public fun getLastSessionId ()Ljava/lang/String;
 	public abstract fun getLevel ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun getPartial ()Lkotlinx/coroutines/flow/StateFlow;
 	public abstract fun getState ()Lkotlinx/coroutines/flow/StateFlow;
@@ -104,6 +107,7 @@ public abstract interface class io/github/ygaray/sttengine/SttEngine {
 
 public final class io/github/ygaray/sttengine/SttEngine$DefaultImpls {
 	public static fun getLastFinal (Lio/github/ygaray/sttengine/SttEngine;)Lio/github/ygaray/sttengine/FinalSegment;
+	public static fun getLastSessionId (Lio/github/ygaray/sttengine/SttEngine;)Ljava/lang/String;
 }
 
 public final class io/github/ygaray/sttengine/SttEngineFactoryKt {

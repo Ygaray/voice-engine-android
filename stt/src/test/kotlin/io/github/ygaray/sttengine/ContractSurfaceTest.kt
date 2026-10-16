@@ -148,6 +148,16 @@ public class ContractSurfaceTest {
         assertEquals("de", SttConfig(language = "de").language)
     }
 
+    @Test
+    public fun `SttConfig keeps the 7-argument constructor with retainForCorpus last (D-08)`() {
+        val seven = SttConfig("en", BackendPreference.Auto, null, null, null, 4_000L, true)
+        assertTrue(seven.retainForCorpus)
+        assertEquals(4_000L, seven.serverTryTimeoutMs)
+        // The pre-existing 6-argument shape still resolves and leaves the flag off.
+        val six = SttConfig("en", BackendPreference.Auto, null, null, null, 4_000L)
+        assertEquals(false, six.retainForCorpus)
+    }
+
     // --- FinalSegment (web/src/types.ts:17-20) --------------------------------------------------
 
     @Test
@@ -238,5 +248,45 @@ public class ContractSurfaceTest {
         assertNotNull(engine.errors)
         assertNotNull(engine.level)
         assertNotNull(engine.events)
+    }
+
+    // --- SttEngine.lastSessionId (Phase 25, D-01 / D-09): a defaulted member -----------------------
+
+    @Test
+    public fun `an implementer that does not override lastSessionId reads null (D-09)`() {
+        // Compiling this anonymous object with NO lastSessionId override is the source-compat proof:
+        // a host fake written against v0.7.0 must keep compiling and read null.
+        val engine: SttEngine = object : SttEngine {
+            override val state: StateFlow<EngineState> = MutableStateFlow(EngineState.Idle)
+            override val backend: StateFlow<Backend> = MutableStateFlow(Backend.Native)
+            override val partial: StateFlow<String> = MutableStateFlow("")
+            override val finals: Flow<FinalSegment> = emptyFlow()
+            override val errors: Flow<SttError> = emptyFlow()
+            override val level: Flow<Float> = emptyFlow()
+            override val events: Flow<SttEvent> = emptyFlow()
+            override suspend fun start() = Unit
+            override suspend fun stop() = Unit
+        }
+
+        assertNull(engine.lastSessionId)
+        assertNull(engine.lastFinal)
+    }
+
+    @Test
+    public fun `an implementer that overrides lastSessionId returns the override`() {
+        val engine: SttEngine = object : SttEngine {
+            override val state: StateFlow<EngineState> = MutableStateFlow(EngineState.Idle)
+            override val backend: StateFlow<Backend> = MutableStateFlow(Backend.Server)
+            override val partial: StateFlow<String> = MutableStateFlow("")
+            override val finals: Flow<FinalSegment> = emptyFlow()
+            override val errors: Flow<SttError> = emptyFlow()
+            override val level: Flow<Float> = emptyFlow()
+            override val events: Flow<SttEvent> = emptyFlow()
+            override val lastSessionId: String? get() = "0123456789abcdef0123456789abcdef"
+            override suspend fun start() = Unit
+            override suspend fun stop() = Unit
+        }
+
+        assertEquals("0123456789abcdef0123456789abcdef", engine.lastSessionId)
     }
 }
