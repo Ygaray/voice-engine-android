@@ -257,6 +257,9 @@ class DemoControlReceiver : BroadcastReceiver() {
             )
             // LAST-01: the final the last stop() flushed, by id + language only — never its text.
             lastFinalDiagnostics(this, engine.lastFinal)
+            // CORR-06 (Phase 25, D-17(e)): the retained session id, read LIVE from the engine here
+            // (never cached). Trust it only from a dump whose `state` above is `idle`.
+            lastSessionIdDiagnostics(this, engine.lastSessionId)
             // The file-feed facts. `fileFedConfirmed` and `fileFedOpens` are what turn "this run was
             // file-fed" from a claim into a measurement, and the harness refuses to score a
             // supposedly file-fed run without them. Counters only — still no transcript text.
@@ -678,6 +681,21 @@ internal sealed interface ServerPathRequest {
     class Refused(val reason: String) : ServerPathRequest {
         override fun toString(): String = "Refused($reason)"
     }
+}
+
+/**
+ * Writes the engine's `lastSessionId` onto [into] (Phase 25, D-17(e)): the key `lastSessionId` is
+ * the id of the corpus record the last clean server stop retained, or JSON `null` when no record
+ * was claimed (native session, no opt-in, or the stop is not finished yet).
+ *
+ * The caller reads the id from the live engine at dump time (never cached); it is trustworthy once
+ * the same dump's `state` is `idle`, because the library publishes the id before it reports Idle.
+ * The id is a handle for appending corrections — acceptable in a dump only because this dump exists
+ * in debug builds. Writes exactly one key and never any transcript or corrected text. Plain and
+ * dependency-free so it is unit-testable in plain JUnit.
+ */
+internal fun lastSessionIdDiagnostics(into: JSONObject, lastSessionId: String?) {
+    into.put("lastSessionId", lastSessionId ?: JSONObject.NULL)
 }
 
 /**
