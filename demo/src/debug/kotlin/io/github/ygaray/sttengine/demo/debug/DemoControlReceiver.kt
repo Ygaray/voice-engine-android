@@ -135,6 +135,7 @@ class DemoControlReceiver : BroadcastReceiver() {
                 val serverPath = parseServerPathExtras(
                     serverUrl = intent.getStringExtra(EXTRA_SERVER_URL),
                     prefer = intent.getStringExtra(EXTRA_PREFER),
+                    retainForCorpus = intent.getBooleanExtra(EXTRA_RETAIN_FOR_CORPUS, false),
                 )
                 if (serverPath is ServerPathRequest.Refused) {
                     Log.d(TAG, "START refused: ${serverPath.reason}")
@@ -148,7 +149,8 @@ class DemoControlReceiver : BroadcastReceiver() {
                     "START language=${language ?: "(default)"} sessionLog=$sessionLog " +
                         "audioSource=${audioSource ?: "(microphone)"} " +
                         "rungCeiling=${rungCeiling ?: "(none)"} " +
-                        "serverUrl=${if (serverUrl != null) "set" else "(none)"} prefer=${prefer.name}",
+                        "serverUrl=${if (serverUrl != null) "set" else "(none)"} prefer=${prefer.name} " +
+                        "retainForCorpus=${retainOf(serverPath)}",
                 )
 
                 // Applied BEFORE the session starts, because the ladder is resolved once per start()
@@ -179,6 +181,7 @@ class DemoControlReceiver : BroadcastReceiver() {
                         diagnosticLogging = sessionLog,
                         serverUrl = serverUrl,
                         prefer = prefer,
+                        retainForCorpus = retainOf(serverPath),
                     )
                 } else {
                     // Deliberately NOT falling through to a microphone session when this refuses.
@@ -190,6 +193,7 @@ class DemoControlReceiver : BroadcastReceiver() {
                         sessionLog = sessionLog,
                         serverUrl = serverUrl,
                         prefer = prefer,
+                        retainForCorpus = retainOf(serverPath),
                     )
                 }
             }
@@ -471,6 +475,25 @@ class DemoControlReceiver : BroadcastReceiver() {
          */
         const val EXTRA_PREFER = "io.github.ygaray.sttengine.demo.debug.extra.PREFER"
 
+        /**
+         * Boolean extra on [ACTION_START] (Phase 25, D-17(e)). Opts the **server** session into the
+         * host's voice corpus (`SttConfig.retainForCorpus`). Absent means false, which is what every
+         * ordinary run does.
+         *
+         * **Requires [EXTRA_SERVER_URL].** Without a server there is nothing to retain, and a run
+         * that quietly stayed on-device would look like a passing one, so the START is refused.
+         *
+         * **Use it only with synthetic or public-corpus fixture audio** fed through
+         * [EXTRA_AUDIO_SOURCE] — never a person's real voice. The START log line records only
+         * `retainForCorpus=true|false`, never a URL.
+         *
+         * **Reading the result:** `STOP` is asynchronous. After it, poll [ACTION_DUMP_DIAGNOSTICS]
+         * until the dump's `state` is `idle`, and only then trust that dump's `lastSessionId` (the
+         * library publishes the id before the engine reports Idle). The key is a string after a
+         * clean retained server stop and JSON null otherwise.
+         */
+        const val EXTRA_RETAIN_FOR_CORPUS = "io.github.ygaray.sttengine.demo.debug.extra.RETAIN_FOR_CORPUS"
+
         // ────────────────────────────────────────────────────────────────────────────────────────
 
         /** The demo's own diagnostic sidecar, beside the engine's trace and pullable the same way. */
@@ -642,9 +665,14 @@ internal sealed interface ServerPathRequest {
 
     data object None : ServerPathRequest
 
-    class Server(val url: String, val prefer: BackendPreference) : ServerPathRequest {
+    class Server(
+        val url: String,
+        val prefer: BackendPreference,
+        val retainForCorpus: Boolean = false,
+    ) : ServerPathRequest {
         // The URL is deliberately left out: a stray `Log.d("$request")` must not print it.
-        override fun toString(): String = "Server(url=set, prefer=${prefer.name})"
+        override fun toString(): String =
+            "Server(url=set, prefer=${prefer.name}, retain=$retainForCorpus)"
     }
 
     class Refused(val reason: String) : ServerPathRequest {
@@ -653,13 +681,23 @@ internal sealed interface ServerPathRequest {
 }
 
 /**
- * Validate the two server-path extras on START.
+ * Whether [request] opts the session into the corpus: true only for a [ServerPathRequest.Server]
+ * with the flag set. The ONE helper both the ordinary and the file-fed START paths forward, so a
+ * mapping slip cannot drop the flag on one path only (T-25-63).
+ */
+internal fun retainOf(request: ServerPathRequest): Boolean =
+    (request as? ServerPathRequest.Server)?.retainForCorpus == true
+
+/**
+ * Validate the server-path extras on START.
  *
  * Rules, each a refusal rather than a silent downgrade, because a Gate-1 run that quietly ends up
  * on-device looks exactly like a passing one:
  *
  * - no URL (absent or blank) and no preference → [ServerPathRequest.None];
  * - a preference with no URL → refused (there is nothing to prefer);
+ * - the corpus opt-in ([retainForCorpus]) with no URL → refused (nothing to retain, and an on-device
+ *   run that looked retained would be a false pass);
  * - a URL that does not start with `wss://` → refused (the server is only reachable over TLS, and a
  *   plain `ws://` or an `https://` URL can only fail later, less legibly);
  * - a preference that is not exactly one of the [BackendPreference] names (`Auto`, `Server`,
@@ -669,12 +707,21 @@ internal sealed interface ServerPathRequest {
  * Refusal reasons never quote the URL itself: logcat leaves the app, and the URL names a private
  * host. Plain and dependency-free so it is unit-testable in plain JUnit.
  */
-internal fun parseServerPathExtras(serverUrl: String?, prefer: String?): ServerPathRequest {
+internal fun parseServerPathExtras(
+    serverUrl: String?,
+    prefer: String?,
+    retainForCorpus: Boolean = false,
+): ServerPathRequest {
     val url = serverUrl?.trim()?.takeIf { it.isNotEmpty() }
     val preferName = prefer?.trim()?.takeIf { it.isNotEmpty() }
 
     if (url == null) {
-        return if (preferName == null) {
+        return if (retainForCorpus) {
+            ServerPathRequest.Refused(
+                "RETAIN_FOR_CORPUS was given without SERVER_URL. Only a server session can be " +
+                    "retained; re-send START with a wss:// SERVER_URL or drop RETAIN_FOR_CORPUS.",
+            )
+        } else if (preferName == null) {
             ServerPathRequest.None
         } else {
             ServerPathRequest.Refused(
@@ -702,7 +749,7 @@ internal fun parseServerPathExtras(serverUrl: String?, prefer: String?): ServerP
             )
     }
 
-    return ServerPathRequest.Server(url, preference)
+    return ServerPathRequest.Server(url, preference, retainForCorpus)
 }
 
 private const val WSS_SCHEME = "wss://"

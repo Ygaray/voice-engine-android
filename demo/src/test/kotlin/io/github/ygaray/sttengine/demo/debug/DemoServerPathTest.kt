@@ -84,6 +84,70 @@ class DemoServerPathTest {
         assertFalse(refused.reason.contains("host.example"))
     }
 
+    // --- retainForCorpus (Phase 25, D-17(e)) ----------------------------------------------------------
+
+    @Test
+    fun `the retain flag defaults to false on a server request`() {
+        val request = parseServerPathExtras(url, null) as ServerPathRequest.Server
+        assertFalse(request.retainForCorpus)
+    }
+
+    @Test
+    fun `the retain flag is carried on a server request`() {
+        val request = parseServerPathExtras(url, "Server", true) as ServerPathRequest.Server
+        assertTrue(request.retainForCorpus)
+        assertEquals(BackendPreference.Server, request.prefer)
+        assertEquals(url, request.url)
+    }
+
+    @Test
+    fun `the retain flag without a url is refused`() {
+        assertRefused(parseServerPathExtras(null, null, true))
+    }
+
+    @Test
+    fun `the retain flag with a blank url is refused`() {
+        assertRefused(parseServerPathExtras(" ", null, true))
+    }
+
+    @Test
+    fun `the retain refusal names both extras and never quotes a url`() {
+        val refused = parseServerPathExtras(null, null, true) as ServerPathRequest.Refused
+        assertTrue(refused.reason.contains("RETAIN_FOR_CORPUS"))
+        assertTrue(refused.reason.contains("SERVER_URL"))
+        // The scheme may be named as a hint ("a wss:// SERVER_URL"), but no URL body may follow it.
+        assertFalse(Regex("://\\S").containsMatchIn(refused.reason))
+    }
+
+    @Test
+    fun `the retain flag with a non-wss url is still refused without echoing the url`() {
+        val refused = parseServerPathExtras("ws://host.example:8444/", null, true)
+        assertRefused(refused)
+        assertFalse((refused as ServerPathRequest.Refused).reason.contains("host.example"))
+    }
+
+    @Test
+    fun `a server request toString shows the retain flag and not the url`() {
+        val off = parseServerPathExtras(url, "Server") as ServerPathRequest.Server
+        val on = parseServerPathExtras(url, "Server", true) as ServerPathRequest.Server
+        assertTrue(off.toString().contains("retain=false"))
+        assertTrue(on.toString().contains("retain=true"))
+        assertFalse(off.toString().contains("host.example"))
+        assertFalse(on.toString().contains("host.example"))
+    }
+
+    @Test
+    fun `retainOf is false for none, refused and a server request without the flag`() {
+        assertFalse(retainOf(ServerPathRequest.None))
+        assertFalse(retainOf(ServerPathRequest.Refused("nope")))
+        assertFalse(retainOf(parseServerPathExtras(url, "Server")))
+    }
+
+    @Test
+    fun `retainOf is true only for a server request with the flag`() {
+        assertTrue(retainOf(parseServerPathExtras(url, "Server", true)))
+    }
+
     // --- serverPathFeedConfirmed ----------------------------------------------------------------------
 
     @Test

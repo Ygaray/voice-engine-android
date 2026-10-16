@@ -211,12 +211,17 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
      *   address lives in this app. A plain UI Start passes nothing and gets no server, as before.
      * @param prefer the backend preference to start under. Like the language, a change rebuilds the
      *   engine, because `SttConfig` is fixed at construction.
+     * @param retainForCorpus opt the server session into the host's voice corpus (Phase 25,
+     *   D-17(e)). Only the debug control receiver ever passes `true`, and only with a server URL.
+     *   Like the other fields, a change rebuilds the engine, because `SttConfig` is fixed at
+     *   construction.
      */
     fun start(
         language: String? = null,
         diagnosticLogging: Boolean = false,
         serverUrl: String? = null,
         prefer: BackendPreference = BackendPreference.Auto,
+        retainForCorpus: Boolean = false,
     ) {
         viewModelScope.launch {
             ensureEngine(
@@ -225,6 +230,7 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
                     diagnosticLogging = diagnosticLogging,
                     serverUrl = serverUrl,
                     prefer = prefer,
+                    retainForCorpus = retainForCorpus,
                 ),
             )
             // The banner persists until the next start, exactly as the web demo does it — a stale
@@ -276,7 +282,7 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
         _diagnosticLogging.value = spec.diagnosticLogging
         val engine = createSttEngine(
             context = getApplication(),
-            config = SttConfig(language = spec.language, prefer = spec.prefer, serverUrl = spec.serverUrl),
+            config = spec.toSttConfig(),
             diagnosticLogging = spec.diagnosticLogging,
         )
         startLogTail(spec.diagnosticLogging)
@@ -457,12 +463,21 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
      * Everything an engine is built from. A change in ANY field mints a new engine — none of them is
      * reconfigurable on a built one. Holds the server URL in memory only; it is never logged.
      */
-    private data class EngineSpec(
+    internal data class EngineSpec(
         val language: String,
         val diagnosticLogging: Boolean,
         val serverUrl: String?,
         val prefer: BackendPreference,
-    )
+        val retainForCorpus: Boolean = false,
+    ) {
+        /** The `SttConfig` this spec builds an engine from; the one place the flag reaches it. */
+        fun toSttConfig(): SttConfig = SttConfig(
+            language = language,
+            prefer = prefer,
+            serverUrl = serverUrl,
+            retainForCorpus = retainForCorpus,
+        )
+    }
 
     internal companion object {
 

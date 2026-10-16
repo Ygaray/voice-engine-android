@@ -117,6 +117,8 @@ internal object FileAudioSourceControl {
      * @param serverUrl the validated `wss://` server URL, or `null` for an on-device run. Selects
      *   which branch of gate 3 applies.
      * @param prefer the backend preference forwarded to the session.
+     * @param retainForCorpus the corpus opt-in forwarded to the session (Phase 25, D-17(e)); only
+     *   ever true together with a server URL.
      * @return `true` when a session was started, `false` when the request was refused. A caller that
      *   ignores this and starts a session anyway reintroduces the exact mislabelling this prevents.
      */
@@ -127,6 +129,7 @@ internal object FileAudioSourceControl {
         sessionLog: Boolean,
         serverUrl: String? = null,
         prefer: BackendPreference = BackendPreference.Auto,
+        retainForCorpus: Boolean = false,
     ): Boolean {
         guard?.cancel()
         guard = null
@@ -164,6 +167,7 @@ internal object FileAudioSourceControl {
             diagnosticLogging = true,
             serverUrl = serverUrl,
             prefer = prefer,
+            retainForCorpus = retainForCorpus,
         )
         guard = scope.launch { watchRung(viewModel, serverPath = serverUrl != null, prefer = prefer) }
         return true
