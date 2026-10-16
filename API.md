@@ -268,6 +268,20 @@ free-space floor. How a host learns that depends on the transport:
   `GET /jobs/{id}` carries an optional `retentionStatus` of `committed` or `failed`; see
   [Transcription](#transcription). This client tolerates the key and does not surface it.
 
+### Live-socket close codes: 1008 and 1013
+
+The server claims its single session slot on the **first frame**, not at the WebSocket handshake.
+Nothing here is a new error code or a schema change; the `busy` frame bytes are unchanged.
+
+- **1008, no first frame within 30 s.** A connection that sends nothing for 30 s of opening gets
+  `protocol-violation` and close 1008. Connect and send the config frame immediately; this library
+  already does (`ServerBackend` sends it from `onOpen`).
+- **1013, the pending-connection cap (8) was exceeded.** The server answers `busy` and closes with
+  1013: retry later.
+- A connection that only opens (a health probe) no longer takes the slot, so a real session starts
+  beside probes. A client that connects while a session is active still gets `busy` and 1013, as
+  before. The batch clients (`:transcription`, `:voicenotes`) use HTTP and are unaffected.
+
 ### Privacy and exposure
 
 The correction route has **no authentication beyond the tailnet**, the same posture as `POST /jobs`.
