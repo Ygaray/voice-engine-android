@@ -10,7 +10,7 @@ import org.junit.Test
 /**
  * TRY-01 (D-07, D-14): `SttConfig.serverTryTimeoutMs` — the host's try-server window.
  *
- * Pins the default (5 000 ms), the clamp into [1 000, 10 000] ms (clamped, never rejected), the
+ * Pins the default (10 000 ms), the clamp into [1 000, 10 000] ms (clamped, never rejected), the
  * adjacency edges on both bounds, the degenerate inputs (zero, negative, Long extremes), and that the
  * clamped value is what `equals` / `hashCode` / `toString` see. Also pins that every pre-existing
  * call shape still compiles and behaves as before — the knob is the trailing, defaulted 6th
@@ -19,9 +19,9 @@ import org.junit.Test
 class SttConfigTest {
 
     @Test
-    fun `omitted window defaults to 5000 ms`() {
-        assertEquals(5_000L, SttConfig().serverTryTimeoutMs)
-        assertEquals(5_000L, SttConfig(serverUrl = "wss://host.example:8444/").serverTryTimeoutMs)
+    fun `omitted window defaults to 10000 ms`() {
+        assertEquals(10_000L, SttConfig().serverTryTimeoutMs)
+        assertEquals(10_000L, SttConfig(serverUrl = "wss://host.example:8444/").serverTryTimeoutMs)
     }
 
     @Test
@@ -141,12 +141,12 @@ class SttConfigTest {
         val positional = SttConfig("en", BackendPreference.Server, "wss://host.example:8444/", null, null)
         assertEquals(BackendPreference.Server, positional.prefer)
         assertEquals("wss://host.example:8444/", positional.serverUrl)
-        assertEquals(5_000L, positional.serverTryTimeoutMs)
+        assertEquals(10_000L, positional.serverTryTimeoutMs)
 
         val named = SttConfig(language = "auto", serverUrl = "wss://host.example:8444/")
         assertEquals("auto", named.language)
         assertEquals(BackendPreference.Auto, named.prefer)
-        assertEquals(5_000L, named.serverTryTimeoutMs)
+        assertEquals(10_000L, named.serverTryTimeoutMs)
 
         // Positional 6-argument form (the new @JvmOverloads arity Java callers also get).
         val six = SttConfig("en", BackendPreference.Auto, null, null, null, 4_000L)
