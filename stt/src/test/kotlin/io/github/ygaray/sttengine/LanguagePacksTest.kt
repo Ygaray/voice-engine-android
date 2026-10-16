@@ -454,6 +454,58 @@ class LanguagePacksTest {
     }
 
     @Test
+    fun `any other construction failure reads UNKNOWN for recognized keys and throws nothing`() = runBlocking {
+        val packs = LanguagePacks(
+            handleFactory = RecognizerHandleFactory {
+                throw RuntimeException("SpeechRecognizer should be used only from the application's main thread")
+            },
+            mainDispatcher = Dispatchers.Unconfined,
+        )
+
+        val result = packs.check(context, setOf("en", "es", "fr"))
+
+        assertEquals(
+            "row: factory throws a non-UnsupportedOperation RuntimeException → undetermined, not unavailable",
+            linkedMapOf(
+                "en" to LanguageAvailability.UNKNOWN,
+                "es" to LanguageAvailability.UNKNOWN,
+                "fr" to LanguageAvailability.UNSUPPORTED,
+            ),
+            result,
+        )
+    }
+
+    @Test
+    fun `download - any other construction failure reads false and throws nothing`() = runBlocking {
+        val packs = LanguagePacks(
+            handleFactory = RecognizerHandleFactory { throw SecurityException("denied") },
+            mainDispatcher = Dispatchers.Unconfined,
+        )
+
+        assertFalse("download row: factory throws SecurityException → false", packs.requestDownload(context, "es"))
+    }
+
+    @Test
+    fun `a cancellation thrown from construction propagates on both paths`() = runBlocking {
+        val packs = LanguagePacks(
+            handleFactory = RecognizerHandleFactory { throw CancellationException("caller gone") },
+            mainDispatcher = Dispatchers.Unconfined,
+        )
+
+        for ((label, call) in listOf<Pair<String, suspend () -> Any>>(
+            "check" to { packs.check(context, setOf("es")) },
+            "download" to { packs.requestDownload(context, "es") },
+        )) {
+            try {
+                call()
+                throw AssertionError("$label: a CancellationException from create must propagate, never fold")
+            } catch (cancellation: CancellationException) {
+                assertEquals("$label", "caller gone", cancellation.message)
+            }
+        }
+    }
+
+    @Test
     fun `download - a recognizer that cannot be constructed reads false`() = runBlocking {
         val packs = LanguagePacks(
             handleFactory = RecognizerHandleFactory {

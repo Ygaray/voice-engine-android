@@ -76,6 +76,9 @@ internal class LanguagePacks(
      *   recognized key (via [autoPackAvailability]).
      * - A transient handle whose cleanup fails leaves the recognition service in an unknown state,
      *   so the computed answer is not trusted: recognized keys read UNKNOWN.
+     * - A recognizer whose construction throws anything else (a non-cancellation [RuntimeException]
+     *   other than [UnsupportedOperationException]) is a question that could not be asked: recognized
+     *   keys read UNKNOWN, not UNSUPPORTED — nothing says the device lacks on-device recognition.
      */
     suspend fun check(context: Context, langs: Set<String>): Map<String, LanguageAvailability> {
         if (langs.isEmpty()) return emptyMap()
@@ -84,14 +87,14 @@ internal class LanguagePacks(
         val allUnsupported = langs.associateWith { LanguageAvailability.UNSUPPORTED }
         if (tagByKey.values.all { it == null }) return allUnsupported
 
-        val cleanupFailed = tagByKey.mapValues { (_, tag) ->
+        val undetermined = tagByKey.mapValues { (_, tag) ->
             if (tag == null) LanguageAvailability.UNSUPPORTED else LanguageAvailability.UNKNOWN
         }
 
         return withTransientHandle(
             context = context,
             unavailable = allUnsupported,
-            cleanupFailed = cleanupFailed,
+            undetermined = undetermined,
         ) { handle ->
             // No second catch around the query: a throwing query already comes back from
             // autoPackAvailability() as UNKNOWN for every tag.
@@ -122,7 +125,8 @@ internal class LanguagePacks(
      *   here can never overtake it; and on API 33, where nothing reports back, an UNKNOWN that came
      *   from a query with no answer at all reads `false` without a trigger, because there is no proof
      *   the recognizer ever connected (see `PlatformRecognizerHandle.triggerModelDownload`).
-     * - A recognizer that cannot be constructed → `false`.
+     * - A recognizer that cannot be constructed — on-device recognition unavailable, or any other
+     *   non-cancellation construction throw → `false`.
      * - A handle whose cleanup fails → `false` ("not confirmed — re-query"), whatever the path.
      *
      * The caller's cancellation always propagates — it is never turned into `false` — and the handle
@@ -137,7 +141,7 @@ internal class LanguagePacks(
         return withTransientHandle(
             context = context,
             unavailable = false,
-            cleanupFailed = false,
+            undetermined = false,
         ) { handle ->
             // No catch around the query: a throwing query already comes back from
             // autoPackAvailability() as UNKNOWN for every tag, and UNKNOWN attempts the trigger.
@@ -163,8 +167,12 @@ internal class LanguagePacks(
      *
      * - Construction throwing [UnsupportedOperationException] (on-device recognition unavailable)
      *   returns [unavailable]; nothing was created, so nothing is destroyed.
+     * - Construction throwing any OTHER non-cancellation [RuntimeException] (a thread-check failure,
+     *   a `SecurityException`, a platform bug) returns [undetermined]: the question could not be
+     *   asked, which is not the same as "unavailable". The never-throws promise holds. A
+     *   [CancellationException] is rethrown first — a cancelled caller is never turned into a result.
      * - Otherwise [block] runs, and the handle is destroyed **best-effort** afterwards:
-     *   - [block] returned and `destroy()` then throws a [RuntimeException] → [cleanupFailed] is
+     *   - [block] returned and `destroy()` then throws a [RuntimeException] → [undetermined] is
      *     returned instead of the block's value. The never-throws promise holds.
      *   - [block] threw (cancellation included) → `destroy()` still runs; a destroy failure is
      *     attached to the block's exception with `addSuppressed`, and the block's exception
@@ -174,13 +182,18 @@ internal class LanguagePacks(
     private suspend fun <T> withTransientHandle(
         context: Context,
         unavailable: T,
-        cleanupFailed: T,
+        undetermined: T,
         block: suspend (RecognizerHandle) -> T,
     ): T = withContext(mainDispatcher) {
         val handle = try {
             handleFactory.create(context.applicationContext ?: context)
+        } catch (cancellation: CancellationException) {
+            // A RuntimeException subclass — rethrow it before the folds below can swallow it.
+            throw cancellation
         } catch (unsupported: UnsupportedOperationException) {
             return@withContext unavailable
+        } catch (failure: RuntimeException) {
+            return@withContext undetermined
         }
 
         val result = try {
@@ -197,7 +210,7 @@ internal class LanguagePacks(
         try {
             handle.destroy()
         } catch (cleanup: RuntimeException) {
-            return@withContext cleanupFailed
+            return@withContext undetermined
         }
         result
     }
