@@ -423,9 +423,9 @@ was produced. A host that never runs a bilingual `"auto"` session sees `null` un
 ignore the field entirely.
 
 **`languageSource`** says whether that label is a detection or a default stamp. It is a closed
-two-value enum, `LanguageSource.DETECTED` or `LanguageSource.FALLBACK`, or `null`. A `DETECTED`
-label is the recognizer's own decision for that segment. A `FALLBACK`
-label is a default stamp, not a detection result, and it may be a label the session already held. The
+two-value enum, `LanguageSource.DETECTED` or `LanguageSource.FALLBACK`, or `null`.
+A `DETECTED` label is the recognizer's own decision for that segment.
+A `FALLBACK` label is a default stamp, not a detection result, and it may be a label the session already held. The
 enum is closed, so an exhaustive `when` needs no `else` branch, and a non-`"auto"` session reads
 `null`, never a third value. An absent or unrecognized value from a server is `null` and is never
 mapped to `FALLBACK`.
