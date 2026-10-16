@@ -276,6 +276,212 @@ class TranscriptionClientWireTest {
         )
     }
 
+    // CORR-09 (D-06, D-11, D-15, D-17(a), D-18): the wire matrix for the retainForCorpus part, the id
+    // passthrough, tolerance of the server's optional keys, and error mapping with the flag set.
+    // The ordering and absence checks are helpers (below) proven able to FAIL by the three negative
+    // controls, which feed hand-written malformed bodies, so no production code is mutated to prove
+    // a guard works. Multipart boundaries are random per request, so nothing here compares whole
+    // bodies byte for byte; it compares part names, values and order.
+
+    @Test
+    fun `retainForCorpus part sits after vocabulary and before file - ordering with vocabulary`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        client.submitJob(
+            tempAudioFile(), "audio/mp4", language = "es", vocabulary = listOf("Yahir"), retainForCorpus = true,
+        )
+        val requestBody = server.takeRequest().body!!.utf8()
+        assertPartOrder(requestBody, listOf("language", "vocabulary", "retainForCorpus", "file"))
+    }
+
+    @Test
+    fun `retainForCorpus part sits between language and file - ordering without vocabulary`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        client.submitJob(tempAudioFile(), "audio/mp4", retainForCorpus = true)
+        val requestBody = server.takeRequest().body!!.utf8()
+        assertPartOrder(requestBody, listOf("language", "retainForCorpus", "file"))
+    }
+
+    @Test
+    fun `omitted flag sends no retainForCorpus part at all`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        client.submitJob(tempAudioFile(), "audio/mp4")
+        val requestBody = server.takeRequest().body!!.utf8()
+        assertNoRetainPart(requestBody)
+        assertPartOrder(requestBody, listOf("language", "file"))
+    }
+
+    @Test
+    fun `explicit false sends no retainForCorpus part at all`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc"}""").build())
+        client.submitJob(tempAudioFile(), "audio/mp4", retainForCorpus = false)
+        val requestBody = server.takeRequest().body!!.utf8()
+        assertNoRetainPart(requestBody)
+        assertPartOrder(requestBody, listOf("language", "file"))
+    }
+
+    @Test
+    fun `flagless call and explicit false produce the same part names in the same order - parity`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-1"}""").build())
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-2"}""").build())
+        client.submitJob(tempAudioFile(), "audio/mp4", "es", listOf("a"))
+        client.submitJob(tempAudioFile(), "audio/mp4", "es", listOf("a"), retainForCorpus = false)
+        val flagless = server.takeRequest().body!!.utf8()
+        val explicitFalse = server.takeRequest().body!!.utf8()
+        assertEquals(partNames(flagless), partNames(explicitFalse))
+        assertEquals(listOf("language", "vocabulary", "file"), partNames(flagless))
+        assertNoRetainPart(flagless)
+        assertNoRetainPart(explicitFalse)
+    }
+
+    @Test
+    fun `negative control - ordering helper rejects the part after the file`() {
+        val malformed = multipartBody("language" to "en", "file" to "bytes", "retainForCorpus" to "true")
+        assertHelperFails { assertPartOrder(malformed, listOf("language", "retainForCorpus", "file")) }
+    }
+
+    @Test
+    fun `negative control - ordering helper rejects the part before vocabulary`() {
+        val malformed = multipartBody(
+            "language" to "en", "retainForCorpus" to "true", "vocabulary" to "[\"a\"]", "file" to "bytes",
+        )
+        assertHelperFails {
+            assertPartOrder(malformed, listOf("language", "vocabulary", "retainForCorpus", "file"))
+        }
+    }
+
+    @Test
+    fun `negative control - absence helper rejects a body that has the part`() {
+        val withPart = multipartBody("language" to "en", "retainForCorpus" to "true", "file" to "bytes")
+        assertHelperFails { assertNoRetainPart(withPart) }
+    }
+
+    @Test
+    fun `id passthrough - 202 with and without retained yields the same Accepted`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"abc"}""").build())
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"abc","retained":true}""").build())
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"abc","retained":"not-a-boolean"}""").build())
+        assertEquals(SubmitOutcome.Accepted("abc"), client.submitJob(tempAudioFile(), "audio/mp4"))
+        assertEquals(
+            SubmitOutcome.Accepted("abc"),
+            client.submitJob(tempAudioFile(), "audio/mp4", retainForCorpus = true),
+        )
+        assertEquals(
+            SubmitOutcome.Accepted("abc"),
+            client.submitJob(tempAudioFile(), "audio/mp4", retainForCorpus = true),
+        )
+    }
+
+    @Test
+    fun `retentionStatus committed on a done body still maps to Done`() = runTest {
+        server.enqueue(
+            MockResponse.Builder().code(200)
+                .body("""{"status":"done","transcript":"t","retentionStatus":"committed"}""").build(),
+        )
+        assertEquals(JobStatusOutcome.Done("t"), client.getJobStatus("job-abc"))
+    }
+
+    @Test
+    fun `retentionStatus failed on a done body still maps to Done`() = runTest {
+        server.enqueue(
+            MockResponse.Builder().code(200)
+                .body("""{"status":"done","transcript":"t","retentionStatus":"failed"}""").build(),
+        )
+        assertEquals(JobStatusOutcome.Done("t"), client.getJobStatus("job-abc"))
+    }
+
+    @Test
+    fun `retentionStatus failed on a failed body still maps to Failed`() = runTest {
+        server.enqueue(
+            MockResponse.Builder().code(200)
+                .body("""{"status":"failed","error":"e","retentionStatus":"failed"}""").build(),
+        )
+        assertEquals(JobStatusOutcome.Failed("e"), client.getJobStatus("job-abc"))
+    }
+
+    @Test
+    fun `an unknown retentionStatus value is tolerated and still maps to Done`() = runTest {
+        server.enqueue(
+            MockResponse.Builder().code(200)
+                .body("""{"status":"done","transcript":"t","retentionStatus":"some-future-value"}""").build(),
+        )
+        assertEquals(JobStatusOutcome.Done("t"), client.getJobStatus("job-abc"))
+    }
+
+    @Test
+    fun `reflection guard - Accepted exposes no retained member`() {
+        val names = SubmitOutcome.Accepted::class.java.methods.map { it.name.lowercase() }
+        assertTrue("Accepted must carry no retained field (D-06), saw $names", names.none { "retained" in it })
+    }
+
+    @Test
+    fun `reflection guard - Done exposes no retentionStatus member`() {
+        val names = JobStatusOutcome.Done::class.java.methods.map { it.name.lowercase() }
+        assertTrue(
+            "Done must carry no retentionStatus field (D-17(a)), saw $names",
+            names.none { "retentionstatus" in it },
+        )
+    }
+
+    @Test
+    fun `flag set - 400 server body maps to Rejected UPLOAD_REJECTED with the server text`() = runTest {
+        server.enqueue(MockResponse.Builder().code(400).body("""{"error":"invalid-retain-flag"}""").build())
+        val outcome = client.submitJob(tempAudioFile(), "audio/mp4", retainForCorpus = true)
+        assertTrue(outcome is SubmitOutcome.Rejected)
+        outcome as SubmitOutcome.Rejected
+        assertEquals(TranscriptionErrorCode.UPLOAD_REJECTED, outcome.code)
+        assertEquals("invalid-retain-flag", outcome.message)
+    }
+
+    @Test
+    fun `flag set - 413 maps to UPLOAD_TOO_LARGE`() = runTest {
+        server.enqueue(MockResponse.Builder().code(413).body("""{"error":"payload-too-large"}""").build())
+        val outcome = client.submitJob(tempAudioFile(), "audio/mp4", retainForCorpus = true)
+        assertTrue(outcome is SubmitOutcome.Rejected)
+        assertEquals(TranscriptionErrorCode.UPLOAD_TOO_LARGE, (outcome as SubmitOutcome.Rejected).code)
+    }
+
+    @Test
+    fun `flag set - a connection failure maps to Transient`() = runTest {
+        // Port 1 on loopback refuses connections: a real network failure, not a mocked one.
+        val unreachable = createTranscriptionClient(serverUrl = "http://127.0.0.1:1")
+        val outcome = unreachable.submitJob(tempAudioFile(), "audio/mp4", retainForCorpus = true)
+        assertTrue("expected Transient, got $outcome", outcome is SubmitOutcome.Transient)
+    }
+
+    /** Part names in wire order, read from each part's Content-Disposition header. */
+    private fun partNames(body: String): List<String> =
+        Regex("""Content-Disposition: form-data; name="([^"]+)"""").findAll(body).map { it.groupValues[1] }.toList()
+
+    /** Fails (AssertionError) unless the body's parts are exactly [expected], in that order. */
+    private fun assertPartOrder(body: String, expected: List<String>) {
+        val actual = partNames(body)
+        if (actual != expected) {
+            throw AssertionError("expected multipart parts $expected in this order, saw $actual")
+        }
+    }
+
+    /** True absence: the retainForCorpus text must not appear anywhere in the body. */
+    private fun assertNoRetainPart(body: String) {
+        if (body.contains("retainForCorpus")) {
+            throw AssertionError("expected NO retainForCorpus part, but the body mentions it")
+        }
+    }
+
+    private fun assertHelperFails(block: () -> Unit) {
+        try {
+            block()
+        } catch (expected: AssertionError) {
+            return
+        }
+        throw AssertionError("expected the guard helper to reject the malformed body, but it passed")
+    }
+
+    /** A hand-written multipart body in the same header shape OkHttp emits. */
+    private fun multipartBody(vararg parts: Pair<String, String>): String =
+        parts.joinToString(separator = "") { (name, value) ->
+            "--boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n"
+        } + "--boundary--\r\n"
+
     private fun tempAudioFile(): File =
         File.createTempFile("clip", ".m4a").apply {
             deleteOnExit() // IN-02 (136-REVIEW.md): avoid leaking stray clip*.m4a files per test run

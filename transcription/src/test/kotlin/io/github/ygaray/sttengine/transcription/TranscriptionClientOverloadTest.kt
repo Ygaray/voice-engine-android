@@ -139,6 +139,44 @@ class TranscriptionClientOverloadTest {
         )
     }
 
+    // Overload resolution (D-11 + D-18). The file compiling at all is the proof that none of these
+    // call shapes is ambiguous; the recorded values prove WHICH member each shape binds to.
+
+    @Test
+    fun `legacy shapes bind to the four-parameter member - positional`() = runTest {
+        val fake = RecordingFake()
+        val f = tempAudioFile()
+        fake.submitJob(f, "audio/mp4")
+        fake.submitJob(f, "audio/mp4", "es")
+        fake.submitJob(f, "audio/mp4", "es", listOf("a"))
+        assertEquals(listOf("legacy", "legacy", "legacy"), fake.calls)
+    }
+
+    @Test
+    fun `legacy shapes bind to the four-parameter member - named language and vocabulary`() = runTest {
+        val fake = RecordingFake()
+        val f = tempAudioFile()
+        fake.submitJob(f, "audio/mp4", language = "es")
+        fake.submitJob(f, "audio/mp4", vocabulary = listOf("a"))
+        fake.submitJob(f, "audio/mp4", language = "es", vocabulary = listOf("a"))
+        assertEquals(listOf("legacy", "legacy", "legacy"), fake.calls)
+    }
+
+    @Test
+    fun `flag shapes bind to the five-parameter member with the flag they were given`() = runTest {
+        val fake = RecordingFake()
+        val f = tempAudioFile()
+        fake.submitJob(f, "audio/mp4", retainForCorpus = true)
+        fake.submitJob(f, "audio/mp4", retainForCorpus = false)
+        fake.submitJob(f, "audio/mp4", "es", listOf("a"), true)
+        fake.submitJob(f, "audio/mp4", language = "es", retainForCorpus = true)
+        assertEquals(
+            listOf("new(retain=true)", "new(retain=false)", "new(retain=true)", "new(retain=true)"),
+            fake.calls,
+        )
+        assertEquals("es", fake.lastLanguage)
+    }
+
     private fun tempAudioFile(): File =
         File.createTempFile("clip", ".m4a").apply {
             deleteOnExit()
