@@ -74,7 +74,18 @@ internal sealed interface ServerFrame {
 
     data class Partial(val text: String, val segmentId: Int) : ServerFrame
 
-    data class Final(val text: String, val segmentId: Int, val language: String? = null) : ServerFrame
+    /**
+     * [languageSource] (LSRC-02) is the raw wire value, carried only as `detected` or `fallback`
+     * (anything else is normalised to null at parse) and only alongside a non-null [language].
+     * Null is "no claim" — an older server, an unknown value or no language — never a fallback.
+     * The public enum mapping lives in the backend layer, not here.
+     */
+    data class Final(
+        val text: String,
+        val segmentId: Int,
+        val language: String? = null,
+        val languageSource: String? = null,
+    ) : ServerFrame
 
     /** Carries the server's taxonomy code verbatim — this client does not reject an unknown code,
      *  mirroring `protocol.ts:132`'s "the server owns its taxonomy" comment. */
@@ -140,7 +151,14 @@ internal fun parseServerFrame(raw: String): ParseResult {
             } else if (language != null && language !is String) {
                 violation("malformed final frame (language must be a string when present)")
             } else {
-                ParseResult.Ok(ServerFrame.Final(text, (segmentId as Number).toInt(), language))
+                // LSRC-02: only alongside a language, only the two known values; else no claim.
+                val source = parsed.opt("languageSource")
+                val knownSource = if (language != null && (source == "detected" || source == "fallback")) {
+                    source as String
+                } else {
+                    null
+                }
+                ParseResult.Ok(ServerFrame.Final(text, (segmentId as Number).toInt(), language, knownSource))
             }
         }
 
