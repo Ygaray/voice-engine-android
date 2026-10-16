@@ -4,11 +4,14 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.BackendPreference
+import io.github.ygaray.sttengine.CorrectionSubmitResult
 import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.LanguageAvailability
 import io.github.ygaray.sttengine.PreflightHandle
 import io.github.ygaray.sttengine.SttConfig
+import io.github.ygaray.sttengine.submitCorrection
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -20,9 +23,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -128,6 +134,17 @@ class CorpusLoopbackE2ETest {
         return selector.lastSessionId
     }
 
+    /** A retained live session; asserts the id and records the `retained-id` fact. */
+    private suspend fun retainedLiveId(context: Context): String {
+        val id = liveSession(context, retain = true)
+        assertNotNull("a retained session must publish its id after a clean stop", id)
+        assertTrue("the id is 32 lowercase hex: $id", Regex("[0-9a-f]{32}").matches(id!!))
+        appendFact(JSONObject().put("fact", "retained-id").put("id", id).put("kind", "dictation"))
+        return id
+    }
+
+    private fun httpBase(): String = readyJson().getString("httpBase")
+
     // -- tests ----------------------------------------------------------------------------------
 
     @Test
@@ -135,10 +152,76 @@ class CorpusLoopbackE2ETest {
         readyFile()
         withTimeout(60_000) {
             val context: Context = ApplicationProvider.getApplicationContext()
-            val id = liveSession(context, retain = true)
-            assertNotNull("a retained session must publish its id after a clean stop", id)
-            assertTrue("the id is 32 lowercase hex: $id", Regex("[0-9a-f]{32}").matches(id!!))
-            appendFact(JSONObject().put("fact", "retained-id").put("id", id).put("kind", "dictation"))
+            retainedLiveId(context)
+            Unit
+        }
+    }
+
+    @Test
+    fun `a default session retains nothing and lastSessionId stays null`() = runBlocking {
+        readyFile()
+        withTimeout(60_000) {
+            val context: Context = ApplicationProvider.getApplicationContext()
+            val id = liveSession(context, retain = false)
+            assertNull("a session that did not opt in must not claim a record", id)
+            appendFact(JSONObject().put("fact", "control-null"))
+        }
+    }
+
+    @Test
+    fun `corrections append exactly what was sent to the retained record`() = runBlocking {
+        readyFile()
+        withTimeout(90_000) {
+            val context: Context = ApplicationProvider.getApplicationContext()
+            val id = retainedLiveId(context)
+            val texts = listOf("loopback-correction-1", "loopback-correction-2")
+            val first = submitCorrection(context, httpBase(), id, texts[0], "en")
+            val second = submitCorrection(context, httpBase(), id, texts[1])
+            assertEquals(CorrectionSubmitResult.ACCEPTED, first)
+            assertEquals(CorrectionSubmitResult.ACCEPTED, second)
+            appendFact(
+                JSONObject()
+                    .put("fact", "correction")
+                    .put("id", id)
+                    .put("texts", JSONArray(texts))
+                    .put("languages", JSONArray().put("en").put(JSONObject.NULL))
+                    .put("results", JSONArray().put(first.name).put(second.name)),
+            )
+        }
+    }
+
+    @Test
+    fun `an unknown id comes back UNKNOWN_SESSION and creates nothing`() = runBlocking {
+        readyFile()
+        withTimeout(30_000) {
+            val context: Context = ApplicationProvider.getApplicationContext()
+            val id = UUID.randomUUID().toString().replace("-", "")
+            val result = submitCorrection(context, httpBase(), id, "loopback-unknown", "en")
+            assertEquals(CorrectionSubmitResult.UNKNOWN_SESSION, result)
+            appendFact(JSONObject().put("fact", "unknown-id").put("id", id).put("result", result.name))
+        }
+    }
+
+    @Test
+    fun `an oversize body is REJECTED by the real 64 KiB cap`() = runBlocking {
+        readyFile()
+        withTimeout(90_000) {
+            val context: Context = ApplicationProvider.getApplicationContext()
+            val id = retainedLiveId(context)
+            val result = submitCorrection(context, httpBase(), id, "x".repeat(70_000), "en")
+            assertEquals(CorrectionSubmitResult.REJECTED, result)
+            appendFact(JSONObject().put("fact", "oversize").put("id", id).put("result", result.name))
+        }
+    }
+
+    @Test
+    fun `a blank corrected text is REJECTED without a request`() = runBlocking {
+        readyFile()
+        withTimeout(30_000) {
+            val context: Context = ApplicationProvider.getApplicationContext()
+            val result = submitCorrection(context, httpBase(), "0123456789abcdef0123456789abcdef", "   ", "en")
+            assertEquals(CorrectionSubmitResult.REJECTED, result)
+            appendFact(JSONObject().put("fact", "blank").put("result", result.name))
         }
     }
 }
