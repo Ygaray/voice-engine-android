@@ -30,6 +30,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
@@ -211,6 +212,44 @@ class CorpusLoopbackE2ETest {
             val result = submitCorrection(context, httpBase(), id, "x".repeat(70_000), "en")
             assertEquals(CorrectionSubmitResult.REJECTED, result)
             appendFact(JSONObject().put("fact", "oversize").put("id", id).put("result", result.name))
+        }
+    }
+
+    /**
+     * The clip correction (D-10, D-11): the id is the retained BATCH job id that
+     * [CorpusBatchLoopbackE2ETest][io.github.ygaray.sttengine.transcription] recorded as a `clip`
+     * fact. The orchestrator runs the `:transcription` batch test BEFORE this one (two separate
+     * Gradle invocations); in stage `live` this test is not selected.
+     */
+    @Test
+    fun `a retained clip id accepts a correction after the batch step`() = runBlocking {
+        readyFile()
+        withTimeout(30_000) {
+            val context: Context = ApplicationProvider.getApplicationContext()
+            val factsPath = System.getProperty("stt.loopback.facts").orEmpty()
+            val clipId = File(factsPath).readLines()
+                .filter { it.isNotBlank() }
+                .map { JSONObject(it) }
+                .firstOrNull { it.optString("fact") == "retained-id" && it.optString("kind") == "clip" }
+                ?.getString("id")
+            if (clipId == null) {
+                fail(
+                    "no retained clip fact found: scripts/run-client-corpus-loopback.sh must run the " +
+                        ":transcription CorpusBatchLoopbackE2ETest BEFORE this :stt test (stage all)",
+                )
+                return@withTimeout
+            }
+            val text = "loopback-clip-correction"
+            val result = submitCorrection(context, httpBase(), clipId, text, "en")
+            assertEquals(CorrectionSubmitResult.ACCEPTED, result)
+            appendFact(
+                JSONObject()
+                    .put("fact", "correction")
+                    .put("id", clipId)
+                    .put("texts", JSONArray().put(text))
+                    .put("languages", JSONArray().put("en"))
+                    .put("results", JSONArray().put(result.name)),
+            )
         }
     }
 

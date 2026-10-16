@@ -45,6 +45,19 @@ android {
         // in this module touches Android platform APIs (pure OkHttp + JSON).
         unitTests.isIncludeAndroidResources = true
         unitTests.isReturnDefaultValues = true
+
+        // Phase 25 (plan 25-09): the Gate-1 loopback proof. EMPTY (the default) means
+        // CorpusBatchLoopbackE2ETest skips itself; scripts/run-client-corpus-loopback.sh passes both
+        // properties. A non-empty ready file marks the task never up to date, so a repeated path is
+        // never skipped as UP-TO-DATE.
+        unitTests.all { test ->
+            val loopbackReady = (project.findProperty("stt.loopback.ready") ?: "").toString()
+            test.systemProperty("stt.loopback.ready", loopbackReady)
+            test.systemProperty("stt.loopback.facts", (project.findProperty("stt.loopback.facts") ?: "").toString())
+            if (loopbackReady.isNotEmpty()) {
+                test.outputs.upToDateWhen { false }
+            }
+        }
     }
 
     // AGP-8 opt-in: declare the single publishable variant + its sources jar. MANDATORY —
