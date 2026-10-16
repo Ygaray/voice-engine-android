@@ -2,17 +2,22 @@ package io.github.ygaray.sttengine.internal
 
 import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.FinalSegment
+import io.github.ygaray.sttengine.LanguageSource
 import io.github.ygaray.sttengine.SttError
 import io.github.ygaray.sttengine.SttErrorCode
 import io.github.ygaray.sttengine.corrections.CorrectionPair
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import okio.ByteString.Companion.toByteString
@@ -171,6 +176,87 @@ class ServerBackendTest {
         fakeWs.fireMessage("""{"type":"final","text":"hola","segmentId":0,"language":"es"}""")
 
         assertEquals(listOf(FinalSegment("hola", 0, "es")), finals)
+    }
+
+    /** Feeds one Final frame to a ready backend; returns the delivered segment and `lastFinal`. */
+    private fun TestScope.finalFrom(frameJson: String): Pair<FinalSegment, FinalSegment?> {
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val fakeWs = FakeWebSocketFactory()
+        val backend = newBackend(fakeWs, dispatcher)
+        val finals = mutableListOf<FinalSegment>()
+        backgroundScope.launch(dispatcher) { backend.finals.collect { finals += it } }
+
+        backgroundScope.launch(dispatcher) { backend.connect() }
+        fakeWs.fireOpen()
+        fakeWs.fireMessage(frameJson)
+
+        return finals.single() to backend.lastFinal
+    }
+
+    @Test
+    fun `a Final frame's detected source reaches the emitted FinalSegment as DETECTED`() = runTest {
+        val (segment, last) = finalFrom(
+            """{"type":"final","text":"hola","segmentId":0,"language":"es","languageSource":"detected"}""",
+        )
+
+        assertEquals("es", segment.language)
+        assertEquals(LanguageSource.DETECTED, segment.languageSource)
+        assertSame("lastFinal is the very instance finals delivered", segment, last)
+    }
+
+    @Test
+    fun `a Final frame's fallback source reaches the emitted FinalSegment as FALLBACK`() = runTest {
+        val (segment, last) = finalFrom(
+            """{"type":"final","text":"hi","segmentId":0,"language":"en","languageSource":"fallback"}""",
+        )
+
+        assertEquals(LanguageSource.FALLBACK, segment.languageSource)
+        assertSame(segment, last)
+    }
+
+    @Test
+    fun `older-server frame - a language with no source key is a legal legacy state and reads null, never FALLBACK`() =
+        runTest {
+            val (segment, _) = finalFrom("""{"type":"final","text":"hola","segmentId":0,"language":"es"}""")
+
+            assertEquals("es", segment.language)
+            assertNull(segment.languageSource)
+        }
+
+    @Test
+    fun `an unknown source string yields a null source and keeps the language`() = runTest {
+        val (segment, _) = finalFrom(
+            """{"type":"final","text":"hola","segmentId":0,"language":"es","languageSource":"held"}""",
+        )
+
+        assertEquals("es", segment.language)
+        assertNull(segment.languageSource)
+    }
+
+    @Test
+    fun `a source without a language yields neither on the segment`() = runTest {
+        val (segment, _) = finalFrom("""{"type":"final","text":"hi","segmentId":0,"languageSource":"detected"}""")
+
+        assertNull(segment.language)
+        assertNull(segment.languageSource)
+    }
+
+    @Test
+    fun `one-way sweep - over every final-frame shape a source on the segment implies a language`() = runTest {
+        val shapes = listOf(
+            """{"type":"final","text":"a","segmentId":0,"language":"es","languageSource":"detected"}""",
+            """{"type":"final","text":"a","segmentId":0,"language":"en","languageSource":"fallback"}""",
+            """{"type":"final","text":"a","segmentId":0,"language":"es"}""",
+            """{"type":"final","text":"a","segmentId":0}""",
+            """{"type":"final","text":"a","segmentId":0,"languageSource":"detected"}""",
+            """{"type":"final","text":"a","segmentId":0,"language":"es","languageSource":"held"}""",
+        )
+        for (shape in shapes) {
+            val (segment, _) = finalFrom(shape)
+            if (segment.languageSource != null) {
+                assertNotNull("a source without a language for $shape", segment.language)
+            }
+        }
     }
 
     @Test

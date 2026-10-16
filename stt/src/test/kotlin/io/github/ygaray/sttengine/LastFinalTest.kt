@@ -302,6 +302,36 @@ class LastFinalTest {
     }
 
     @Test
+    fun `handoff - the handoff commit carries no language and no source`() = runTest {
+        val s = committedServerSession(UnconfinedTestDispatcher(testScheduler))
+        s.ws.fireMessage("""{"type":"partial","text":"spoken before the drop","segmentId":2}""")
+        advanceUntilIdle()
+
+        s.ws.fireFailure(IOException("connection reset"))
+        advanceUntilIdle()
+        s.handle.reachListening()
+        advanceUntilIdle()
+
+        val handoff = s.selector.lastFinal
+        assertNotNull(handoff)
+        assertNull("the handoff commit has no detection evidence", handoff!!.language)
+        assertNull(handoff.languageSource)
+    }
+
+    @Test
+    fun `server - lastFinal carries the source of the frame that produced it, same instance as finals`() =
+        runTest {
+            val s = committedServerSession(StandardTestDispatcher(testScheduler))
+            s.ws.fireMessage(
+                """{"type":"final","text":"hola","segmentId":3,"language":"es","languageSource":"detected"}""",
+            )
+            runCurrent()
+
+            assertEquals(LanguageSource.DETECTED, s.selector.lastFinal?.languageSource)
+            assertSame(s.finals.last(), s.selector.lastFinal)
+        }
+
+    @Test
     fun `reuse - a second start on the same selector resets lastFinal to null until that session's first final`() =
         runTest {
             val s = committedServerSession(StandardTestDispatcher(testScheduler))

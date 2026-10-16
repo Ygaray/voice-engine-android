@@ -1,5 +1,6 @@
 package io.github.ygaray.sttengine.internal
 
+import io.github.ygaray.sttengine.LanguageSource
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -157,6 +158,21 @@ class WsProtocolTest {
         // multilingual server must stay additive.
         assertEquals("detected", finalOf("""{"type":"final","text":"a","segmentId":0,"language":"fr","languageSource":"detected"}""").languageSource)
         assertEquals("", finalOf("""{"type":"final","text":"a","segmentId":0,"language":"","languageSource":"detected"}""").language)
+    }
+
+    @Test
+    fun `languageSourceFromWire maps the two exact lowercase strings to the enum`() {
+        assertEquals(LanguageSource.DETECTED, languageSourceFromWire("detected"))
+        assertEquals(LanguageSource.FALLBACK, languageSourceFromWire("fallback"))
+    }
+
+    @Test
+    fun `languageSourceFromWire maps absent, unknown and wrong-case values to null, never FALLBACK`() {
+        assertEquals(null, languageSourceFromWire(null))
+        assertEquals(null, languageSourceFromWire("held"))
+        assertEquals(null, languageSourceFromWire(""))
+        assertEquals(null, languageSourceFromWire("DETECTED"))
+        assertEquals(null, languageSourceFromWire("Fallback"))
     }
 
     @Test

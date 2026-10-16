@@ -21,6 +21,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -172,6 +173,23 @@ class ServerBackendStopFlushTest {
             assertTrue("the unflushed socket must be cancelled: ${h.log()}", "cancel" in h.log())
             assertRequestedStopNeverErrored(h)
         }
+
+    @Test
+    fun `the stop-flush local commit carries no language and no source`() = runTest {
+        val h = readyHarness()
+        openPartial(h)
+
+        val stopJob = launch(h.main) { h.backend.stop() }
+        runCurrent()
+        advanceTimeBy(ServerBackend.STOP_FLUSH_TIMEOUT_MS)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        val committed = h.finals.single()
+        assertEquals("open words", committed.text)
+        assertNull("a local commit has no detection evidence", committed.language)
+        assertNull(committed.languageSource)
+    }
 
     @Test
     fun `an unanswered stop with no open partial commits nothing`() = runTest {
