@@ -12,6 +12,7 @@ import io.github.ygaray.sttengine.LanguageAvailability
 import io.github.ygaray.sttengine.LanguageSource
 import io.github.ygaray.sttengine.checkLanguageAvailability
 import io.github.ygaray.sttengine.debug.DebugRungCeiling
+import io.github.ygaray.sttengine.debug.DebugSilenceExtras
 import io.github.ygaray.sttengine.demo.DictationViewModel
 import io.github.ygaray.sttengine.requestLanguagePackDownload
 import java.io.File
@@ -79,6 +80,18 @@ import org.json.JSONObject
  *   --es io.github.ygaray.sttengine.demo.debug.extra.AUDIO_SOURCE /sdcard/Android/data/io.github.ygaray.sttengine.demo/files/and02-stimulus.wav
  * ```
  *
+ * The endpointing spike's lever (Phase 26, D-01) changes the silence extras of the recognition
+ * intent for one run. `SILENCE_EXTRAS` is a comma-separated list of `possibly|complete|minimum`
+ * pairs, each `none` (remove the extra) or an integer in 1..60000. It is applied after the pure
+ * intent builder, once per session including every restart; the trace's `rung` lines remain the
+ * fact. An absent extra clears any previous override on every START, and STOP clears it too:
+ *
+ * ```bash
+ * adb -s $S shell am broadcast -n … -a io.github.ygaray.sttengine.demo.debug.START \
+ *   --ez io.github.ygaray.sttengine.demo.debug.extra.SESSION_LOG true \
+ *   --es io.github.ygaray.sttengine.demo.debug.extra.SILENCE_EXTRAS possibly=1000,minimum=none
+ * ```
+ *
  * The language-pack actions (Phase 22, D-06) need only a Context, so they work with or without the
  * demo screen — and while a session is listening, which is the point of the contention check. Each
  * writes one logcat line and one sidecar line, and nothing else:
@@ -89,7 +102,7 @@ import org.json.JSONObject
  *   --es io.github.ygaray.sttengine.demo.debug.extra.LANGUAGE es
  * ```
  *
- * **The eleven strings below (five actions, six extras) are a cross-plan interface.** Plan 08's
+ * **The strings below (five actions, eight extras) are a cross-plan interface.** Plan 08's
  * harness, plan 10's device run and the Phase 21/22 Gate-1 scripts are authored against them
  * verbatim, and plan 08's automated verify cross-greps its own strings against this file. Renaming
  * one here silently breaks them. `src/debug/AndroidManifest.xml` repeats the five action names as
@@ -145,6 +158,14 @@ class DemoControlReceiver : BroadcastReceiver() {
                     Log.d(TAG, "START refused: $reason")
                     return
                 }
+                // Parsed here with the other pure checks so a malformed value refuses the WHOLE
+                // START before any process-global state (the rung ceiling, the override) changes.
+                // The reason names only the offending key or rule, never the raw string.
+                val silenceExtras = parseSilenceExtras(intent.getStringExtra(EXTRA_SILENCE_EXTRAS))
+                if (silenceExtras is SilenceExtrasRequest.Refused) {
+                    Log.d(TAG, "START refused: ${silenceExtras.reason}")
+                    return
+                }
                 val serverUrl = (serverPath as? ServerPathRequest.Server)?.url
                 val prefer = (serverPath as? ServerPathRequest.Server)?.prefer ?: BackendPreference.Auto
                 // Only WHETHER a URL was set is logged — never the URL, which names a private host.
@@ -169,6 +190,21 @@ class DemoControlReceiver : BroadcastReceiver() {
                         return
                     }
                     Log.d(TAG, "rung ceiling applied: ${applied.getOrNull()}")
+                }
+
+                // The silence-extras override (Phase 26, D-01). Every accepted START starts from a
+                // clean slate: an absent extra CLEARS the previous override, so one arm can never
+                // inherit the previous arm's lever. The cell is process-global and the demo hosts
+                // one engine session at a time (see DebugSilenceExtrasHolder).
+                if (silenceExtras is SilenceExtrasRequest.Set) {
+                    val described = DebugSilenceExtras.configure(
+                        possiblyMs = silenceExtras.possibly,
+                        completeMs = silenceExtras.complete,
+                        minimumMs = silenceExtras.minimum,
+                    )
+                    Log.d(TAG, "silence extras applied: $described")
+                } else {
+                    DebugSilenceExtras.clear()
                 }
 
                 // Every refusal above has returned, so this START is accepted: mint the run id that
@@ -206,6 +242,9 @@ class DemoControlReceiver : BroadcastReceiver() {
                 Log.d(TAG, "STOP")
                 viewModel.stop()
                 FileAudioSourceControl.stopFileFed()
+                // Cleanup path, not only the next START (T-26-05): a dump taken BEFORE stop still
+                // reads the override that was in force; one taken after reads silence-extras=none.
+                DebugSilenceExtras.clear()
             }
 
             ACTION_DUMP_DIAGNOSTICS -> dumpDiagnostics(context, viewModel)
@@ -252,6 +291,10 @@ class DemoControlReceiver : BroadcastReceiver() {
             // What was ASKED for. `activeRung` above is what actually happened; a report that
             // quotes one without the other cannot tell a working cap from an ignored one.
             put("rungCeiling", DebugRungCeiling.ceiling ?: JSONObject.NULL)
+            // The silence-extras REQUEST (Phase 26, D-01), verbatim from describe(): a fixed grammar
+            // the PAUSE-03 scorer and the spike driver parse for provenance. Like the cap above it
+            // is what was asked for; the trace's `rung` lines are what happened.
+            silenceExtrasDiagnostics(this, DebugSilenceExtras.describe())
             // The server-path facts (Phase 21, D-08). Names, a boolean and counts — the partial's
             // text is only tested for blankness, never written.
             val engine = viewModel.engine.value
@@ -459,6 +502,27 @@ class DemoControlReceiver : BroadcastReceiver() {
          * was asked for.
          */
         const val EXTRA_RUNG_CEILING = "io.github.ygaray.sttengine.demo.debug.extra.RUNG_CEILING"
+
+        /**
+         * String extra on [ACTION_START] (Phase 26, D-01). Changes the silence-related extras of the
+         * recognition intent for this run: the Phase 26 endpointing spike's lever and, after the tune
+         * ships, the legacy-baseline and three-way arms. Absent means the engine's own intent, and
+         * **an absent extra also clears any previous override**, so one arm can never leak into the
+         * next; STOP clears it too.
+         *
+         * Grammar: comma-separated `key=value` pairs, `key` one of `possibly`, `complete`, `minimum`
+         * (each at most once) and `value` either `none` (REMOVE that extra from the intent) or an
+         * integer in 1..60000 milliseconds. At most three pairs and 64 characters in total. Example:
+         * `possibly=1000,minimum=none`.
+         *
+         * Anything malformed REFUSES the whole START with a log line that names only the offending
+         * key or rule and never echoes the raw value, and changes nothing. This is a debug-only lever
+         * on a receiver that cannot exist in a release build.
+         *
+         * The override is a **request**. The engine's `rung` lines are the fact, and the diagnostics
+         * dump echoes the request as `silenceExtras` so every run is attributable.
+         */
+        const val EXTRA_SILENCE_EXTRAS = "io.github.ygaray.sttengine.demo.debug.extra.SILENCE_EXTRAS"
 
         /**
          * String extra on [ACTION_START] (Phase 21, D-08). A `wss://` server URL, supplied **at run
@@ -689,6 +753,111 @@ internal sealed interface ServerPathRequest {
     class Refused(val reason: String) : ServerPathRequest {
         override fun toString(): String = "Refused($reason)"
     }
+}
+
+/**
+ * What an [DemoControlReceiver.ACTION_START] asked for in [DemoControlReceiver.EXTRA_SILENCE_EXTRAS]
+ * (Phase 26, D-01).
+ *
+ * - [None]: the extra was absent or blank; the receiver clears any previous override.
+ * - [Set]: a validated request; a null field leaves that extra as the engine built it, and
+ *   [DebugSilenceExtras.REMOVE] deletes it.
+ * - [Refused]: malformed; the receiver logs [Refused.reason] (which never quotes the raw string) and
+ *   starts nothing.
+ */
+internal sealed interface SilenceExtrasRequest {
+
+    data object None : SilenceExtrasRequest
+
+    class Set(val possibly: Int?, val complete: Int?, val minimum: Int?) : SilenceExtrasRequest {
+        override fun toString(): String = "Set(possibly=$possibly, complete=$complete, minimum=$minimum)"
+    }
+
+    class Refused(val reason: String) : SilenceExtrasRequest {
+        override fun toString(): String = "Refused($reason)"
+    }
+}
+
+private val SILENCE_EXTRAS_KEYS = listOf("possibly", "complete", "minimum")
+private const val SILENCE_EXTRAS_MAX_CHARS = 64
+private const val SILENCE_EXTRAS_MAX_MS = 60_000
+private val SILENCE_EXTRAS_DIGITS = Regex("[0-9]+")
+
+/**
+ * Parse [raw], the value of [DemoControlReceiver.EXTRA_SILENCE_EXTRAS] (Phase 26, D-01).
+ *
+ * Grammar: comma-separated `key=value` pairs; `key` is one of `possibly`, `complete`, `minimum`, at
+ * most once each; `value` is `none` (the REMOVE sentinel) or an integer in 1..[SILENCE_EXTRAS_MAX_MS];
+ * at most three pairs and [SILENCE_EXTRAS_MAX_CHARS] characters; whitespace around pairs, keys and
+ * values is tolerated. A null or blank [raw] is [SilenceExtrasRequest.None].
+ *
+ * Every violation is a refusal, never a silent clamp: a run that believes it was overridden but was
+ * not is evidence-shaped noise. Refusal reasons name only a known key or the violated rule. The raw
+ * string and any unknown key are never repeated, because logcat leaves the app and the receiver is
+ * exported. Plain and dependency-free so it is unit-testable in plain JUnit.
+ */
+internal fun parseSilenceExtras(raw: String?): SilenceExtrasRequest {
+    if (raw == null || raw.isBlank()) return SilenceExtrasRequest.None
+    if (raw.length > SILENCE_EXTRAS_MAX_CHARS) {
+        return SilenceExtrasRequest.Refused("SILENCE_EXTRAS is longer than $SILENCE_EXTRAS_MAX_CHARS characters.")
+    }
+    val pairs = raw.split(',')
+    if (pairs.size > SILENCE_EXTRAS_KEYS.size) {
+        return SilenceExtrasRequest.Refused("SILENCE_EXTRAS has more than ${SILENCE_EXTRAS_KEYS.size} pairs.")
+    }
+
+    val values = HashMap<String, Int>()
+    for (pair in pairs) {
+        val trimmed = pair.trim()
+        if (trimmed.isEmpty()) {
+            return SilenceExtrasRequest.Refused("SILENCE_EXTRAS has an empty pair.")
+        }
+        val eq = trimmed.indexOf('=')
+        if (eq < 0) {
+            return SilenceExtrasRequest.Refused("SILENCE_EXTRAS has a pair with no '='; expected key=value.")
+        }
+        val key = trimmed.substring(0, eq).trim()
+        val value = trimmed.substring(eq + 1).trim()
+        if (key !in SILENCE_EXTRAS_KEYS) {
+            return SilenceExtrasRequest.Refused(
+                "SILENCE_EXTRAS has an unknown key; allowed keys are ${SILENCE_EXTRAS_KEYS.joinToString()}.",
+            )
+        }
+        if (key in values) {
+            return SilenceExtrasRequest.Refused("SILENCE_EXTRAS repeats the key '$key'.")
+        }
+        if (value.isEmpty()) {
+            return SilenceExtrasRequest.Refused("SILENCE_EXTRAS has an empty value for '$key'.")
+        }
+        values[key] = when {
+            value == "none" -> DebugSilenceExtras.REMOVE
+            SILENCE_EXTRAS_DIGITS.matches(value) -> {
+                val ms = value.toIntOrNull()
+                if (ms == null || ms < 1 || ms > SILENCE_EXTRAS_MAX_MS) {
+                    return SilenceExtrasRequest.Refused(
+                        "SILENCE_EXTRAS value for '$key' is outside 1..$SILENCE_EXTRAS_MAX_MS.",
+                    )
+                }
+                ms
+            }
+            else -> return SilenceExtrasRequest.Refused(
+                "SILENCE_EXTRAS value for '$key' is neither 'none' nor an integer.",
+            )
+        }
+    }
+    return SilenceExtrasRequest.Set(values["possibly"], values["complete"], values["minimum"])
+}
+
+/**
+ * Writes the silence-extras REQUEST onto [into] as exactly one key, `silenceExtras` (Phase 26, D-01),
+ * a string equal to [described] (`DebugSilenceExtras.describe()`) verbatim. The grammar is fixed in
+ * that function (`silence-extras=none` or `silence-extras=possibly:<v>,complete:<v>,minimum:<v>`)
+ * because the PAUSE-03 scorer and the spike driver parse this echo; this helper must not reformat it.
+ * Integers, `remove` and `unchanged` only: no transcript text and no raw extra string. Plain and
+ * dependency-free so it is unit-testable in plain JUnit.
+ */
+internal fun silenceExtrasDiagnostics(into: JSONObject, described: String) {
+    into.put("silenceExtras", described)
 }
 
 /**
