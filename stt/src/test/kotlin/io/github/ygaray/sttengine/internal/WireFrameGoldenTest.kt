@@ -187,6 +187,17 @@ class WireFrameGoldenTest {
     }
 
     @Test
+    fun `revision fixture contains every required case and is not empty`() {
+        // Execution of revisionCases belongs to plan 25-05 (the Kotlin status mapping); this leg
+        // proves the array cannot be emptied or truncated without failing the gate.
+        val names = namesOf(loadArray("revisionCases"))
+        assertTrue("revisionCases is empty", names.isNotEmpty())
+        for (required in REQUIRED_REVISION) {
+            assertTrue("fixture is missing required revisionCase $required (has $names)", required in names)
+        }
+    }
+
+    @Test
     fun `buildConfigFrame reproduces every config frame a client builds`() {
         val cases = loadArray("configCases")
         var scored = 0
@@ -238,7 +249,36 @@ class WireFrameGoldenTest {
         )
 
         /** Phase 25 (plan 25-02): the new arrays must be present and carry these names. */
-        val REQUIRED_READY = listOf("ready-with-session-id")
-        val REQUIRED_CONFIG = listOf("config-retain-true")
+        val REQUIRED_READY = listOf(
+            "ready-plain",
+            "ready-with-session-id",
+            "ready-session-id-number",
+            "ready-session-id-null",
+            "ready-session-id-object",
+            "ready-session-id-empty-string",
+            "ready-unknown-extra-key",
+        )
+        val REQUIRED_CONFIG = listOf(
+            "config-default",
+            "config-retain-true",
+            "config-retain-true-with-vocabulary",
+            "config-retain-false-omitted",
+            "config-retain-null",
+            "config-retain-int-1",
+            "config-retain-string",
+        )
+        val REQUIRED_REVISION = listOf(
+            "revision-created",
+            "revision-unknown-id",
+            "revision-invalid-body",
+            "revision-payload-too-large",
+            "revision-limit",
+            "revision-busy",
+            "revision-corpus-unavailable",
+            "revision-internal-error",
+            "revision-request-timeout",
+            "revision-other-4xx",
+            "revision-unexpected-redirect",
+        )
     }
 }

@@ -208,6 +208,18 @@
   ],
   "readyCases": [
     {
+      "name": "ready-plain",
+      "frame": "{\"type\": \"ready\"}",
+      "server": "plain",
+      "client": {
+        "outcome": "ready",
+        "sessionId": null
+      },
+      "legacy": {
+        "outcome": "ready"
+      }
+    },
+    {
       "name": "ready-with-session-id",
       "frame": "{\"type\": \"ready\", \"sessionId\": \"0123456789abcdef0123456789abcdef\"}",
       "server": "with-id",
@@ -218,9 +230,72 @@
       "legacy": {
         "outcome": "ready"
       }
+    },
+    {
+      "name": "ready-session-id-number",
+      "frame": "{\"type\": \"ready\", \"sessionId\": 5}",
+      "client": {
+        "outcome": "protocol-violation",
+        "sessionId": null
+      },
+      "legacy": {
+        "outcome": "ready"
+      }
+    },
+    {
+      "name": "ready-session-id-null",
+      "frame": "{\"type\": \"ready\", \"sessionId\": null}",
+      "client": {
+        "outcome": "protocol-violation",
+        "sessionId": null
+      },
+      "legacy": {
+        "outcome": "ready"
+      }
+    },
+    {
+      "name": "ready-session-id-object",
+      "frame": "{\"type\": \"ready\", \"sessionId\": {\"id\": \"x\"}}",
+      "client": {
+        "outcome": "protocol-violation",
+        "sessionId": null
+      },
+      "legacy": {
+        "outcome": "ready"
+      }
+    },
+    {
+      "name": "ready-session-id-empty-string",
+      "frame": "{\"type\": \"ready\", \"sessionId\": \"\"}",
+      "client": {
+        "outcome": "ready",
+        "sessionId": null
+      },
+      "legacy": {
+        "outcome": "ready"
+      }
+    },
+    {
+      "name": "ready-unknown-extra-key",
+      "frame": "{\"type\": \"ready\", \"extra\": 1}",
+      "client": {
+        "outcome": "ready",
+        "sessionId": null
+      },
+      "legacy": {
+        "outcome": "ready"
+      }
     }
   ],
   "configCases": [
+    {
+      "name": "config-default",
+      "frame": "{\"version\":1,\"language\":\"en\",\"sampleRate\":16000}",
+      "build": {
+        "language": "en"
+      },
+      "serverAccepts": true
+    },
     {
       "name": "config-retain-true",
       "frame": "{\"version\":1,\"language\":\"en\",\"sampleRate\":16000,\"retainForCorpus\":true}",
@@ -229,6 +304,125 @@
         "retainForCorpus": true
       },
       "serverAccepts": true
+    },
+    {
+      "name": "config-retain-true-with-vocabulary",
+      "frame": "{\"version\":1,\"language\":\"en\",\"sampleRate\":16000,\"vocabulary\":[\"alpha\",\"beta\"],\"retainForCorpus\":true}",
+      "build": {
+        "language": "en",
+        "vocabulary": [
+          "alpha",
+          "beta"
+        ],
+        "retainForCorpus": true
+      },
+      "serverAccepts": true
+    },
+    {
+      "name": "config-retain-false-omitted",
+      "frame": "{\"version\":1,\"language\":\"en\",\"sampleRate\":16000}",
+      "build": {
+        "language": "en",
+        "retainForCorpus": false
+      },
+      "serverAccepts": true
+    },
+    {
+      "name": "config-retain-null",
+      "frame": "{\"version\":1,\"language\":\"en\",\"sampleRate\":16000,\"retainForCorpus\":null}",
+      "serverAccepts": false,
+      "serverError": "invalid-config"
+    },
+    {
+      "name": "config-retain-int-1",
+      "frame": "{\"version\":1,\"language\":\"en\",\"sampleRate\":16000,\"retainForCorpus\":1}",
+      "serverAccepts": false,
+      "serverError": "invalid-config"
+    },
+    {
+      "name": "config-retain-string",
+      "frame": "{\"version\":1,\"language\":\"en\",\"sampleRate\":16000,\"retainForCorpus\":\"true\"}",
+      "serverAccepts": false,
+      "serverError": "invalid-config"
+    }
+  ],
+  "revisionCases": [
+    {
+      "name": "revision-created",
+      "scenario": "created",
+      "status": 201,
+      "error": null,
+      "result": "ACCEPTED"
+    },
+    {
+      "name": "revision-unknown-id",
+      "scenario": "unknown-id",
+      "status": 404,
+      "error": "not-found",
+      "result": "UNKNOWN_SESSION"
+    },
+    {
+      "name": "revision-invalid-body",
+      "scenario": "invalid-body",
+      "status": 400,
+      "error": "invalid-revision",
+      "result": "REJECTED"
+    },
+    {
+      "name": "revision-payload-too-large",
+      "scenario": "payload-too-large",
+      "status": 413,
+      "error": "payload-too-large",
+      "result": "REJECTED"
+    },
+    {
+      "name": "revision-limit",
+      "scenario": "revision-limit",
+      "status": 409,
+      "error": "revision-limit",
+      "result": "REJECTED"
+    },
+    {
+      "name": "revision-busy",
+      "scenario": "revision-busy",
+      "status": 503,
+      "error": "revision-busy",
+      "result": "UNREACHABLE"
+    },
+    {
+      "name": "revision-corpus-unavailable",
+      "scenario": "corpus-unavailable",
+      "status": 503,
+      "error": "corpus-unavailable",
+      "result": "UNREACHABLE"
+    },
+    {
+      "name": "revision-internal-error",
+      "scenario": "internal-error",
+      "status": 500,
+      "error": "internal-error",
+      "result": "UNREACHABLE"
+    },
+    {
+      "name": "revision-request-timeout",
+      "scenario": "client-only",
+      "status": 408,
+      "error": null,
+      "result": "UNREACHABLE"
+    },
+    {
+      "name": "revision-other-4xx",
+      "scenario": "client-only",
+      "status": 401,
+      "error": null,
+      "result": "REJECTED"
+    },
+    {
+      "name": "revision-unexpected-redirect",
+      "scenario": "client-only",
+      "status": 302,
+      "error": null,
+      "result": "UNREACHABLE"
     }
   ]
 }
