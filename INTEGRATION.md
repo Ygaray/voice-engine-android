@@ -624,21 +624,38 @@ demand opposite host actions. The library wraps the whole recovery for you, so a
    delay) instead of calling the download again in a loop. The pack can keep reading `DOWNLOADABLE`
    for a while after an accepted request, and a `PENDING` one may take hours.
 
+A native `"auto"` session needs **every** pack: it fails on the first allowlisted language that is
+not usable, English first. So gate the start on all the keys, not just the one you care about:
+
 ```kotlin
 lifecycleScope.launch {
     val packs = checkLanguageAvailability(context)        // default: setOf("en", "es")
-    when (packs["es"]) {
-        LanguageAvailability.INSTALLED -> startDictation()
-        LanguageAvailability.DOWNLOADABLE -> {
-            val accepted = requestLanguagePackDownload(context, "es")
-            showStatus(if (accepted) "Downloading Spanish…" else "Couldn't start the download")
+    val blocking = packs.filterValues {
+        it == LanguageAvailability.DOWNLOADABLE ||
+            it == LanguageAvailability.PENDING ||
+            it == LanguageAvailability.UNSUPPORTED
+    }
+    if (blocking.isEmpty()) {
+        startDictation()  // every pack INSTALLED or UNKNOWN: the session starts (or still tries to)
+        return@launch
+    }
+    for ((lang, state) in blocking) {
+        val name = if (lang == "es") "Spanish" else "English"
+        when (state) {
+            LanguageAvailability.DOWNLOADABLE -> {
+                val accepted = requestLanguagePackDownload(context, lang)
+                showStatus(if (accepted) "Downloading $name…" else "Couldn't start the $name download")
+            }
+            LanguageAvailability.PENDING -> showStatus("$name is still downloading")
+            LanguageAvailability.UNSUPPORTED -> showStatus("$name isn't available on this device")
+            else -> Unit
         }
-        LanguageAvailability.PENDING -> showStatus("Spanish is still downloading")
-        LanguageAvailability.UNSUPPORTED -> showStatus("Spanish isn't available on this device")
-        else -> startDictation()  // UNKNOWN: the session still tries to start
     }
 }
 ```
+
+Below API 34 an `"auto"` session uses a single language, and a session with an explicit language
+needs only that one pack — check just that key there.
 
 Both functions hop to the main thread themselves: call them from a coroutine, never from
 `runBlocking` on the main thread, and call them while no dictation session is active. Only the exact
