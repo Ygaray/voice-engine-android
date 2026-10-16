@@ -771,7 +771,7 @@ internal class SttEngineImpl(
      *   `"en"`) with [LanguageSource.FALLBACK];
      * - any non-`"auto"` session: `(null, null)` (byte-identical to today, NBIL-07).
      *
-     * The source is non-null exactly when the label is, by construction of this one function.
+     * The label and the source are set together here, by construction of this one function.
      */
     private fun languageStampForFinal(): LanguageStamp = when {
         autoDetectionActive -> detectedLanguage

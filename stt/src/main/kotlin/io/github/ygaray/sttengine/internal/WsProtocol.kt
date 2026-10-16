@@ -158,17 +158,17 @@ internal fun parseServerFrame(raw: String): ParseResult {
             val text = parsed.opt("text")
             val segmentId = parsed.opt("segmentId")
             val language = parsed.opt("language")
+            val source = parsed.opt("languageSource")
             if (text !is String || !isInt(segmentId)) {
                 violation("malformed final frame (need string text + int segmentId)")
             } else if (language != null && language !is String) {
                 violation("malformed final frame (language must be a string when present)")
-            } else if (parsed.opt("languageSource") != null && parsed.opt("languageSource") !is String) {
+            } else if (source != null && source !is String) {
                 // LSRC-02: only a wrong TYPE is a violation; a JSON null arrives as JSONObject.NULL
                 // (non-null, not a String) and is rejected, matching the TS `typeof null` outcome.
                 violation("malformed final frame (languageSource must be a string when present)")
             } else {
                 // LSRC-02: only alongside a language, only the two known values; else no claim.
-                val source = parsed.opt("languageSource")
                 val knownSource = if (language != null && (source == "detected" || source == "fallback")) {
                     source as String
                 } else {
