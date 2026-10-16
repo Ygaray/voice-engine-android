@@ -85,8 +85,9 @@ public suspend fun checkLanguageAvailability(
 public suspend fun requestLanguagePackDownload(context: Context, lang: String): Boolean
 ```
 
-Two top-level functions in `SttEngineFactory.kt`, next to `createSttEngine` (from Java, static
-methods on `SttEngineFactoryKt`). Together they let a host find out **before** starting a session
+Two top-level `suspend` functions in `SttEngineFactory.kt`, next to `createSttEngine`. They are
+**Kotlin-coroutines-only**: from Java a `suspend` function needs a hand-built `Continuation`, which is
+not a supported way to call them. Together they let a host find out **before** starting a session
 whether the English and Spanish on-device packs are usable, and fix a missing one — without the host
 ever holding a `SpeechRecognizer` of its own.
 
