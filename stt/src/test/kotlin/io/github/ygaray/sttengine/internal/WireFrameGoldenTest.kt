@@ -2,6 +2,7 @@ package io.github.ygaray.sttengine.internal
 
 import io.github.ygaray.sttengine.legacy.ParseResult as LegacyParseResult
 import io.github.ygaray.sttengine.legacy.ServerFrame as LegacyServerFrame
+import io.github.ygaray.sttengine.legacy.buildConfigFrame as legacyBuildConfigFrame
 import io.github.ygaray.sttengine.legacy.parseServerFrame as legacyParseServerFrame
 import java.io.File
 import org.json.JSONArray
@@ -34,7 +35,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [35])
 class WireFrameGoldenTest {
 
-    private fun loadCases(): JSONArray {
+    private fun loadFixture(): JSONObject {
         val override = System.getProperty("stt.wire.goldenFixture")
         val text = if (!override.isNullOrBlank()) {
             File(override).readText(Charsets.UTF_8)
@@ -43,7 +44,31 @@ class WireFrameGoldenTest {
             assertNotNull("classpath fixture /wire-final-frames.json is missing", stream)
             stream!!.use { it.readBytes().toString(Charsets.UTF_8) }
         }
-        return JSONObject(text).getJSONArray("cases")
+        return JSONObject(text)
+    }
+
+    private fun loadCases(): JSONArray = loadFixture().getJSONArray("cases")
+
+    /** An array the fixture must carry: a missing key fails loudly instead of scoring nothing. */
+    private fun loadArray(key: String): JSONArray {
+        val fixture = loadFixture()
+        assertTrue("wire-final-frames.json has no $key array", fixture.has(key))
+        return fixture.getJSONArray(key)
+    }
+
+    private fun namesOf(array: JSONArray): List<String> =
+        (0 until array.length()).map { array.getJSONObject(it).getString("name") }
+
+    /** True when two JSON objects hold the same keys and values (key order is not part of the contract). */
+    private fun sameObject(expected: JSONObject, actual: JSONObject): Boolean {
+        val expectedKeys = expected.keys().asSequence().toSet()
+        val actualKeys = actual.keys().asSequence().toSet()
+        if (expectedKeys != actualKeys) return false
+        return expectedKeys.all { key ->
+            val e = expected.get(key)
+            val a = actual.get(key)
+            if (e is JSONArray || e is JSONObject) e.toString() == a.toString() else e == a
+        }
     }
 
     private fun JSONObject.stringOrNull(key: String): String? = if (isNull(key)) null else getString(key)
@@ -106,6 +131,95 @@ class WireFrameGoldenTest {
         }
     }
 
+    @Test
+    fun `ready fixture contains every required case and is not empty`() {
+        val names = namesOf(loadArray("readyCases"))
+        assertTrue("readyCases is empty", names.isNotEmpty())
+        for (required in REQUIRED_READY) {
+            assertTrue("fixture is missing required readyCase $required (has $names)", required in names)
+        }
+    }
+
+    @Test
+    fun `parseServerFrame reproduces every ready expectation`() {
+        val cases = loadArray("readyCases")
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val name = case.getString("name")
+            val client = case.getJSONObject("client")
+            val result = parseServerFrame(case.getString("frame"))
+
+            if (client.getString("outcome") == "protocol-violation") {
+                assertTrue("$name: expected a protocol violation, got $result", result is ParseResult.ProtocolViolation)
+                continue
+            }
+            assertTrue("$name: expected Ok, got $result", result is ParseResult.Ok)
+            val frame = (result as ParseResult.Ok).frame
+            assertTrue("$name: expected a ready frame, got $frame", frame is ServerFrame.Ready)
+            assertEquals("$name sessionId", client.stringOrNull("sessionId"), (frame as ServerFrame.Ready).sessionId)
+        }
+    }
+
+    @Test
+    fun `the frozen pre-phase parser still reads every ready frame as a ready`() {
+        val cases = loadArray("readyCases")
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val name = case.getString("name")
+            assertEquals("$name legacy outcome", "ready", case.getJSONObject("legacy").getString("outcome"))
+            val result = legacyParseServerFrame(case.getString("frame"))
+            assertTrue("$name: legacy parser should accept, got $result", result is LegacyParseResult.Ok)
+            assertEquals(
+                "$name: legacy parser should yield a ready",
+                LegacyServerFrame.Ready,
+                (result as LegacyParseResult.Ok).frame,
+            )
+        }
+    }
+
+    @Test
+    fun `config fixture contains every required case and is not empty`() {
+        val names = namesOf(loadArray("configCases"))
+        assertTrue("configCases is empty", names.isNotEmpty())
+        for (required in REQUIRED_CONFIG) {
+            assertTrue("fixture is missing required configCase $required (has $names)", required in names)
+        }
+    }
+
+    @Test
+    fun `buildConfigFrame reproduces every config frame a client builds`() {
+        val cases = loadArray("configCases")
+        var scored = 0
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            if (!case.has("build")) continue
+            val name = case.getString("name")
+            val build = case.getJSONObject("build")
+            val vocabulary = if (build.has("vocabulary")) {
+                val array = build.getJSONArray("vocabulary")
+                (0 until array.length()).map { array.getString(it) }
+            } else {
+                null
+            }
+            val built = buildConfigFrame(
+                build.getString("language"),
+                vocabulary,
+                build.optBoolean("retainForCorpus", false),
+            )
+            assertTrue(
+                "$name: built $built != frame ${case.getString("frame")}",
+                sameObject(JSONObject(case.getString("frame")), JSONObject(built)),
+            )
+            scored++
+        }
+        assertTrue("no configCase carried a build", scored > 0)
+    }
+
+    @Test
+    fun `the default config frame equals the frozen pre-phase builder output`() {
+        assertEquals(legacyBuildConfigFrame("en"), buildConfigFrame("en"))
+    }
+
     private companion object {
         /** An emptied or truncated fixture must fail, never pass vacuously. */
         val REQUIRED_CASES = listOf(
@@ -122,5 +236,9 @@ class WireFrameGoldenTest {
             "unsupported-language-with-source",
             "empty-language-with-source",
         )
+
+        /** Phase 25 (plan 25-02): the new arrays must be present and carry these names. */
+        val REQUIRED_READY = listOf("ready-with-session-id")
+        val REQUIRED_CONFIG = listOf("config-retain-true")
     }
 }

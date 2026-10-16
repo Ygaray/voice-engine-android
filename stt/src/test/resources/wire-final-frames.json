@@ -205,5 +205,30 @@
         "language": ""
       }
     }
+  ],
+  "readyCases": [
+    {
+      "name": "ready-with-session-id",
+      "frame": "{\"type\": \"ready\", \"sessionId\": \"0123456789abcdef0123456789abcdef\"}",
+      "server": "with-id",
+      "client": {
+        "outcome": "ready",
+        "sessionId": "0123456789abcdef0123456789abcdef"
+      },
+      "legacy": {
+        "outcome": "ready"
+      }
+    }
+  ],
+  "configCases": [
+    {
+      "name": "config-retain-true",
+      "frame": "{\"version\":1,\"language\":\"en\",\"sampleRate\":16000,\"retainForCorpus\":true}",
+      "build": {
+        "language": "en",
+        "retainForCorpus": true
+      },
+      "serverAccepts": true
+    }
   ]
 }
