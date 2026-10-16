@@ -2,6 +2,7 @@ package io.github.ygaray.sttengine.demo.debug
 
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.LanguageSource
+import io.github.ygaray.sttengine.debug.EngineProbeSnapshot
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -103,6 +104,44 @@ class DemoControlReceiverDiagnosticsTest {
         for (i in 0 until array.length()) {
             assertTrue(!array.getJSONObject(i).has("text"))
         }
+    }
+
+    // --- Phase 26 (IN-04): engineProbeDiagnostics -------------------------------------------------
+
+    @Test
+    fun `engineProbeDiagnostics writes the readings of a listening native engine`() {
+        val into = JSONObject()
+
+        engineProbeDiagnostics(into, EngineProbeSnapshot("native", "RawAudioSegmented", 2, true))
+
+        assertEquals("native", into.getString("probeKind"))
+        assertEquals("RawAudioSegmented", into.getString("probeRung"))
+        assertEquals(2, into.getInt("probeRestartCount"))
+        assertTrue(into.getBoolean("probeListening"))
+    }
+
+    @Test
+    fun `engineProbeDiagnostics writes JSON null for an unavailable reading never zero or healthy`() {
+        val into = JSONObject()
+
+        engineProbeDiagnostics(into, EngineProbeSnapshot("selector", null, null, false))
+
+        assertEquals("selector", into.getString("probeKind"))
+        assertTrue(into.isNull("probeRung"))
+        assertTrue(into.isNull("probeRestartCount"))
+        assertTrue(!into.getBoolean("probeListening"))
+    }
+
+    @Test
+    fun `engineProbeDiagnostics writes exactly the four probe keys and no text`() {
+        val into = JSONObject()
+
+        engineProbeDiagnostics(into, EngineProbeSnapshot("native", "SilenceSegmented", 0, true))
+
+        assertEquals(
+            setOf("probeKind", "probeRung", "probeRestartCount", "probeListening"),
+            into.keys().asSequence().toSet(),
+        )
     }
 
     // --- Phase 25 (D-17(e)): lastSessionIdDiagnostics ---------------------------------------------

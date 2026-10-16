@@ -11,8 +11,10 @@ import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.LanguageAvailability
 import io.github.ygaray.sttengine.LanguageSource
 import io.github.ygaray.sttengine.checkLanguageAvailability
+import io.github.ygaray.sttengine.debug.DebugEngineProbe
 import io.github.ygaray.sttengine.debug.DebugRungCeiling
 import io.github.ygaray.sttengine.debug.DebugSilenceExtras
+import io.github.ygaray.sttengine.debug.EngineProbeSnapshot
 import io.github.ygaray.sttengine.demo.DictationViewModel
 import io.github.ygaray.sttengine.requestLanguagePackDownload
 import java.io.File
@@ -295,6 +297,10 @@ class DemoControlReceiver : BroadcastReceiver() {
             // the PAUSE-03 scorer and the spike driver parse for provenance. Like the cap above it
             // is what was asked for; the trace's `rung` lines are what happened.
             silenceExtrasDiagnostics(this, DebugSilenceExtras.describe())
+            // The engine's OWN rung and restart count, read from memory (no trace file), so a
+            // real-microphone run that keeps the session trace off still has an observed rung and
+            // restart readout. Null means unavailable, never healthy and never zero.
+            engineProbeDiagnostics(this, DebugEngineProbe.snapshot(viewModel.engine.value))
             // The server-path facts (Phase 21, D-08). Names, a boolean and counts — the partial's
             // text is only tested for blankness, never written.
             val engine = viewModel.engine.value
@@ -858,6 +864,20 @@ internal fun parseSilenceExtras(raw: String?): SilenceExtrasRequest {
  */
 internal fun silenceExtrasDiagnostics(into: JSONObject, described: String) {
     into.put("silenceExtras", described)
+}
+
+/**
+ * Writes the in-memory engine probe onto [into] (Phase 26, IN-04) as four flat keys: `probeKind`
+ * (`native`, `selector` or `unsupported`), `probeRung` and `probeRestartCount` (JSON `null` when the
+ * engine cannot answer as a fact, which is NOT healthy and NOT zero) and `probeListening`. Names,
+ * an integer and a boolean only: no transcript text. Plain and dependency-free so it is
+ * unit-testable in plain JUnit.
+ */
+internal fun engineProbeDiagnostics(into: JSONObject, probe: EngineProbeSnapshot) {
+    into.put("probeKind", probe.kind)
+    into.put("probeRung", probe.rung ?: JSONObject.NULL)
+    into.put("probeRestartCount", probe.restartCount ?: JSONObject.NULL)
+    into.put("probeListening", probe.listening)
 }
 
 /**
