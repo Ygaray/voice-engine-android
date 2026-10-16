@@ -478,6 +478,202 @@ class AutoBilingualCaptureTest {
             assertEquals(null, h.finals[0].language)
         }
 
+    // --- languageSource stamping: the label's provenance travels with the label ---------------------
+
+    @Test
+    fun `source - API 34+ confidence-3 es detection stamps DETECTED with the es label`() = runTest {
+        val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        h.fake.fireLanguageDetection(highlyConfidentDetection("es-US"))
+        h.fake.fireSegmentResults("hola mundo")
+        advanceUntilIdle()
+
+        assertEquals(1, h.finals.size)
+        assertEquals("es", h.finals[0].language)
+        assertEquals(LanguageSource.DETECTED, h.finals[0].languageSource)
+    }
+
+    @Test
+    fun `source - API 34+ confidence-3 en detection stamps DETECTED with the en label`() = runTest {
+        val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        h.fake.fireLanguageDetection(highlyConfidentDetection("en-US"))
+        h.fake.fireSegmentResults("hello world")
+        advanceUntilIdle()
+
+        assertEquals("en", h.finals.single().language)
+        assertEquals(LanguageSource.DETECTED, h.finals.single().languageSource)
+    }
+
+    @Test
+    fun `source - API 34+ with no detection event commits null language and null source`() = runTest {
+        val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        h.fake.fireSegmentResults("nothing detected")
+        advanceUntilIdle()
+
+        assertEquals(null, h.finals.single().language)
+        assertEquals(null, h.finals.single().languageSource)
+    }
+
+    @Test
+    fun `source - a below-confident detection commits null language and null source`() = runTest {
+        val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        h.fake.fireLanguageDetection(
+            detectionBundle("es-US", SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_CONFIDENT),
+        )
+        h.fake.fireSegmentResults("below threshold")
+        advanceUntilIdle()
+
+        assertEquals(null, h.finals.single().language)
+        assertEquals(null, h.finals.single().languageSource)
+    }
+
+    @Test
+    fun `source - a confident event outside the en-es allowlist commits null language and null source`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(highlyConfidentDetection("nb-NO"))
+            h.fake.fireSegmentResults("verken engelsk eller spansk")
+            advanceUntilIdle()
+
+            assertEquals(null, h.finals.single().language)
+            assertEquals(null, h.finals.single().languageSource)
+        }
+
+    @Test
+    fun `source - sub-34 auto stamps the en fallback label with FALLBACK`() = runTest {
+        val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"), sdkInt = 33)
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        h.fake.fireSegmentResults("sub 34 fallback")
+        advanceUntilIdle()
+
+        assertEquals("en", h.finals.single().language)
+        assertEquals(LanguageSource.FALLBACK, h.finals.single().languageSource)
+    }
+
+    @Test
+    fun `source - sub-34 auto with a fired detection is still FALLBACK, never DETECTED`() = runTest {
+        val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"), sdkInt = 33)
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        h.fake.fireLanguageDetection(highlyConfidentDetection("es-US"))
+        h.fake.fireSegmentResults("detection must be ignored below 34")
+        advanceUntilIdle()
+
+        assertEquals("en", h.finals.single().language)
+        assertEquals(LanguageSource.FALLBACK, h.finals.single().languageSource)
+    }
+
+    @Test
+    fun `source - a non-auto session commits null language and null source on every final`() = runTest {
+        val h = EngineHarness(testScheduler, config = SttConfig(language = "en"), sdkInt = 35)
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        h.fake.fireSegmentResults("first non auto")
+        advanceUntilIdle()
+        h.fake.fireSegmentResults("second non auto")
+        advanceUntilIdle()
+
+        assertEquals(2, h.finals.size)
+        assertEquals(listOf<LanguageSource?>(null, null), h.finals.map { it.languageSource })
+        assertEquals(listOf<String?>(null, null), h.finals.map { it.language })
+    }
+
+    @Test
+    fun `source - the corrections branch carries the source alongside the label and the corrected text`() =
+        runTest {
+            val h = EngineHarness(
+                testScheduler,
+                config = SttConfig(language = "auto", corrections = listOf(CorrectionPair("teh", "the"))),
+            )
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(highlyConfidentDetection("en-US"))
+            h.fake.fireSegmentResults("teh cat sat")
+            advanceUntilIdle()
+
+            val only = h.finals.single()
+            assertEquals("the cat sat", only.text)
+            assertEquals("en", only.language)
+            assertEquals(LanguageSource.DETECTED, only.languageSource)
+        }
+
+    @Test
+    fun `source - the corrections branch on sub-34 auto carries FALLBACK`() = runTest {
+        val h = EngineHarness(
+            testScheduler,
+            config = SttConfig(language = "auto", corrections = listOf(CorrectionPair("teh", "the"))),
+            sdkInt = 33,
+        )
+        h.collectInto(backgroundScope)
+        h.reachListening()
+
+        h.fake.fireSegmentResults("teh cat sat")
+        advanceUntilIdle()
+
+        val only = h.finals.single()
+        assertEquals("the cat sat", only.text)
+        assertEquals(LanguageSource.FALLBACK, only.languageSource)
+    }
+
+    @Test
+    fun `source - per-segment reset - a detected segment then a detection-free segment is DETECTED then null`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(highlyConfidentDetection("es-US"))
+            h.fake.fireSegmentResults("primero")
+            advanceUntilIdle()
+            h.fake.fireSegmentResults("segundo")
+            advanceUntilIdle()
+
+            assertEquals(listOf<LanguageSource?>(LanguageSource.DETECTED, null), h.finals.map { it.languageSource })
+        }
+
+    @Test
+    fun `source - native engine pairs label and source on every final of a mixed session (native only, not the public contract)`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(highlyConfidentDetection("en-US"))
+            h.fake.fireSegmentResults("one in english")
+            advanceUntilIdle()
+            h.fake.fireSegmentResults("two with no detection")
+            advanceUntilIdle()
+            h.fake.fireLanguageDetection(highlyConfidentDetection("es-US"))
+            h.fake.fireSegmentResults("tres en espanol")
+            advanceUntilIdle()
+            h.fake.fireLanguageDetection(highlyConfidentDetection("de-DE"))
+            h.fake.fireSegmentResults("vier ausserhalb der liste")
+            advanceUntilIdle()
+
+            assertEquals(4, h.finals.size)
+            assertEquals(listOf("en", null, "es", null), h.finals.map { it.language })
+            h.finals.forEach { assertEquals(it.language == null, it.languageSource == null) }
+        }
+
     // --- helpers -----------------------------------------------------------------------------------
 
     private fun highlyConfidentDetection(detectedLanguage: String): Bundle =

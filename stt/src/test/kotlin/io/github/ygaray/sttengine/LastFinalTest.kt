@@ -104,6 +104,28 @@ class LastFinalTest {
         }
 
     @Test
+    fun `native - lastFinal after stop is the same instance finals delivered and carries the source`() =
+        runTest {
+            val h = EngineHarness(testScheduler, config = SttConfig(language = "auto"))
+            h.collectInto(backgroundScope)
+            h.reachListening()
+
+            h.fake.fireLanguageDetection(highlyConfidentDetection("es-US"))
+            h.fake.firePartial("cola abierta")
+            runCurrent()
+            h.engine.stop()
+            val tail = h.engine.lastFinal
+
+            assertNotNull(tail)
+            assertEquals("es", tail!!.language)
+            assertEquals(LanguageSource.DETECTED, tail.languageSource)
+
+            advanceUntilIdle()
+            assertSame(h.finals.last(), tail)
+            assertEquals(LanguageSource.DETECTED, h.finals.last().languageSource)
+        }
+
+    @Test
     fun `native - a new start resets lastFinal to null until that session's first final`() = runTest {
         val h = EngineHarness(testScheduler)
         h.collectInto(backgroundScope)
