@@ -1,6 +1,7 @@
 package io.github.ygaray.sttengine.internal
 
 import android.content.Context
+import android.os.Handler
 import android.os.Looper
 import android.speech.RecognitionSupport
 import android.speech.RecognizerIntent
@@ -41,7 +42,11 @@ import org.robolectric.shadows.ShadowSpeechRecognizer
  * 3. The model download's API-33 branch through the shadow (the only overload Robolectric
  *    shadows), and the download seam's main-thread requirement: an off-main call throws before any
  *    intent is built, on both the API-33 and the API-34 branch.
- * 4. The API-34 listener branch with scripted listener callbacks (CR-01): `onError(15)` means the
+ * 4. The listener-less download's ORDERING (CR-02): the platform only enqueues the request on the
+ *    main looper, so the adapter must not return — and the caller must not destroy the handle —
+ *    until that message has run; and on API 33 no trigger is sent without a support answer proving
+ *    the recognizer connected.
+ * 5. The API-34 listener branch with scripted listener callbacks (CR-01): `onError(15)` means the
  *    service has no listener-based download hook and started nothing, so the adapter must repeat
  *    the request WITHOUT a listener rather than report a download that never began.
  */
@@ -170,9 +175,12 @@ class PlatformRecognizerHandlePackTest {
     @Test
     fun `triggerModelDownload on API 33 hands the exact tag to the platform and reports true`() {
         val recognizer = onDeviceRecognizer()
-        val handle = PlatformRecognizerHandle(recognizer, sdkInt = 33)
+        val handle = PlatformRecognizerHandle(recognizer, checkSupport = answering(), sdkInt = 33)
 
-        val accepted = runBlocking { handle.triggerModelDownload("es-US") }
+        val accepted = onMainLooper {
+            handle.languageAvailability(listOf("en-US", "es-US"))
+            handle.triggerModelDownload("es-US")
+        }
 
         assertTrue("API 33: a request handed over without a throw reads accepted", accepted)
         val intent = shadowOf(recognizer).latestModelDownloadIntent
@@ -180,6 +188,70 @@ class PlatformRecognizerHandlePackTest {
         assertEquals(RecognizerIntent.ACTION_RECOGNIZE_SPEECH, intent!!.action)
         assertEquals("es-US", intent.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE))
         assertTrue(intent.getBooleanExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false))
+    }
+
+    @Test
+    fun `API 33 the queued platform request is dispatched before the caller can destroy the handle`() {
+        // Stands in for AOSP's triggerModelDownload(Intent): it only POSTS a message to the main
+        // looper, and the request reaches the service when that message runs. The shadow records the
+        // intent synchronously, so it cannot show this. The caller then destroys the handle the
+        // moment the call returns — synchronously, as AOSP 13's destroy() does (the shadow's destroy
+        // is synchronous too). A request whose message runs after that destroy was dropped.
+        val recognizer = onDeviceRecognizer()
+        var dispatched = false
+        var destroyedAtDispatch: Boolean? = null
+        val handle = PlatformRecognizerHandle(
+            recognizer,
+            checkSupport = answering(),
+            sdkInt = 33,
+            handOver = {
+                Handler(Looper.getMainLooper()).post {
+                    destroyedAtDispatch = shadowOf(recognizer).isDestroyed
+                    dispatched = true
+                }
+            },
+        )
+
+        val accepted = onMainLooper {
+            handle.languageAvailability(listOf("en-US", "es-US"))
+            val answer = handle.triggerModelDownload("es-US")
+            handle.destroy()
+            answer
+        }
+
+        assertTrue("the queued request message never ran", dispatched)
+        assertEquals(
+            "the handle was destroyed before the platform dispatched the queued request",
+            false,
+            destroyedAtDispatch,
+        )
+        assertTrue(accepted)
+        assertTrue("the handle must still be destroyed afterwards", shadowOf(recognizer).isDestroyed)
+    }
+
+    @Test
+    fun `API 33 without a support answer reads false and sends no trigger`() {
+        for ((label, support) in listOf<Pair<String, (android.content.Intent, java.util.concurrent.Executor, android.speech.RecognitionSupportCallback) -> Unit>>(
+            "no query at all" to answering(),
+            "query errored" to { _, _, callback -> callback.onError(SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT) },
+            "query threw" to { _, _, _ -> throw IllegalStateException("binder died") },
+        )) {
+            var handedOver = 0
+            val handle = PlatformRecognizerHandle(
+                onDeviceRecognizer(),
+                checkSupport = support,
+                sdkInt = 33,
+                handOver = { handedOver++ },
+            )
+
+            val accepted = onMainLooper {
+                if (label != "no query at all") handle.languageAvailability(listOf("en-US", "es-US"))
+                handle.triggerModelDownload("es-US")
+            }
+
+            assertFalse("$label: no proof of a connection must read 'not confirmed'", accepted)
+            assertEquals("$label: no trigger may be sent", 0, handedOver)
+        }
     }
 
     @Test
@@ -286,6 +358,17 @@ class PlatformRecognizerHandlePackTest {
         assertTrue("the call did not complete once the main looper was idle", deferred.isCompleted)
         return deferred.getCompleted()
     }
+
+    /** A support call that answers at once, as a connected recognition service would. */
+    private fun answering(): (android.content.Intent, java.util.concurrent.Executor, android.speech.RecognitionSupportCallback) -> Unit =
+        { _, _, callback ->
+            callback.onSupportResult(
+                RecognitionSupport.Builder()
+                    .setInstalledOnDeviceLanguages(listOf("en-US"))
+                    .setSupportedOnDeviceLanguages(listOf("en-US", "es-US"))
+                    .build(),
+            )
+        }
 
     /**
      * A REAL on-device recognizer, created on the test (main) thread. The fold rows wrap it with a

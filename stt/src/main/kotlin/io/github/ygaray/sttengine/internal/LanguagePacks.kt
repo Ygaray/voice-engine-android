@@ -117,7 +117,11 @@ internal class LanguagePacks(
      *   trigger could show system UI or spend the user's data for nothing.
      * - UNSUPPORTED → `false`.
      * - DOWNLOADABLE or UNKNOWN → [RecognizerHandle.triggerModelDownload] with the exact tag, and its
-     *   answer. A trigger that throws reads `false`.
+     *   answer. A trigger that throws reads `false`. The platform adapter does not return until its
+     *   request has been DISPATCHED (the platform only enqueues it), so the `destroy()` that follows
+     *   here can never overtake it; and on API 33, where nothing reports back, an UNKNOWN that came
+     *   from a query with no answer at all reads `false` without a trigger, because there is no proof
+     *   the recognizer ever connected (see `PlatformRecognizerHandle.triggerModelDownload`).
      * - A recognizer that cannot be constructed → `false`.
      * - A handle whose cleanup fails → `false` ("not confirmed — re-query"), whatever the path.
      *

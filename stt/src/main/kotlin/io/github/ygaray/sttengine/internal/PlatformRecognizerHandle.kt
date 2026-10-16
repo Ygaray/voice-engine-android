@@ -38,7 +38,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  * **The one deliberate exception to the hop is [triggerModelDownload]**, which REQUIRES the main
  * thread and asserts it instead: a posted download call could not report its own outcome, so its
- * Boolean would stop meaning anything. Its KDoc has the full reasoning.
+ * Boolean would stop meaning anything. Its KDoc has the full reasoning, including why the
+ * listener-less download must wait for the platform to dispatch its queued message before the handle
+ * may be destroyed.
  */
 internal class PlatformRecognizerHandle(
     private val delegate: SpeechRecognizer,
@@ -73,6 +75,15 @@ internal class PlatformRecognizerHandle(
 ) : RecognizerHandle {
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Set once the recognition service has delivered a support answer on this handle — positive
+     * proof that the platform recognizer is CONNECTED to the service (AOSP only runs the support
+     * query against a bound service). Read by the API-33 download branch; see
+     * [triggerModelDownload]. Volatile because the answer may be delivered on a binder thread.
+     */
+    @Volatile
+    private var serviceAnswered: Boolean = false
 
     /**
      * `Dispatchers.Main.immediate` semantics, hand-rolled with a `Handler`.
@@ -170,6 +181,7 @@ internal class PlatformRecognizerHandle(
             suspendCancellableCoroutine<RecognitionSupport?> { continuation ->
                 val callback = object : RecognitionSupportCallback {
                     override fun onSupportResult(recognitionSupport: RecognitionSupport) {
+                        serviceAnswered = true
                         if (continuation.isActive) continuation.resume(recognitionSupport)
                     }
 
@@ -223,8 +235,12 @@ internal class PlatformRecognizerHandle(
      *   request is repeated without a listener through [handOverWithoutListener] and reported with
      *   the API-33 semantics.
      * - **API 33:** the fire-and-forget overload, through [handOverWithoutListener]. There is no
-     *   outcome to wait for, so `true` means only that the request was handed to the platform without
-     *   throwing. A throw is `false`.
+     *   outcome to wait for, so `true` means only that the platform dispatched the request to the
+     *   recognition service without throwing. A throw is `false`. **Only after a support answer on
+     *   this handle** ([serviceAnswered]): a query that timed out or failed leaves no proof the
+     *   recognizer ever connected, and AOSP parks a request made before the connection in a pending
+     *   queue that `destroy()` discards — so that case reads `false` ("not confirmed — re-query")
+     *   without a trigger rather than reporting a request that was silently dropped.
      *
      * The 34-only overload is never reached below 34: the branch is on [sdkInt], and the call is
      * isolated in a `@TargetApi` helper.
@@ -232,7 +248,9 @@ internal class PlatformRecognizerHandle(
      * **MAIN-THREAD-ONLY — this method asserts instead of hopping, unlike every other delegate call
      * here.** A posted call cannot report its own outcome, and it would let a later platform throw
      * escape on the main looper, outside every catch below. Called on main, every synchronous throw
-     * lands inside a catch. The only production caller, `LanguagePacks.requestDownload`, runs inside
+     * lands inside a catch. Note that the platform call itself is NOT synchronous: it only enqueues a
+     * message, which is why [handOverWithoutListener] waits for that message to run. The only
+     * production caller, `LanguagePacks.requestDownload`, runs inside
      * its transient handle's `withContext(mainDispatcher)`, so the check never fires in production;
      * an off-main caller is a programming error and gets an [IllegalStateException] before any intent
      * is built.
@@ -243,6 +261,9 @@ internal class PlatformRecognizerHandle(
 
         if (sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return triggerWithListener(intent)
 
+        // API 33: no connection proof, no trigger — a pre-connection request is queued in the
+        // platform's pending list, which the caller's destroy() then discards.
+        if (!serviceAnswered) return false
         return handOverWithoutListener(intent)
     }
 
@@ -263,17 +284,43 @@ internal class PlatformRecognizerHandle(
 
     /**
      * The listener-less overload: hands [intent] to the platform with no way to hear back. `true`
-     * means only that the hand-over did not throw; a throw is `false`.
+     * means the platform dispatched the request without throwing; a throw is `false`.
+     *
+     * **The platform call only ENQUEUES.** `triggerModelDownload(Intent)` posts
+     * `MSG_TRIGGER_MODEL_DOWNLOAD` to the recognizer's main-looper handler; the Binder call happens
+     * later, in `handleTriggerModelDownload` [VERIFIED: `SpeechRecognizerImpl.java:243-258, 380-397`,
+     * android-36.1]. The caller destroys the handle as soon as this returns, and AOSP 13's
+     * `destroy()` is believed to be synchronous (null the service, clear the pending queue) — so
+     * returning straight away would let the destroy overtake the queued request, which would then
+     * run against a dead recognizer and be dropped. (From API 34's AOSP on, `destroy()` is itself a
+     * queued message, so FIFO order already protects that path; waiting costs one main-looper turn
+     * either way.) So this waits on a marker posted to the SAME main looper after the platform's
+     * message: the looper is FIFO, so when the marker runs the request has been dispatched, and only
+     * then may the handle be destroyed. This holds whether or not `destroy()` is synchronous.
+     *
+     * Cancellation while waiting removes the marker and propagates; the request already queued is not
+     * recalled.
      */
-    private suspend fun handOverWithoutListener(intent: Intent): Boolean =
+    private suspend fun handOverWithoutListener(intent: Intent): Boolean {
         try {
             handOver(intent)
-            true
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (failure: RuntimeException) {
-            false
+            return false
         }
+        awaitMainLooperTurn()
+        return true
+    }
+
+    /** Suspends until a marker posted now to the main looper has run — i.e. everything queued before it has. */
+    private suspend fun awaitMainLooperTurn() {
+        suspendCancellableCoroutine<Unit> { continuation ->
+            val marker = Runnable { if (continuation.isActive) continuation.resume(Unit) }
+            mainHandler.post(marker)
+            continuation.invokeOnCancellation { mainHandler.removeCallbacks(marker) }
+        }
+    }
 
     private fun registerDownloadListener(intent: Intent, sink: DownloadOutcomeSink) {
         val scripted = listenerTrigger

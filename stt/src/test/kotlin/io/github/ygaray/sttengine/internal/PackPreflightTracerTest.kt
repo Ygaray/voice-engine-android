@@ -1,6 +1,7 @@
 package io.github.ygaray.sttengine.internal
 
 import android.content.Context
+import android.os.Handler
 import android.os.Looper
 import android.speech.RecognitionSupport
 import android.speech.RecognizerIntent
@@ -178,6 +179,73 @@ class PackPreflightTracerTest {
         val intent = shadowOf(recognizer).latestModelDownloadIntent
         assertNotNull("the platform must have received a model-download intent", intent)
         assertEquals("es-US", intent!!.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE))
+        assertTrue("the transient recognizer was not destroyed", shadowOf(recognizer).isDestroyed)
+    }
+
+    @Test
+    fun `a public-path API 33 download is dispatched before the transient handle is destroyed`() {
+        // The CR-02 ordering, end to end through LanguagePacks.withTransientHandle. The hand-over
+        // stands in for AOSP's triggerModelDownload(Intent), which only POSTS its request to the main
+        // looper; the shadow's destroy() is synchronous like AOSP 13's. If the orchestration could
+        // destroy the handle before that message ran, the request would be dropped on a real device
+        // while the call still answered true.
+        var dispatched = false
+        var destroyedAtDispatch: Boolean? = null
+        val packs = LanguagePacks(
+            handleFactory = RecognizerHandleFactory { ctx ->
+                val recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx)
+                PlatformRecognizerHandle(
+                    recognizer,
+                    sdkInt = 33,
+                    handOver = {
+                        Handler(Looper.getMainLooper()).post {
+                            destroyedAtDispatch = shadowOf(recognizer).isDestroyed
+                            dispatched = true
+                        }
+                    },
+                )
+            },
+            mainDispatcher = Dispatchers.Main.immediate,
+        )
+        val support = RecognitionSupport.Builder()
+            .setInstalledOnDeviceLanguages(listOf("en-US"))
+            .setSupportedOnDeviceLanguages(listOf("en-US", "es-US"))
+            .build()
+
+        val call = PreflightCall { packs.requestDownload(context, "es") }
+        val recognizer = call.awaitRecognizer()
+        shadowOf(recognizer).triggerSupportResult(support)
+        val accepted = call.awaitResult()
+
+        assertTrue("the queued request message never ran", dispatched)
+        assertEquals(
+            "the transient handle was destroyed before the queued request was dispatched",
+            false,
+            destroyedAtDispatch,
+        )
+        assertTrue(accepted)
+        assertTrue("the transient recognizer was not destroyed", shadowOf(recognizer).isDestroyed)
+    }
+
+    @Test
+    fun `a public-path API 33 download whose query never answered reads false without a trigger`() {
+        val packs = LanguagePacks(
+            handleFactory = RecognizerHandleFactory {
+                PlatformRecognizerHandle(SpeechRecognizer.createOnDeviceSpeechRecognizer(it), sdkInt = 33)
+            },
+            mainDispatcher = Dispatchers.Main.immediate,
+        )
+
+        val call = PreflightCall { packs.requestDownload(context, "es") }
+        val recognizer = call.awaitRecognizer()
+        shadowOf(recognizer).triggerSupportError(SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT)
+        val accepted = call.awaitResult()
+
+        assertEquals("UNKNOWN from a query with no answer: no proof of a connection", false, accepted)
+        assertNull(
+            "no trigger may be sent to a recognizer that may never have connected",
+            shadowOf(recognizer).latestModelDownloadIntent,
+        )
         assertTrue("the transient recognizer was not destroyed", shadowOf(recognizer).isDestroyed)
     }
 
