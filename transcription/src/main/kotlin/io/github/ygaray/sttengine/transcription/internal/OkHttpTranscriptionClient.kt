@@ -23,11 +23,22 @@ internal class OkHttpTranscriptionClient(
     private val client: OkHttpClient = OkHttpClient(),
 ) : TranscriptionClient {
 
+    // D-18 (N-1): the four-parameter override delegates to the five-parameter one with
+    // retainForCorpus = false, which keeps a flagless call on the exact previous wire shape (no
+    // retainForCorpus part).
     override suspend fun submitJob(
         file: File,
         mimeType: String,
         language: String,
         vocabulary: List<String>,
+    ): SubmitOutcome = submitJob(file, mimeType, language, vocabulary, retainForCorpus = false)
+
+    override suspend fun submitJob(
+        file: File,
+        mimeType: String,
+        language: String,
+        vocabulary: List<String>,
+        retainForCorpus: Boolean,
     ): SubmitOutcome {
         // HUB-03 (147-02): the language part is added BEFORE the file part — load-bearing interop
         // ordering with the Plan 01 server, whose pre-file scan stops as soon as it sees the file
@@ -42,6 +53,13 @@ internal class OkHttpTranscriptionClient(
             .addFormDataPart("language", language)
         if (vocabulary.isNotEmpty()) {
             bodyBuilder.addFormDataPart("vocabulary", JSONArray(vocabulary).toString())
+        }
+        // CORR-09 (D-06): retainForCorpus follows language and vocabulary and precedes the file part
+        // (same "scalar parts before file" convention, and the server's pre-file scan stops at the
+        // file part). Sent as the literal text "true" and omitted entirely (true absence, never
+        // "false") when the flag is false, so a default request is unchanged from the previous release.
+        if (retainForCorpus) {
+            bodyBuilder.addFormDataPart("retainForCorpus", "true")
         }
         val body = bodyBuilder
             .addFormDataPart("file", file.name, file.asRequestBody(mimeType.toMediaType()))

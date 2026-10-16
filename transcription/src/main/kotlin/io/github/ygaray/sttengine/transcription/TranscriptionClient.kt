@@ -29,6 +29,60 @@ public interface TranscriptionClient {
         language: String = "en",
         vocabulary: List<String> = emptyList(),
     ): SubmitOutcome
+
+    /**
+     * Submits [file] like the four-parameter [submitJob], additionally opting the clip into the host's
+     * voice corpus when [retainForCorpus] is `true` (CORR-09).
+     *
+     * **The opt-in.** The flag travels as a single text part named `retainForCorpus` with the value
+     * `true`, placed after `language` and `vocabulary` and before the file part. It is omitted
+     * entirely (true absence, not `false`) when the flag is `false`, so a default request carries the
+     * same part names, values and order as the previous release. A server without the corpus feature
+     * ignores the unknown part and an older client sends nothing. The host app owns the user's
+     * consent; this library never decides to retain on its own.
+     *
+     * **The id.** On `202` the returned [SubmitOutcome.Accepted.jobId] is the corpus record id and is
+     * the `sessionId` a later correction takes (D-11). [SubmitOutcome.Accepted] deliberately carries
+     * no "retained" flag: the server's `retained: true` on the `202` means the retention is armed,
+     * not committed (D-06). Submit a correction only after [getJobStatus] reports
+     * [JobStatusOutcome.Done], because the record is committed before the status flips. A clip that is
+     * re-transcribed is a new job and a new record.
+     *
+     * **Additive overload.** This overload is ADDED beside the unchanged four-parameter [submitJob]
+     * so no existing caller or implementer breaks. Kotlin binds a call that omits [retainForCorpus]
+     * to the four-parameter member (it leaves fewer defaults unspecified), so only a call that names
+     * or passes the flag reaches this overload.
+     *
+     * **Default body.** An implementation that does not override this overload gets exactly two
+     * behaviors. With [retainForCorpus] `false` it delegates to the four-parameter [submitJob] with
+     * the same arguments, so it behaves as before. With `true` it returns
+     * [SubmitOutcome.Rejected] carrying [TranscriptionErrorCode.UPLOAD_REJECTED] WITHOUT calling the
+     * four-parameter member and without uploading anything, so an implementation that cannot honour
+     * the opt-in is never silently treated as having honoured it. It is a typed rejection rather than
+     * [SubmitOutcome.Transient] because retrying cannot help.
+     *
+     * An implementation that wants to honour the flag overrides this overload. An implementation must
+     * not implement the four-parameter member by calling this overload unless it also overrides this
+     * overload: the default body calls the four-parameter member, and the two would then call each
+     * other forever.
+     */
+    public suspend fun submitJob(
+        file: File,
+        mimeType: String,
+        language: String = "en",
+        vocabulary: List<String> = emptyList(),
+        retainForCorpus: Boolean = false,
+    ): SubmitOutcome =
+        if (retainForCorpus) {
+            SubmitOutcome.Rejected(
+                TranscriptionErrorCode.UPLOAD_REJECTED,
+                "This TranscriptionClient implementation does not override the five-parameter " +
+                    "submitJob, so it cannot honour retainForCorpus = true; nothing was uploaded.",
+            )
+        } else {
+            submitJob(file, mimeType, language, vocabulary)
+        }
+
     public suspend fun getJobStatus(jobId: String): JobStatusOutcome
 }
 
@@ -42,7 +96,11 @@ public sealed interface SubmitOutcome {
         override fun toString(): String = "Accepted(jobId=$jobId)"
     }
 
-    /** `413`/`400` — the server rejected the upload outright. A permanent, typed failure. */
+    /**
+     * `413`/`400` — the server rejected the upload outright. A permanent, typed failure. Also returned
+     * locally (nothing is uploaded) by the default body of the five-parameter [TranscriptionClient.submitJob]
+     * when an implementation cannot honour `retainForCorpus = true`.
+     */
     public class Rejected(
         public val code: TranscriptionErrorCode,
         public val message: String,

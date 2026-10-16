@@ -44,6 +44,21 @@ class TranscriptionClientWireTest {
         assertEquals("job-abc", (outcome as SubmitOutcome.Accepted).jobId)
     }
 
+    // CORR-09 tracer (D-11, D-06): a retained batch submit through the NEW overload sends the
+    // opt-in part as the text "true" and returns the job id, which IS the session id.
+    @Test
+    fun `retained submit sends the retainForCorpus part and returns the job id`() = runTest {
+        server.enqueue(MockResponse.Builder().code(202).body("""{"id":"job-abc","retained":true}""").build())
+        val outcome = client.submitJob(tempAudioFile(), "audio/mp4", retainForCorpus = true)
+        assertEquals(SubmitOutcome.Accepted("job-abc"), outcome)
+        val requestBody = server.takeRequest().body!!.utf8()
+        val partIndex = requestBody.indexOf("name=\"retainForCorpus\"")
+        assertTrue("expected a form part named \"retainForCorpus\"", partIndex >= 0)
+        val valueStart = requestBody.indexOf("\r\n\r\n", partIndex) + 4
+        val valueEnd = requestBody.indexOf("\r\n", valueStart)
+        assertEquals("true", requestBody.substring(valueStart, valueEnd))
+    }
+
     @Test
     fun `400 maps to Rejected UPLOAD_REJECTED`() = runTest {
         server.enqueue(MockResponse.Builder().code(400).body("""{"error":"malformed-upload"}""").build())
