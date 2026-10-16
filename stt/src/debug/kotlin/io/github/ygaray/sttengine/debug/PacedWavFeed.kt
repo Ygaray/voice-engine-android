@@ -43,12 +43,18 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Paced silence instead. It costs nothing, it is what a microphone in a quiet room produces, and it
  * keeps the tail of the trace as boring as it should be. [silenceBytesFed] records how much, so a
  * run whose hold badly overshot the passage is visible after the fact rather than mysterious.
+ *
+ * ## The default clock is monotonic
+ *
+ * The pacing clock defaults to the monotonic millisecond source the session trace stamps its `t`
+ * with, so the manifest-relative stimulus timeline and the trace share a clock family and a
+ * wall-clock adjustment mid-run cannot shift one against the other. Tests inject their own clock.
  */
 internal class PacedWavFeed(
     private val wav: WavPcm16,
     /** The armed path, carried only so diagnostics can name the file rather than describe it. */
     val path: String,
-    private val nowMs: () -> Long = { System.currentTimeMillis() },
+    private val nowMs: () -> Long = { monotonicNowMs() },
     private val sleepMs: (Long) -> Unit = { Thread.sleep(it) },
 ) : PcmSourceFactory {
 
@@ -164,6 +170,12 @@ internal class PacedWavFeed(
     internal companion object {
 
         private const val NOT_STARTED = -1L
+
+        /**
+         * The default pacing clock: the same monotonic millisecond source `SessionLog` stamps its
+         * `t` with, so a wall-clock adjustment cannot move the stimulus against the trace.
+         */
+        fun monotonicNowMs(): Long = System.nanoTime() / 1_000_000L
 
         /** 16 000 Hz × 2 bytes = 32 000 bytes per second = 32 per millisecond. */
         const val BYTES_PER_MS: Long = (RecognizerIntents.AUDIO_SOURCE_SAMPLE_RATE_HZ * 2L) / 1_000L

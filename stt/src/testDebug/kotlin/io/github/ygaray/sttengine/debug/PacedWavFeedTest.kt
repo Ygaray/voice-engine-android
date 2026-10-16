@@ -250,6 +250,46 @@ class PacedWavFeedTest {
         assertTrue("the passage cannot be exhausted before it has started", !paced.exhausted)
     }
 
+    // --- the default clock is monotonic (the stimulus and the session trace share a clock family) ---
+
+    @Test
+    fun `a feed built without an injected clock paces on the monotonic default`() {
+        val paced = PacedWavFeed(wav = wav, path = "/fixture/passage.wav")
+        val before = PacedWavFeed.monotonicNowMs()
+        val source = paced.open(16_000)
+        var delivered = 0L
+        val buffer = ByteArray(3_200)
+        // Real waiting, but short: three reads of at most 100 ms of audio each.
+        repeat(3) { delivered += source.read(buffer) }
+        val elapsed = PacedWavFeed.monotonicNowMs() - before
+        source.release()
+
+        assertTrue("the default-clock feed delivered nothing", delivered > 0)
+        // Scheduler jitter is tolerated: the invariant is only that the feed never runs ahead of the
+        // monotonic clock, plus one chunk of slack for the frame alignment and the final read.
+        assertTrue(
+            "delivered $delivered bytes in $elapsed ms; the feed ran ahead of the monotonic clock",
+            delivered <= (elapsed + 1) * bytesPerMs + 3_200,
+        )
+    }
+
+    @Test
+    fun `the monotonic default never goes backwards and is not the epoch`() {
+        var last = PacedWavFeed.monotonicNowMs()
+        repeat(10_000) {
+            val now = PacedWavFeed.monotonicNowMs()
+            assertTrue("monotonic clock went backwards: $last then $now", now >= last)
+            last = now
+        }
+        // This documents a clock DOMAIN, not an exact value: an uptime-style reading is nowhere near
+        // the epoch, which is how a wall-clock source would be told apart from this one.
+        val oneYearMs = 365L * 24 * 60 * 60 * 1_000
+        assertTrue(
+            "$last looks like epoch milliseconds, not a monotonic reading",
+            last < System.currentTimeMillis() - oneYearMs,
+        )
+    }
+
     private fun pattern(frames: Int): ByteArray {
         val buffer = ByteBuffer.allocate(frames * 2).order(ByteOrder.LITTLE_ENDIAN)
         repeat(frames) { buffer.putShort(((it % 30_000) + 1).toShort()) }
