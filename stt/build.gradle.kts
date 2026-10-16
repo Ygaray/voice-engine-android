@@ -75,6 +75,15 @@ android {
                 "stt.requireWebParity",
                 (project.findProperty("stt.requireWebParity") ?: "false").toString(),
             )
+            // Phase 23 (LSRC-02, D-07): WireFrameGoldenTest's fixture. EMPTY (the default) means the
+            // classpath copy at src/test/resources/wire-final-frames.json; a non-empty ABSOLUTE path
+            // lets scripts/check-wire-frame-parity.sh point this leg at a temporary fixture (the 23-06
+            // red proof) without ever touching a committed file. The script passes this explicitly on
+            // every run, so nothing inherited can choose the fixture.
+            test.systemProperty(
+                "stt.wire.goldenFixture",
+                (project.findProperty("stt.wire.goldenFixture") ?: "").toString(),
+            )
         }
     }
 

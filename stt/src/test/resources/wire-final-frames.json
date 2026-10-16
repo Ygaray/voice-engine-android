@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "name": "auto-detected",
+      "server": {
+        "text": "hola mundo",
+        "segmentId": 3,
+        "language": "es",
+        "languageSource": "detected"
+      },
+      "frame": "{\"type\": \"final\", \"text\": \"hola mundo\", \"segmentId\": 3, \"language\": \"es\", \"languageSource\": \"detected\"}",
+      "client": {
+        "outcome": "final",
+        "text": "hola mundo",
+        "segmentId": 3,
+        "language": "es",
+        "languageSource": "detected"
+      },
+      "legacy": {
+        "text": "hola mundo",
+        "segmentId": 3,
+        "language": "es"
+      }
+    },
+    {
+      "name": "non-auto-no-language",
+      "server": {
+        "text": "hello world",
+        "segmentId": 0,
+        "language": null,
+        "languageSource": null
+      },
+      "frame": "{\"type\": \"final\", \"text\": \"hello world\", \"segmentId\": 0}",
+      "client": {
+        "outcome": "final",
+        "text": "hello world",
+        "segmentId": 0,
+        "language": null,
+        "languageSource": null
+      },
+      "legacy": {
+        "text": "hello world",
+        "segmentId": 0,
+        "language": null
+      }
+    }
+  ]
+}
