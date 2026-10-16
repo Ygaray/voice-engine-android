@@ -9,6 +9,7 @@ import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.BackendPreference
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.LanguageAvailability
+import io.github.ygaray.sttengine.LanguageSource
 import io.github.ygaray.sttengine.checkLanguageAvailability
 import io.github.ygaray.sttengine.debug.DebugRungCeiling
 import io.github.ygaray.sttengine.demo.DictationViewModel
@@ -549,11 +550,24 @@ internal fun lastSegmentLanguageOf(committed: List<FinalSegment>): String? =
     committed.lastOrNull()?.language
 
 /**
- * Every committed segment's detected language, oldest first — mirroring [DictationViewModel]'s own
- * documented `committed` ordering — as one `{"segmentId": <Int>, "language": <bare en/es> or
+ * The most recently committed segment's language provenance, or `null` before any segment has
+ * committed or when the latest segment carries no source (no label, or a label from a server that
+ * predates the field — `null` is "no claim", never a fallback).
+ *
+ * Reads [FinalSegment.languageSource] ONLY (a label, never transcript content) — the same
+ * implementation-invariant-not-type-level-guarantee caveat as [lastSegmentLanguageOf].
+ */
+internal fun lastSegmentLanguageSourceOf(committed: List<FinalSegment>): LanguageSource? =
+    committed.lastOrNull()?.languageSource
+
+/**
+ * Every committed segment's detected language and its provenance, oldest first — mirroring
+ * [DictationViewModel]'s own documented `committed` ordering — as one `{"segmentId": <Int>,
+ * "language": <bare en/es> or JSONObject.NULL, "languageSource": <"DETECTED"|"FALLBACK"> or
  * JSONObject.NULL}` entry per segment.
  *
- * Reads [FinalSegment.language] ONLY — see [lastSegmentLanguageOf]'s KDoc for the same
+ * Reads [FinalSegment.segmentId], [FinalSegment.language] and [FinalSegment.languageSource] ONLY —
+ * labels, never transcript content; see [lastSegmentLanguageOf]'s KDoc for the same
  * implementation-invariant-not-type-level-guarantee caveat. Plain, dependency-free, unit-testable.
  */
 internal fun segmentLanguagesOf(committed: List<FinalSegment>): JSONArray {
@@ -563,6 +577,7 @@ internal fun segmentLanguagesOf(committed: List<FinalSegment>): JSONArray {
             JSONObject().apply {
                 put("segmentId", segment.segmentId)
                 put("language", segment.language ?: JSONObject.NULL)
+                put("languageSource", segment.languageSource?.name ?: JSONObject.NULL)
             },
         )
     }
@@ -576,19 +591,22 @@ internal fun segmentLanguagesOf(committed: List<FinalSegment>): JSONArray {
  *
  * Three things a driver reading this diagnostics dump needs to know:
  *
- * 1. This function reads ONLY `.language` on every committed entry, never `.text` — an
- *    IMPLEMENTATION INVARIANT of this function's body, not a type-level guarantee (the
- *    `List<FinalSegment>` parameter still carries `.text`; 19-REVIEWS.md cycle 2, Codex LOW).
+ * 1. This function reads ONLY `.language` and `.languageSource` (labels) on every committed entry,
+ *    never the transcript content — an IMPLEMENTATION INVARIANT of this function's body, not a
+ *    type-level guarantee (the `List<FinalSegment>` parameter still carries the text;
+ *    19-REVIEWS.md cycle 2, Codex LOW).
  * 2. `segmentLanguages` carries the COMPLETE, ordered per-utterance sequence in a SINGLE
  *    end-of-run dump — a driver scoring a multi-utterance run (EN-only/ES-only/alternating/
  *    long-form) should read this array rather than polling `committedCount` and dumping once per
  *    new segment. This SUPERSEDES the earlier poll-per-segment protocol, which was itself still
  *    lossy if two segments committed between polls (19-REVIEWS.md cycle 2, Codex MEDIUM #1).
  * 3. `lastSegmentLanguage` is kept as a redundant convenience scalar — always equal to the array's
- *    last entry — for any driver that only wants the latest label.
+ *    last entry — for any driver that only wants the latest label. `lastSegmentLanguageSource` is the
+ *    same convenience for the provenance (the enum name, or JSON `null`).
  */
 internal fun languageDiagnostics(into: JSONObject, committed: List<FinalSegment>) {
     into.put("lastSegmentLanguage", lastSegmentLanguageOf(committed) ?: JSONObject.NULL)
+    into.put("lastSegmentLanguageSource", lastSegmentLanguageSourceOf(committed)?.name ?: JSONObject.NULL)
     into.put("segmentLanguages", segmentLanguagesOf(committed))
 }
 
@@ -596,17 +614,19 @@ internal fun languageDiagnostics(into: JSONObject, committed: List<FinalSegment>
  * Writes the engine's [io.github.ygaray.sttengine.SttEngine.lastFinal] identity onto [into]
  * (LAST-01, Phase 21): `lastFinalSegmentId` (Int, or JSON `null` before the session's first final)
  * and `lastFinalLanguage` (bare `en`/`es`, or JSON `null` when there is no final or no confident
- * label). This is what lets a device check confirm, right after STOP, that `lastFinal` is the tail
- * the stop flushed — by `segmentId`, against `segmentLanguages`' last entry.
+ * label), and `lastFinalLanguageSource` (the [LanguageSource] enum name, or JSON `null` when there
+ * is no final or no source). This is what lets a device check confirm, right after STOP, that
+ * `lastFinal` is the tail the stop flushed — by `segmentId`, against `segmentLanguages`' last entry.
  *
- * Reads [FinalSegment.segmentId] and [FinalSegment.language] ONLY, never `.text` — an
- * IMPLEMENTATION INVARIANT of this function's body, not a type-level guarantee (same caveat as
- * [lastSegmentLanguageOf]; D-08/SRV-05: the dump never carries transcript text). Plain and
- * dependency-free so it is unit-testable in plain JUnit.
+ * Reads [FinalSegment.segmentId], [FinalSegment.language] and [FinalSegment.languageSource] ONLY
+ * (labels, never transcript content) — an IMPLEMENTATION INVARIANT of this function's body, not a
+ * type-level guarantee (same caveat as [lastSegmentLanguageOf]; D-08/SRV-05: the dump never carries
+ * transcript text). Plain and dependency-free so it is unit-testable in plain JUnit.
  */
 internal fun lastFinalDiagnostics(into: JSONObject, lastFinal: FinalSegment?) {
     into.put("lastFinalSegmentId", lastFinal?.segmentId ?: JSONObject.NULL)
     into.put("lastFinalLanguage", lastFinal?.language ?: JSONObject.NULL)
+    into.put("lastFinalLanguageSource", lastFinal?.languageSource?.name ?: JSONObject.NULL)
 }
 
 /**
