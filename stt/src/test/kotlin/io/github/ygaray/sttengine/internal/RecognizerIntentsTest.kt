@@ -264,6 +264,59 @@ class RecognizerIntentsTest {
         RecognizerIntents.forRung(Rung.RawAudioSegmented, SttConfig(), context, audioSource = null)
     }
 
+    // --- Phase 26 literal pins: D-06 (session bound) and D-03 (rung mapping) ----------------------
+    //
+    // These are the LITERAL half of the NBIL-09 guard. They are about the pure function
+    // `RecognizerIntents.forRung` called WITHOUT any tune parameter, and they pass on today's code.
+    // They exist so that the Phase 26 tune (plan 26-05) cannot move the 8000 ms session bound, change
+    // rung (a)'s mapping, or give the default-call rung (c) intent a silence extra without a test
+    // failing. (The ENGINE-level rung (c) intent does change when the tune ships; that is covered by
+    // the labelled PreTune pair in SilenceExtrasSeamEngineTest, not by these.)
+
+    private val completeKey = RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS
+    private val possiblyKey = RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS
+    private val minimumKey = RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS
+
+    @Test
+    fun `D-06 pin - the segmented session bound is exactly the locked 8000 ms literal`() {
+        assertEquals(8_000, RecognizerIntents.SEGMENTED_SESSION_COMPLETE_SILENCE_MS)
+    }
+
+    @Test
+    fun `D-03 pin - rung a constants are exactly 2500 and 1800`() {
+        assertEquals(2_500, RecognizerIntents.RESTART_COMPLETE_SILENCE_MS)
+        assertEquals(1_800, RecognizerIntents.POSSIBLY_COMPLETE_SILENCE_MS)
+    }
+
+    @Test
+    fun `D-03 pin - a default-call rung a intent reads COMPLETE 2500 and POSSIBLY 1800`() {
+        val intent = RecognizerIntents.forRung(Rung.RestartingSingleSession, SttConfig(), context)
+        assertEquals(2_500, intent.getIntExtra(completeKey, -1))
+        assertEquals(1_800, intent.getIntExtra(possiblyKey, -1))
+        assertFalse(intent.hasExtra(minimumKey))
+    }
+
+    @Test
+    fun `D-06 pin - a default-call rung b intent reads COMPLETE 8000 and POSSIBLY 1800`() {
+        val intent = RecognizerIntents.forRung(Rung.SilenceSegmented, SttConfig(), context)
+        assertEquals(8_000, intent.getIntExtra(completeKey, -1))
+        assertEquals(1_800, intent.getIntExtra(possiblyKey, -1))
+        assertFalse(intent.hasExtra(minimumKey))
+    }
+
+    @Test
+    fun `D-03 pin - a default-call rung c intent carries NO COMPLETE, NO POSSIBLY and NO MINIMUM_LENGTH`() {
+        val pipe = ParcelFileDescriptor.createPipe()
+        try {
+            val intent = RecognizerIntents.forRung(Rung.RawAudioSegmented, SttConfig(), context, pipe[0])
+            assertFalse("rung (c) must carry no COMPLETE extra", intent.hasExtra(completeKey))
+            assertFalse("rung (c) must carry no POSSIBLY extra", intent.hasExtra(possiblyKey))
+            assertFalse("rung (c) must carry no MINIMUM_LENGTH extra", intent.hasExtra(minimumKey))
+        } finally {
+            pipe.forEach { it.close() }
+        }
+    }
+
     private val audioSourceKeys = setOf(
         RecognizerIntent.EXTRA_AUDIO_SOURCE,
         RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT,
