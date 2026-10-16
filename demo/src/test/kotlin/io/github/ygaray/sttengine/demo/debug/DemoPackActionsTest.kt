@@ -2,6 +2,7 @@ package io.github.ygaray.sttengine.demo.debug
 
 import io.github.ygaray.sttengine.LanguageAvailability
 import java.io.File
+import java.lang.reflect.Modifier
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -138,14 +139,31 @@ class DemoPackActionsTest {
         assertTrue("debug manifest not found at ${manifest.absolutePath}", manifest.isFile)
         val text = manifest.readText()
 
-        val actions = listOf(
+        // EVERY ACTION_* constant, found reflectively — a hand-typed list would let a new constant
+        // without a manifest entry pass green, which is exactly the drift this guard exists to catch.
+        // A companion `const val` compiles to a static field on the receiver class itself.
+        val actions = DemoControlReceiver::class.java.declaredFields
+            .filter { it.name.startsWith("ACTION_") && Modifier.isStatic(it.modifiers) }
+            .associate { field ->
+                field.isAccessible = true
+                field.name to (field.get(null) as String)
+            }
+
+        // The guard must never degrade into checking nothing: the reflective scan has to see at
+        // least the five actions the Gate-1 scripts are authored against.
+        val known = listOf(
             DemoControlReceiver.ACTION_START,
             DemoControlReceiver.ACTION_STOP,
             DemoControlReceiver.ACTION_DUMP_DIAGNOSTICS,
             DemoControlReceiver.ACTION_CHECK_PACKS,
             DemoControlReceiver.ACTION_DOWNLOAD_PACK,
         )
-        val missing = actions.filterNot { text.contains("""<action android:name="$it" />""") }
+        assertTrue(
+            "the reflective scan missed known actions: found ${actions.keys}",
+            actions.values.containsAll(known),
+        )
+
+        val missing = actions.filterValues { !text.contains("""<action android:name="$it" />""") }
         assertTrue("debug manifest lacks <action> entries for $missing", missing.isEmpty())
     }
 
