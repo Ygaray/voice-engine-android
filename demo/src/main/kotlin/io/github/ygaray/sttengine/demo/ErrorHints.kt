@@ -42,15 +42,18 @@ internal object ErrorHints {
             "is shown above; include it in any bug report.",
 
         // --- the shared codes that are server-originated on the web backend --------------------
-        // Unreachable on Android today (there is no server in the path), and kept anyway: the
-        // taxonomy is shared, a host may render either backend, and a hint map with holes in it is
-        // how a future code ships with no copy at all.
+        // Reachability on Android is stated per code, not for the block. INVALID_CONFIG: the server
+        // backend surfaces a server error frame's code as sent, so it reaches the demo whenever a
+        // session has committed to the server. How reachable the other codes in this block are is
+        // not audited here. They stay because the taxonomy is shared, a host may render either
+        // backend, and a hint map with holes in it is how a future code ships with no copy at all.
         SttErrorCode.VERSION_MISMATCH.value to
             "App and server speak different protocol versions. Update to continue.",
         SttErrorCode.BUSY.value to
             "Another dictation session is active — only one runs at a time. Try again in a moment.",
         SttErrorCode.INVALID_CONFIG.value to
-            "The session config was rejected — likely a client bug.",
+            "The session config was rejected — the server refused it. Check the server address " +
+            "and the engine settings, then tap Start again.",
         SttErrorCode.UNSUPPORTED_SAMPLE_RATE.value to
             "Audio format not supported by the recognizer.",
         SttErrorCode.PROTOCOL_VIOLATION.value to

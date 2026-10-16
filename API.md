@@ -728,7 +728,7 @@ The companion exposes 14 constants and two named sets:
 |---|---|---|
 | `VERSION_MISMATCH` | `version-mismatch` | no — no protocol in the path |
 | `BUSY` | `busy` | yes (`ERROR_RECOGNIZER_BUSY`) |
-| `INVALID_CONFIG` | `invalid-config` | no |
+| `INVALID_CONFIG` | `invalid-config` | yes — **depends on the active backend** (Phase 26 correction): reachable once a session has committed to the server backend, which carries a server `error` frame's code verbatim and surfaces it as sent (a rejection before `ready` is a fast-fail fallback to the on-device engine; a later one is the session's error) |
 | `UNSUPPORTED_LANGUAGE` | `unsupported-language` | yes (`ERROR_LANGUAGE_NOT_SUPPORTED`, and the preflight) |
 | `UNSUPPORTED_SAMPLE_RATE` | `unsupported-sample-rate` | no |
 | `PROTOCOL_VIOLATION` | `protocol-violation` | no |
