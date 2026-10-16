@@ -7,9 +7,11 @@ package io.github.ygaray.sttengine
  * `"auto"` session start uses to decide whether it can begin — so a value read here and the outcome
  * of starting a session agree.
  *
- * **Keep an `else` (or an explicit [UNKNOWN]) branch in an exhaustive `when`.** [UNKNOWN] is a real
- * answer the platform gives, not an error, and a host that folds it into "missing" will tell a user
- * their language is unavailable on a device that can dictate in it.
+ * **Always include an `else` branch in a `when` over this type; [UNKNOWN] may share it.** An explicit
+ * [UNKNOWN] branch is not a substitute: listing every entry makes the `when` exhaustive without an
+ * `else`, so an entry added later would break the host's build. And render [UNKNOWN] as "unknown",
+ * never as "missing": it is a real answer the platform gives, not an error, and a host that folds it
+ * into "missing" will tell a user their language is unavailable on a device that can dictate in it.
  */
 public enum class LanguageAvailability {
 

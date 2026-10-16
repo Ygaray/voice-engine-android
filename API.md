@@ -469,9 +469,11 @@ classification a native `"auto"` session start uses, so the two agree (see
 | `UNSUPPORTED` | no on-device model for this language on this device, and no download will help; a session fails `unsupported-language` |
 | `UNKNOWN` | the recognition service could not tell (the query failed, timed out, or came back empty); a session still tries to start |
 
-The entry order is frozen. **Keep an `else` (or an explicit `UNKNOWN`) branch in every `when`** over
-it: `UNKNOWN` is a real answer, not an error, and a host that folds it into "missing" will tell a user
-their language is unavailable on a device that can dictate in it.
+The entry order is frozen. **Always include an `else` branch in every `when` over it; `UNKNOWN` may
+share it.** An explicit `UNKNOWN` branch is not a substitute for `else`: listing every entry makes the
+`when` exhaustive without one, so an entry added later would break the host's build. And render
+`UNKNOWN` as "unknown", never as "missing": it is a real answer, not an error, and a host that folds it
+into "missing" will tell a user their language is unavailable on a device that can dictate in it.
 
 ---
 
