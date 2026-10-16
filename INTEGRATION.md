@@ -182,7 +182,7 @@ val engine = createSttEngine(
         language = "auto",                      // the server path accepts only "en" or "auto"
         prefer = BackendPreference.Auto,        // server first, silent on-device fallback
         serverUrl = "wss://host.ts.net:8444/",
-        serverTryTimeoutMs = 5_000L,            // the default; clamped into 1 000..10 000 ms
+        serverTryTimeoutMs = 10_000L,           // the default and the ceiling; clamped into 1 000..10 000 ms
     ),
 )
 ```
@@ -199,9 +199,10 @@ What to know before shipping this:
   that is down hard (DNS failure, no network, connection refused, busy) fails fast whatever the
   window is, and a server that answers but is still starting up is retried within it. Only a
   black-holed host (one that never answers) waits the full window, and no audio is captured
-  meanwhile. **Raise it** (up to 10 000 ms) if your server cold-starts slowly and you would rather
-  wait than fall back; **lower it** (down to 1 000 ms) if a dead network should hand the user to
-  on-device dictation quickly. Values outside the range are clamped, never rejected.
+  meanwhile. The default already sits at the 10 000 ms ceiling, so a session started while the
+  server is cold-starting can wait up to 10 s before the on-device fallback. **Lower it** (down to
+  1 000 ms) if a dead network should hand the user to on-device dictation quickly. Values outside
+  the range are clamped, never rejected.
 - **`stop()` can take up to ~2.5 s on the server path.** It sends the protocol's `stop` token and
   waits for the server to flush the tail of the utterance, so the last words the user spoke are not
   lost. On-device `stop()` is unchanged. Call it from a coroutine, not a blocking UI path.
@@ -227,7 +228,9 @@ session's text.
 
 **Repinning from an earlier tag.** `SttConfig` gained the trailing defaulted
 `serverTryTimeoutMs`: existing call sites compile unchanged, but its synthetic default constructor
-changed, so **recompile** against the new artifact. `SttEngine` gained the non-abstract
+changed, so **recompile** against the new artifact. The default window also changed from 2 500 to
+10 000 ms (a 5 000 ms value was never released), so a cold-starting server now gets up to 10 s
+before the on-device fallback; pass `serverTryTimeoutMs = 2_500L` to keep the old behavior. `SttEngine` gained the non-abstract
 `lastFinal` member with a default of `null`: an existing implementer or test fake needs no change.
 See `API.md` for both.
 

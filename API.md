@@ -291,7 +291,7 @@ public class SttConfig @JvmOverloads constructor(
     public val serverUrl: String? = null,
     corrections: CorrectionRuleset? = null,
     vocabulary: List<String>? = null,
-    serverTryTimeoutMs: Long = 5_000L,
+    serverTryTimeoutMs: Long = 10_000L,
 )
 ```
 
@@ -324,8 +324,9 @@ never reaches the server backend (native on-device recognition has no concept of
 `serverTryTimeoutMs` (TRY-01) is how long, in milliseconds, a server-eligible engine (`serverUrl`
 set and `prefer` not `OnDevice`) keeps trying the server at session start before giving up. The
 window bounds the whole connect → config → `ready` sequence, retries included, as **one deadline**.
-**Defaults to 5 000 ms.** Any value is **clamped into 1 000..10 000 ms rather than rejected**, and
-the property reports the clamped value. How a failed try is treated depends on how far the
+**Defaults to 10 000 ms.** Any value is **clamped into 1 000..10 000 ms rather than rejected**, and
+the property reports the clamped value. A session started while the server is cold-starting can wait
+up to 10 s before the on-device fallback under `Auto`. How a failed try is treated depends on how far the
 connection got:
 
 - **Fails fast — before the host answers.** A DNS failure, no network, a refused connection, a
@@ -342,15 +343,18 @@ connection got:
   `Auto` falls back or `Server` reports an error.
 
 No audio is captured while the window runs, so a longer window means more deaf time at session
-start when the server is off. Ignored when no server is configured.
+start when the server is off or black-holed: up to 10 s with the default. Ignored when no server is
+configured.
 
 **Migration for `serverTryTimeoutMs`:** it is a trailing defaulted parameter, so existing Kotlin and
 Java call sites compile unchanged (all earlier `@JvmOverloads` constructors remain; Java gains one
 6-argument constructor). The synthetic `$default` constructor did change, so **Kotlin consumers must
 recompile against the new artifact when they repin**. Behavior change: a server-eligible engine that
-does not set the knob now gets a 5 000 ms window instead of the previous 2 500 ms. Refused and
-DNS-class failures still fail fast; only a black-holed host or a slow cold start uses the longer
-window.
+does not set the knob now gets a **10 000 ms** window, where the previous release (v0.7.0) used
+2 500 ms. (A 5 000 ms value was set during development and never released.) A session started while
+the server is cold-starting can therefore wait up to 10 s before the on-device fallback under
+`Auto`. Refused and DNS-class failures still fail fast; only a black-holed host or a slow cold start
+uses the longer window. A host that wants the old behavior passes `serverTryTimeoutMs = 2_500L`.
 
 `sampleRate` from the TypeScript options object stays **dropped, not stubbed**: the wire protocol's
 sample rate is fixed (`16_000`) and is never a host-settable knob on either backend.

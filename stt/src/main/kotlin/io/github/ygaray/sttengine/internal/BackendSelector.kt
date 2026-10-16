@@ -101,7 +101,7 @@ internal class BackendSelector(
     private val log: SessionLog = SessionLog(),
     private val webSocketFactory: WebSocketFactory,
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
-    /** The try-server window: the host's [SttConfig.serverTryTimeoutMs] (TRY-01; default 5 000 ms,
+    /** The try-server window: the host's [SttConfig.serverTryTimeoutMs] (TRY-01; default 10 000 ms,
      *  clamped to 1 000..10 000 ms by the config itself per D-07). It bounds the WHOLE attempt loop —
      *  connect → config → `ready`, retries and their backoffs included — as ONE deadline, not just
      *  the TCP+TLS handshake. The Phase-9 on-device probe that was meant to measure a fixed value

@@ -69,10 +69,11 @@ import io.github.ygaray.sttengine.internal.ServerTryWindow
  *   answers but is not ready yet (for example a cold-starting server) is retried within the window;
  *   a black-holed host — one that never answers at all — waits the full window. When the window
  *   ends without a ready server, [BackendPreference.Auto] falls back to the on-device backend and
- *   [BackendPreference.Server] reports an error. Defaults to 5 000 ms. Any value is clamped into
+ *   [BackendPreference.Server] reports an error. Defaults to 10 000 ms. Any value is clamped into
  *   1 000..10 000 ms rather than rejected, and this property reports the clamped value. No audio is
  *   captured while the window runs, so a longer window means more deaf time when the server is
- *   off. Ignored when no server is configured.
+ *   off: a session started while the server is cold-starting can wait up to 10 s before the
+ *   on-device fallback under [BackendPreference.Auto]. Ignored when no server is configured.
  * @property retainForCorpus Opt this SERVER session into the host's voice corpus (CORR-06). Only a
  *   server session retains anything; the default `false` retains nothing and puts no new key on the
  *   wire. When `true`, the session's audio and its committed finals are kept on the server host for

@@ -42,9 +42,9 @@ class SttEngineFactoryTryWindowTest {
     }
 
     @Test
-    fun `an omitted window yields the 5000 ms default`() {
+    fun `an omitted window yields the 10000 ms default`() {
         val selector = selectorFor(SttConfig(serverUrl = "wss://host.example:8444/"))
-        assertEquals(5_000L, selector.tryServerTimeoutMs)
+        assertEquals(10_000L, selector.tryServerTimeoutMs)
     }
 
     @Test
