@@ -219,8 +219,11 @@ class DemoControlReceiver : BroadcastReceiver() {
      * trace next to the engine's own.
      *
      * **No transcript text is written by either path.** Only counters, identifiers and the engine
-     * state go out. `Log.d` is below informational on purpose: a bug-report capture picks up info
-     * and above, and dictated speech must never be in one.
+     * state go out. `Log.d` is NOT a privacy control: a bug report captures the log at every level,
+     * debug lines included. The safety here is that nothing in the snapshot is dictated speech. The
+     * one sensitive-ish value is `lastSessionId`, a handle for appending corrections to a record; it
+     * is acceptable in this debug-only dump (it cannot read or delete anything) and is kept in the
+     * log line so a Gate-1 run can read it from logcat.
      *
      * The sidecar is a separate file rather than a line appended to the engine's session trace. That
      * trace's schema is frozen and asserted key-by-key by the library's own tests, and plan 08's
