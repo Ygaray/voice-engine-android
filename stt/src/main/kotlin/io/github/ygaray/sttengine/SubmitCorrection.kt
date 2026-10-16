@@ -27,6 +27,9 @@ import io.github.ygaray.sttengine.internal.CorpusCorrections
  * **`httpBaseUrl`** is the batch base URL the host already gives `createTranscriptionClient`, for
  * example `https://host.example.ts.net/SttBatch`. The request is
  * `POST {httpBaseUrl}/corpus/{sessionId}/revisions`. A base with or without a trailing slash works.
+ * Use an `https://` base: the corrected text is the user's edited transcript and goes out in the
+ * request body, so a cleartext `http://` base would send it unencrypted (Android's default network
+ * security policy blocks cleartext for most apps, but do not rely on that).
  *
  * **One corrected text per call, and nothing is overwritten.** Each accepted call appends one
  * revision to the record. The request body is exactly `{corrected, language?}`: the server stamps

@@ -201,7 +201,7 @@ lifecycleScope.launch {
 | Parameter | Meaning |
 |---|---|
 | `context` | accepted for symmetry with the other top-level calls; currently unused and never retained |
-| `httpBaseUrl` | the batch base URL the host already gives `createTranscriptionClient`; the request is `POST {httpBaseUrl}/corpus/{sessionId}/revisions`, with or without a trailing slash on the base |
+| `httpBaseUrl` | the batch base URL the host already gives `createTranscriptionClient`; the request is `POST {httpBaseUrl}/corpus/{sessionId}/revisions`, with or without a trailing slash on the base. Use `https://`: the corrected text travels in the body, and a cleartext base would send it unencrypted |
 | `sessionId` | the record id: `SttEngine.lastSessionId` for a live session, or the job id from `submitJob` for a batch clip (only once `getJobStatus` reports `Done`). Blank, `"."` and `".."` return `REJECTED` without a request |
 | `corrected` | the user's corrected text; blank returns `REJECTED` without a request |
 | `language` | the bare `"en"` or `"es"` the server accepts, or `null` to omit it. Unchecked on the client: a value the server refuses is `REJECTED` by the server |
