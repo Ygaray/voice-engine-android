@@ -524,7 +524,7 @@ user's consent for keeping their voice.
 Java call sites compile unchanged (all earlier `@JvmOverloads` constructors remain; Java gains one
 7-argument constructor). The synthetic `$default` constructor was replaced again, as it was for
 `serverTryTimeoutMs`, so **Kotlin consumers must recompile against the new artifact when they
-repin**. This is accepted under the relaxed additive rule (A20, teamlead ruling of 2026-10-16).
+repin**. This is an accepted source-compatible change.
 
 `sampleRate` from the TypeScript options object stays **dropped, not stubbed**: the wire protocol's
 sample rate is fixed (`16_000`) and is never a host-settable knob on either backend.
