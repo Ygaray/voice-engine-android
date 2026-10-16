@@ -141,6 +141,10 @@ class DemoControlReceiver : BroadcastReceiver() {
                     Log.d(TAG, "START refused: ${serverPath.reason}")
                     return
                 }
+                retainWithMicRefusal(serverPath, audioSource)?.let { reason ->
+                    Log.d(TAG, "START refused: $reason")
+                    return
+                }
                 val serverUrl = (serverPath as? ServerPathRequest.Server)?.url
                 val prefer = (serverPath as? ServerPathRequest.Server)?.prefer ?: BackendPreference.Auto
                 // Only WHETHER a URL was set is logged — never the URL, which names a private host.
@@ -486,8 +490,9 @@ class DemoControlReceiver : BroadcastReceiver() {
          * **Requires [EXTRA_SERVER_URL].** Without a server there is nothing to retain, and a run
          * that quietly stayed on-device would look like a passing one, so the START is refused.
          *
-         * **Use it only with synthetic or public-corpus fixture audio** fed through
-         * [EXTRA_AUDIO_SOURCE] — never a person's real voice. The START log line records only
+         * **Requires [EXTRA_AUDIO_SOURCE].** Use it only with synthetic or public-corpus fixture
+         * audio — never a person's real voice — so a START that sets it without an audio source
+         * (it would record the live microphone) is refused. The START log line records only
          * `retainForCorpus=true|false`, never a URL.
          *
          * **Reading the result:** `STOP` is asynchronous. After it, poll [ACTION_DUMP_DIAGNOSTICS]
@@ -705,6 +710,20 @@ internal fun lastSessionIdDiagnostics(into: JSONObject, lastSessionId: String?) 
  */
 internal fun retainOf(request: ServerPathRequest): Boolean =
     (request as? ServerPathRequest.Server)?.retainForCorpus == true
+
+/**
+ * The refusal reason when [request] would retain a session recorded from the live microphone, or
+ * null when the START may proceed. Retention is for synthetic or public-corpus fixture audio only
+ * (fed through `EXTRA_AUDIO_SOURCE`), so a retained START without an audio source is refused
+ * loudly rather than documented away: a person's real voice must not reach the host's corpus.
+ */
+internal fun retainWithMicRefusal(request: ServerPathRequest, audioSource: String?): String? =
+    if (retainOf(request) && audioSource == null) {
+        "RETAIN_FOR_CORPUS requires AUDIO_SOURCE (fixture audio only); a retained session must " +
+            "never record the live microphone."
+    } else {
+        null
+    }
 
 /**
  * Validate the server-path extras on START.

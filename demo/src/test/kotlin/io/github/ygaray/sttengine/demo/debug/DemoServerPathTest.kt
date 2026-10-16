@@ -5,6 +5,7 @@ import io.github.ygaray.sttengine.BackendPreference
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -141,6 +142,21 @@ class DemoServerPathTest {
         assertFalse(retainOf(ServerPathRequest.None))
         assertFalse(retainOf(ServerPathRequest.Refused("nope")))
         assertFalse(retainOf(parseServerPathExtras(url, "Server")))
+    }
+
+    @Test
+    fun `a retained START without an audio source is refused so the microphone is never retained`() {
+        val retained = parseServerPathExtras(url, "Server", true)
+        val reason = retainWithMicRefusal(retained, null)
+        assertTrue(reason != null && reason.contains("AUDIO_SOURCE"))
+        assertFalse(reason!!.contains(url))
+    }
+
+    @Test
+    fun `a retained START with a fixture audio source and every non-retained START proceed`() {
+        assertNull(retainWithMicRefusal(parseServerPathExtras(url, "Server", true), "/sdcard/fixture.wav"))
+        assertNull(retainWithMicRefusal(parseServerPathExtras(url, "Server"), null))
+        assertNull(retainWithMicRefusal(ServerPathRequest.None, null))
     }
 
     @Test
