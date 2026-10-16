@@ -43,6 +43,14 @@
 #            in NEITHER split prefix and is the only place all three language mirrors (Python,
 #            TypeScript, Kotlin) are visible at once. A gate that cannot see every input it
 #            compares is not a gate.
+#            Then, in the same place and for the same reason, the repo-root
+#            `scripts/check-wire-frame-parity.sh` (the final wire frame across Python, TypeScript
+#            and Kotlin against one golden fixture) and `scripts/check-correction-fixture-parity.sh`
+#            (the two committed correction golden-vector copies). Neither gate has a bypass flag.
+#            Both run with every fixture-override and test-input variable stripped from the child
+#            environment (`env -u`) and with no fixture flag, so a stale or hostile shell can
+#            neither redirect a gate to other fixtures nor block it: a release always scores the
+#            committed fixtures.
 #            NOTE: that script lives OUTSIDE the split prefix on purpose and is deliberately not
 #            reachable from the mirror. That is not a defect — the mirror ships one of the three
 #            languages, so it structurally cannot run a three-way check. The mono-repo is the only
@@ -74,6 +82,14 @@
 #            scoped to TRACKED paths and TRACKED content only. See the block itself for why: a
 #            filesystem walk of the post-build tree produces false positives on AGP's own build
 #            outputs, and tracked content is what `git push` actually sends.
+#
+#   PREREQUISITES — mono-repo release only. The wire-parity gate in GATE 2 scores three languages, so
+#            the server virtual environment (server/.venv with pytest), the web dependencies
+#            (web/node_modules) and the Gradle wrapper must already exist. They are untracked
+#            installs, so a clean checkout lacks the first two. `scripts/check-wire-gate-prereqs.sh`
+#            runs BEFORE GATE 1, checks all three, prints the exact setup command for each missing
+#            one and stops in seconds instead of after the multi-minute build. It only checks: the
+#            release never installs or creates anything for you.
 #
 # NO GATE MAY BE SKIPPED. There is no bypass flag, on purpose — the failures these catch are
 # exactly the ones that are unrecoverable once the tag exists. The optional `preflight` argument is
@@ -173,6 +189,10 @@ trap cleanup EXIT INT TERM
 echo "release-android: preparing ${TAG} → ${PUSH_URL}   (mode: ${MODE})"
 echo "release-android: coordinate will be ${GROUP_ID}:${MIRROR_REPO}:${TAG}"
 
+# --- PREREQUISITES: the wire-parity gate needs untracked installs; fail in seconds, not after GATE 1 --
+echo "release-android: PREREQUISITES - scripts/check-wire-gate-prereqs.sh (server virtual environment, web dependencies, Gradle wrapper) ..."
+( cd "${REPO_ROOT}" && bash scripts/check-wire-gate-prereqs.sh ) || abort "PREREQUISITES failed - the wire-parity gates in GATE 2 need the server virtual environment and the web dependencies; the diagnostic above gives the exact setup commands; the release never installs them for you"
+
 # --- GATE 1: all three libraries build and their public surfaces are frozen --------------------
 # Covers :stt/:recorder/:voicenotes, not just :stt (RESEARCH.md Pitfall 3: the script used to gate
 # only the first module ever published, silently shipping the other two with zero pre-tag proof).
@@ -207,6 +227,15 @@ mono-repo; a release cannot be cut from the mirror"
 echo "release-android: GATE 2 — scripts/check-error-code-parity.sh (three-way, repo root) …"
 ( cd "${REPO_ROOT}" && bash scripts/check-error-code-parity.sh ) \
   || abort "GATE 2 failed — the error-code taxonomy has drifted across Python/TypeScript/Kotlin"
+
+# The two gates below run with every override and test-input variable stripped from the child
+# environment and with no fixture flag: the release scores the committed fixtures, never whatever a
+# stale or hostile shell points at, and a stray variable cannot block the gate either.
+echo "release-android: GATE 2 - scripts/check-wire-frame-parity.sh (Python/TypeScript/Kotlin final-frame golden fixture, repo root) ..."
+( cd "${REPO_ROOT}" && env -u WIRE_FIXTURE_SERVER -u WIRE_FIXTURE_WEB -u WIRE_FIXTURE_ANDROID -u WIRE_GOLDEN_FIXTURE -u CORRECTION_FIXTURE_WEB -u CORRECTION_FIXTURE_ANDROID bash scripts/check-wire-frame-parity.sh ) || abort "GATE 2 failed - the owned wire protocol's final frame has drifted across Python/TypeScript/Kotlin"
+
+echo "release-android: GATE 2 - scripts/check-correction-fixture-parity.sh (correction golden vectors, repo root) ..."
+( cd "${REPO_ROOT}" && env -u WIRE_FIXTURE_SERVER -u WIRE_FIXTURE_WEB -u WIRE_FIXTURE_ANDROID -u WIRE_GOLDEN_FIXTURE -u CORRECTION_FIXTURE_WEB -u CORRECTION_FIXTURE_ANDROID bash scripts/check-correction-fixture-parity.sh ) || abort "GATE 2 failed - the correction golden-vector fixture copies have drifted between web and Android"
 
 # --- GATE 3: dry-run the literal JitPack build against the actual split tree --------------------
 echo "release-android: GATE 3 — git subtree split --prefix=android -b ${SPLIT_BRANCH} …"
