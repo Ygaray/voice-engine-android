@@ -386,6 +386,11 @@ pass to [`submitCorrection`](#corpus-corrections--submitcorrection).
   window, any native session, a server that sent no id, and a session that did not ask for retention.
   A `null` after a retained request therefore means "no record claimed" for one of several reasons the
   host cannot tell apart.
+- **A record can exist without a handle.** `stop()` waits about 2.5 s for the server's tail flush, and
+  on a retained session the server commits the record inside that window. When a long recording or a
+  slow corpus disk pushes the commit past the bound, `stop()` gives up and `lastSessionId` is `null`
+  although the server may still finish storing the record. That record is never correctable from the
+  client.
 - **A non-null id does not guarantee the record was stored.** A server-side retention failure on a
   live session sends no signal to the client, so a later correction for that id can come back
   `UNKNOWN_SESSION`.

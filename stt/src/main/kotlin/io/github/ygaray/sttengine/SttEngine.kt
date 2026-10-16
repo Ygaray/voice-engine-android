@@ -148,6 +148,12 @@ public interface SttEngine {
      * fallback to the on-device recognizer, a stop during the try-server window, any native session,
      * a server that sent no id, and a session that did not request retention.
      *
+     * The inverse also holds: a `null` after a flush that timed out does not prove nothing was
+     * stored. [stop] bounds the wait for the server's tail flush at about 2.5 s, and on a retained
+     * session the server commits the record inside that same window. If a long recording or a slow
+     * corpus disk pushes the commit past the bound, the server may still finish it, leaving a record
+     * that no client holds a handle for, and that record cannot be corrected.
+     *
      * The id is the handle for `submitCorrection` and is a capability to append corrections to that
      * record: treat it like any identifier you would not publish.
      *

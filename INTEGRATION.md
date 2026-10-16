@@ -298,7 +298,9 @@ Things to know:
   (no `serverUrl`, `prefer = OnDevice`, or a fallback to on-device) never produces a record.
 - **A `null` `lastSessionId` means "no record claimed".** The session was not retained, did not end
   cleanly, was handed off to on-device recognition, or the server has retention off or predates it.
-  The host cannot tell these apart, and none of them is an error.
+  The host cannot tell these apart, and none of them is an error. One more case: when `stop()` hits
+  its 2.5 s flush bound on a long recording or a slow corpus disk, the server may still store the
+  record, so a record can exist that the client holds no id for (and so cannot correct).
 - **Read the id after `stop()`, not before.** If your `stop()` is asynchronous, wait for
   `EngineState.Idle` and then read it; the id is published before the engine reports `Idle`.
 - **`UNREACHABLE` does not prove nothing was stored.** There is no idempotency key, so a retry can
