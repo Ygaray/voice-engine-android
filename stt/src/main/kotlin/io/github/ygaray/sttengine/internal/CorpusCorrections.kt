@@ -171,7 +171,6 @@ internal class CorpusCorrections(
             404 -> CorrectionSubmitResult.UNKNOWN_SESSION
             408 -> CorrectionSubmitResult.UNREACHABLE
             in 400..499 -> CorrectionSubmitResult.REJECTED
-            in 500..Int.MAX_VALUE -> CorrectionSubmitResult.UNREACHABLE
             else -> CorrectionSubmitResult.UNREACHABLE
         }
     }
