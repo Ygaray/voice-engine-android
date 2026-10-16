@@ -4,7 +4,12 @@ import io.github.ygaray.sttengine.legacy.ParseResult as LegacyParseResult
 import io.github.ygaray.sttengine.legacy.ServerFrame as LegacyServerFrame
 import io.github.ygaray.sttengine.legacy.buildConfigFrame as legacyBuildConfigFrame
 import io.github.ygaray.sttengine.legacy.parseServerFrame as legacyParseServerFrame
+import io.github.ygaray.sttengine.CorrectionSubmitResult
 import java.io.File
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import mockwebserver3.MockResponse
+import mockwebserver3.MockWebServer
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -188,13 +193,65 @@ class WireFrameGoldenTest {
 
     @Test
     fun `revision fixture contains every required case and is not empty`() {
-        // Execution of revisionCases belongs to plan 25-05 (the Kotlin status mapping); this leg
-        // proves the array cannot be emptied or truncated without failing the gate.
+        // The execution of revisionCases is the next test; this one proves the array cannot be
+        // emptied or truncated without failing the gate.
         val names = namesOf(loadArray("revisionCases"))
         assertTrue("revisionCases is empty", names.isNotEmpty())
         for (required in REQUIRED_REVISION) {
             assertTrue("fixture is missing required revisionCase $required (has $names)", required in names)
         }
+    }
+
+    @Test
+    fun `CorpusCorrections maps every revision case status to its result`() {
+        // Phase 25 (plan 25-05, D-15, D-16): the Kotlin leg of the correction status table. Each case
+        // is replayed through a local server that answers exactly the case's status (with the
+        // server's generic error body when an error name is set), and the enum NAME the transport
+        // returns must equal the case's `result`. Python scores the status and error against the
+        // real route; this leg scores the status against the client's mapping, so a drift in
+        // either one fails the gate.
+        val cases = loadArray("revisionCases")
+        assertTrue("revisionCases is empty", cases.length() > 0)
+        val names = namesOf(cases)
+        for (required in REQUIRED_REVISION) {
+            assertTrue("fixture is missing required revisionCase $required (has $names)", required in names)
+        }
+        val validResults = CorrectionSubmitResult.entries.map { it.name }
+        var scored = 0
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val name = case.getString("name")
+            val status = case.getInt("status")
+            val expected = case.getString("result")
+            assertTrue("$name: result $expected is not a CorrectionSubmitResult name ($validResults)", expected in validResults)
+
+            val server = MockWebServer()
+            server.start()
+            try {
+                val response = MockResponse.Builder().code(status)
+                when {
+                    status == 302 -> response.addHeader("Location", server.url("/elsewhere").toString())
+                    !case.isNull("error") ->
+                        response.body("""{"error": "${case.getString("error")}", "message": "x"}""")
+                    else -> response.body("""{"ok":true,"revision":1}""")
+                }
+                server.enqueue(response.build())
+
+                val base = "http://${server.hostName}:${server.port}/SttBatch"
+                val result = runBlocking {
+                    withTimeout(20_000) {
+                        CorpusCorrections().submit(base, "0123456789abcdef0123456789abcdef", "fixed", "en")
+                    }
+                }
+
+                assertEquals("$name: status $status", expected, result.name)
+                assertEquals("$name: one request per call", 1, server.requestCount)
+                scored++
+            } finally {
+                server.close()
+            }
+        }
+        assertEquals("every revision case must be scored", cases.length(), scored)
     }
 
     @Test
