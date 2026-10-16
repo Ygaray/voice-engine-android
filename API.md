@@ -16,9 +16,11 @@ file ever disagree, the file is right and this document is a bug.
 | `checkLanguageAvailability(context, langs)` | top-level `suspend` function | ask whether the `en` / `es` on-device packs are usable, with no session — see [Language packs](#language-packs--checklanguageavailability--requestlanguagepackdownload) |
 | `requestLanguagePackDownload(context, lang)` | top-level `suspend` function | ask the platform to download a missing `en` / `es` pack; reports acceptance only |
 | `LanguageAvailability` | enum (5 entries) | one language's on-device pack state, as the preflight and a native `"auto"` start read it |
-| `SttEngine` | interface | seven flow properties, the `lastFinal` snapshot, `start()` / `stop()` |
+| `submitCorrection(context, httpBaseUrl, sessionId, corrected, language)` | top-level `suspend` function | send the user's corrected text for a retained session or clip; returns a typed result and never throws on network errors — see [Corpus corrections](#corpus-corrections--submitcorrection) |
+| `CorrectionSubmitResult` | enum (4 entries) | what happened to one correction: `ACCEPTED`, `UNKNOWN_SESSION`, `UNREACHABLE`, `REJECTED` |
+| `SttEngine` | interface | seven flow properties, the `lastFinal` and `lastSessionId` snapshots, `start()` / `stop()` |
 | `EngineState` | enum (5 entries + `wireName`) | the observable state machine |
-| `SttConfig` | class | recognition settings (`language`, backend preference, server URL, try window, corrections, vocabulary) |
+| `SttConfig` | class | recognition settings (`language`, backend preference, server URL, try window, corrections, vocabulary, the voice-corpus opt-in `retainForCorpus`) |
 | `FinalSegment` | class | a committed, immutable transcript segment |
 | `LanguageSource` | enum (2 entries) | where a `FinalSegment.language` label came from: a detection or a default stamp |
 | `ReconnectInfo` | class | which bounded recovery attempt is in flight |
@@ -163,9 +165,120 @@ download finished.
 
 ---
 
+## Corpus corrections — `submitCorrection`
+
+```kotlin
+public suspend fun submitCorrection(
+    context: Context,
+    httpBaseUrl: String,
+    sessionId: String,
+    corrected: String,
+    language: String? = null,
+): CorrectionSubmitResult
+
+public enum class CorrectionSubmitResult { ACCEPTED, UNKNOWN_SESSION, UNREACHABLE, REJECTED }
+```
+
+A top-level `suspend` function in `SubmitCorrection.kt` (JVM facade `SubmitCorrectionKt`) and a four-
+entry enum, both in `:stt`. Together with `SttConfig.retainForCorpus`, `SttEngine.lastSessionId` and
+the batch `submitJob(retainForCorpus = true)` overload they let a host keep a dictation session or a
+batch clip in the server host's voice corpus and later send the text the user corrected it to. Like
+the language-pack calls it is **Kotlin-coroutines-only**.
+
+```kotlin
+lifecycleScope.launch {
+    engine.stop()
+    val id = engine.lastSessionId ?: return@launch        // null: nothing was retained
+    when (submitCorrection(context, "https://host.ts.net/SttBatch", id, editedText, language = "en")) {
+        CorrectionSubmitResult.ACCEPTED -> markSynced()
+        CorrectionSubmitResult.UNREACHABLE -> retryLater() // may already be stored
+        else -> dropIt()
+    }
+}
+```
+
+| Parameter | Meaning |
+|---|---|
+| `context` | accepted for symmetry with the other top-level calls; currently unused and never retained |
+| `httpBaseUrl` | the batch base URL the host already gives `createTranscriptionClient`; the request is `POST {httpBaseUrl}/corpus/{sessionId}/revisions`, with or without a trailing slash on the base |
+| `sessionId` | the record id: `SttEngine.lastSessionId` for a live session, or the job id from `submitJob` for a batch clip (only once `getJobStatus` reports `Done`). Blank, `"."` and `".."` return `REJECTED` without a request |
+| `corrected` | the user's corrected text; blank returns `REJECTED` without a request |
+| `language` | the bare `"en"` or `"es"` the server accepts, or `null` to omit it. Unchecked on the client: a value the server refuses is `REJECTED` by the server |
+
+### What the result means
+
+| `CorrectionSubmitResult` | Meaning | Maps from |
+|---|---|---|
+| `ACCEPTED` | the server appended a revision; nothing was overwritten | any 2xx |
+| `UNKNOWN_SESSION` | there is no such record; retrying the same id will not help. A host may treat it as a silent drop | a 404 (`not-found`) |
+| `UNREACHABLE` | the outcome is unknown, the correction MAY or MAY NOT have been stored; a retry may help | a timeout, an IO or TLS failure, a 408, a 5xx, and any unexpected 1xx or 3xx answer |
+| `REJECTED` | the input was refused and sending it again will not succeed | any other 4xx, a blank text or id, a dot-segment id, a base URL that is not a URL |
+
+**Always include an `else` branch in a `when` over this type**, so an entry added later does not
+break the host's build.
+
+### Behavior
+
+- **Main-safe and bounded.** The call hops to a background dispatcher itself and is bounded by a
+  whole-call timeout of about 15 s. It never throws on a network, TLS, timeout or malformed-URL
+  failure, but it does propagate cancellation of the calling coroutine (a cancelled caller is never
+  turned into `UNREACHABLE`).
+- **One request per call, no automatic retry, no idempotency key.** The HTTP client does not replay
+  the POST after a dropped connection and does not follow redirects. `UNREACHABLE` therefore does not
+  prove nothing was stored: a host retry after `UNREACHABLE` (a 503 included) can append a
+  duplicate revision, which the corpus tolerates because it is append-only.
+- **Append-only.** Each accepted call appends one revision to the record and nothing is overwritten.
+  There is one corrected text per call; call again to add another.
+- **The request body is `{corrected, language?}`.** The server stamps the revision time, so the
+  client sends no timestamp. A body that carried `createdAt` (the server stamps it) is refused with
+  a 400 (`invalid-revision`, so `REJECTED`). The line stored in the record is
+  `{corrected, createdAt, language?}` with `createdAt` stamped by the server: that is the stored
+  shape, not the request.
+- **`context` is accepted and unused.**
+- **Privacy.** The corrected text is never logged, echoed or placed in an exception message, and only
+  the status code is read back.
+
+### Server errors a host can hit
+
+Read from the shipped server's correction route (`POST /corpus/{id}/revisions`), each with the
+result this client returns:
+
+| Server error | Status | Result | When |
+|---|---|---|---|
+| `not-found` | 404 | `UNKNOWN_SESSION` | no such record: never retained, retention failed, or an older server without the route |
+| `invalid-revision` | 400 | `REJECTED` | bad JSON, an unknown key (a client-sent timestamp is one, the server stamps it), blank text, or a bad language |
+| `payload-too-large` | 413 | `REJECTED` | the body is over 64 KiB |
+| `revision-limit` | 409 | `REJECTED` | the record already holds 1000 revisions |
+| `revision-busy` | 503 | `UNREACHABLE` | another append holds the record; retry shortly |
+| `corpus-unavailable` | 503 | `UNREACHABLE` | retention is not armed on the server |
+| `internal-error` | 500 | `UNREACHABLE` | the server could not store the correction |
+
+### Retention limits, and how each transport signals them
+
+Retention itself stops at 4 h of audio per record and when the corpus disk is under its 2 GiB
+free-space floor. How a host learns that depends on the transport:
+
+- **Live sessions.** A record longer than the 4 h cap, a corpus disk under the 2 GiB floor and a
+  failed commit each end or discard the retention with no wire signal on a live session: dictation
+  continues, the session still ends with close 1000, no record is committed, and a later correction
+  for that id returns `UNKNOWN_SESSION`. `lastSessionId` can therefore be non-null for a record that
+  does not exist.
+- **Batch jobs.** For a job that was armed (`retained: true` on the `202`), the terminal
+  `GET /jobs/{id}` carries an optional `retentionStatus` of `committed` or `failed`; see
+  [Transcription](#transcription). This client tolerates the key and does not surface it.
+
+### Privacy and exposure
+
+The correction route has **no authentication beyond the tailnet**, the same posture as `POST /jobs`.
+Record ids are 128-bit random and there is **no read route**, so an id is a capability to append a
+revision to that record and nothing more: it cannot be used to read, edit or delete anything. Do
+not publish ids. The corpus itself lives on the server host and is never readable over the network.
+
+---
+
 ## `SttEngine` — the contract
 
-Seven flow properties, one read-only snapshot (`lastFinal`) and two suspend functions. **The
+Seven flow properties, two read-only snapshots (`lastFinal` and `lastSessionId`) and two suspend functions. **The
 delivery semantics differ per property, and they are part of the contract, not an implementation
 detail** — choosing the wrong one silently loses dictated text.
 
@@ -179,6 +292,7 @@ detail** — choosing the wrong one silently loses dictated text.
 | `level` | `Flow<Float>` | conflated, **drops oldest** | a level frame is meaningful only at the instant it is produced; back-pressuring the recognizer callback to deliver a stale one is strictly worse than dropping it. Only meaningful while `state == Listening`. Emitted on **both** backends: on the server path the engine computes it from the same audio it streams, so a meter does not go dead when `backend == Server`. |
 | `events` | `Flow<SttEvent>` | ordered mirror of all seven | the convenience union, for one shared `when` |
 | `lastFinal` | `FinalSegment?` | a plain read, **no flow** | the final the last `stop()` flushed, readable synchronously the moment `stop()` returns; see [`lastFinal`](#lastfinal--the-tail-after-stop) below |
+| `lastSessionId` | `String?` | a plain read, **no flow** | the corpus record id of the session that just ended, when it was retained; see [`lastSessionId`](#lastsessionid--the-corpus-id-after-stop) below |
 
 ### `finals` is lossless, and that is why it has exactly one consumer
 
@@ -253,6 +367,37 @@ stop, the session's latest final.
 Existing implementers and test fakes need no change; they stay source- and binary-compatible
 through the `SttEngine$DefaultImpls` bridge. A fake may override `lastFinal` to drive host logic.
 
+### `lastSessionId` — the corpus id after `stop()`
+
+```kotlin
+public val lastSessionId: String? get() = null
+```
+
+A read-only snapshot of the corpus record id of the session that just ended. It is the handle you
+pass to [`submitCorrection`](#corpus-corrections--submitcorrection).
+
+- **Non-null only after `stop()`** on a session that opted in with `SttConfig.retainForCorpus`, ran
+  on the server backend, never failed, was never handed off to the on-device recognizer, and whose
+  server finished its stop path by closing the connection cleanly. The server attempts the corpus
+  commit before that close, so the observed clean close is the earliest moment the record can exist.
+- **Reset by `start()`**, so a reused engine never reports a previous session's id.
+- **`null` on every other path:** while a session is live, after a flush that timed out, an error, an
+  abnormal close, a mid-session fallback to the on-device recognizer, a stop during the try-server
+  window, any native session, a server that sent no id, and a session that did not ask for retention.
+  A `null` after a retained request therefore means "no record claimed" for one of several reasons the
+  host cannot tell apart.
+- **A non-null id does not guarantee the record was stored.** A server-side retention failure on a
+  live session sends no signal to the client, so a later correction for that id can come back
+  `UNKNOWN_SESSION`.
+- **Ordering.** The id is published before the engine reports `Idle`. A host whose `stop()` is
+  asynchronous should wait for `EngineState.Idle` and only then read `lastSessionId`; a host that
+  awaits `stop()` can read it as soon as `stop()` returns.
+- **The id is a capability to append** corrections to that record. Do not publish it.
+
+**Migration:** `lastSessionId` is a new **non-abstract** interface member with a default of `null`,
+the same shape as `lastFinal`. Existing implementers and test fakes need no change and stay source-
+and binary-compatible; a fake may override it to drive host logic.
+
 ---
 
 ## `EngineState`
@@ -292,11 +437,13 @@ public class SttConfig @JvmOverloads constructor(
     corrections: CorrectionRuleset? = null,
     vocabulary: List<String>? = null,
     serverTryTimeoutMs: Long = 10_000L,
+    public val retainForCorpus: Boolean = false,
 )
 ```
 
-Six fields (Phase 9 D-01 for `prefer`/`serverUrl`; Phase 13 CORR-01/D-05 for `corrections`; Phase 17
-REL-03/BIAS-01 for `vocabulary`; Phase 21 TRY-01 for `serverTryTimeoutMs`). `prefer`
+Seven fields (Phase 9 D-01 for `prefer`/`serverUrl`; Phase 13 CORR-01/D-05 for `corrections`; Phase 17
+REL-03/BIAS-01 for `vocabulary`; Phase 21 TRY-01 for `serverTryTimeoutMs`; Phase 25 CORR-06 for
+`retainForCorpus`). `prefer`
 (`BackendPreference`) selects which `Backend` to prefer — `Auto` (default) tries the self-hosted
 server first within the `serverTryTimeoutMs` window and falls back to native silently; `Server`
 forces server-only (surfacing exactly one typed error on failure, no native fallback); `OnDevice`
@@ -355,6 +502,23 @@ does not set the knob now gets a **10 000 ms** window, where the previous releas
 the server is cold-starting can therefore wait up to 10 s before the on-device fallback under
 `Auto`. Refused and DNS-class failures still fail fast; only a black-holed host or a slow cold start
 uses the longer window. A host that wants the old behavior passes `serverTryTimeoutMs = 2_500L`.
+
+`retainForCorpus` (CORR-06) opts this **server** session into the host's voice corpus. When `true`,
+the server keeps the session's audio and its committed finals as a record on the server host, and
+the config frame carries one extra key, `retainForCorpus: true`. The default `false` retains nothing
+and puts no new key on the wire, so a default config frame is byte-identical to the previous
+release. Only a server session retains anything: a native session (no `serverUrl`, `prefer =
+OnDevice`, or a mid-session fallback to the on-device recognizer), a server that predates the
+corpus and a server with retention switched off all produce **no record and no error**. Read the
+outcome from [`SttEngine.lastSessionId`](#lastsessionid--the-corpus-id-after-stop) after `stop()`.
+The corpus lives on the server host and is never readable over the network; the host app owns the
+user's consent for keeping their voice.
+
+**Migration for `retainForCorpus`:** it is a trailing defaulted parameter, so existing Kotlin and
+Java call sites compile unchanged (all earlier `@JvmOverloads` constructors remain; Java gains one
+7-argument constructor). The synthetic `$default` constructor was replaced again, as it was for
+`serverTryTimeoutMs`, so **Kotlin consumers must recompile against the new artifact when they
+repin**. This is accepted under the relaxed additive rule (A20, teamlead ruling of 2026-10-16).
 
 `sampleRate` from the TypeScript options object stays **dropped, not stubbed**: the wire protocol's
 sample rate is fixed (`16_000`) and is never a host-settable knob on either backend.
@@ -946,7 +1110,8 @@ public fun createTranscriptionClient(serverUrl: String): TranscriptionClient
 
 | Member | Type | Notes |
 |---|---|---|
-| `submitJob(file: File, mimeType: String, language: String = "en")` | `suspend fun` returning `SubmitOutcome` | `POST /jobs` — submit a recorded file for transcription |
+| `submitJob(file: File, mimeType: String, language: String = "en", vocabulary: List<String> = emptyList())` | `suspend fun` returning `SubmitOutcome` | `POST /jobs` — submit a recorded file for transcription. The abstract member; **unchanged** |
+| `submitJob(file: File, mimeType: String, language: String = "en", vocabulary: List<String> = emptyList(), retainForCorpus: Boolean = false)` | `suspend fun` returning `SubmitOutcome` | the same upload, optionally opting the clip into the voice corpus. A new overload with an interface **default body**; see below |
 | `getJobStatus(jobId: String)` | `suspend fun` returning `JobStatusOutcome` | `GET /jobs/{id}` — poll a previously submitted job |
 
 `language` defaults to `"en"`, reproducing the previously published tag's behavior exactly when a
@@ -955,6 +1120,42 @@ with a typed `SubmitOutcome.Rejected` — the two codes supported at this tag ar
 Spanish (`"es"`). An unrecognized code does **not** mint a new `TranscriptionErrorCode` constant; it
 surfaces through the existing `Rejected` outcome, carrying the server's own taxonomy string in its
 `message`. A consumer that wants to detect this case matches on the message rather than a code.
+
+#### `retainForCorpus` — opting a clip into the voice corpus
+
+`retainForCorpus` (CORR-09) asks the server to keep the clip as a corpus record on the server host.
+
+- **The part.** It travels as one multipart text part named `retainForCorpus` with the value `true`,
+  placed after `language` and `vocabulary` and **before the file part**. It is omitted entirely when
+  the flag is `false`, so a default request carries the same parts, values and order as the previous
+  release. A server without the corpus feature, or with retention not armed, ignores it.
+- **The id.** On a `202` the returned `Accepted.jobId` is the corpus record id and is the `sessionId`
+  that [`submitCorrection`](#corpus-corrections--submitcorrection) takes. There is no separate id.
+- **No flag on `Accepted`.** `Accepted` carries no "retained" field: the server's `retained: true` on
+  the `202` means retention is **armed, not committed**, and the job id is all a host needs.
+- **Corrections after `Done`.** Submit a correction only after `getJobStatus` reports `Done`: the
+  record is committed before the status flips.
+- **A re-transcribe is a new job and a new record.** There is no `kind` parameter; the server infers
+  the record kind.
+- **An older or unarmed server** ignores the part. The job runs as usual and no record exists, so a
+  later correction returns `UNKNOWN_SESSION`.
+- **The host app owns consent** for keeping the clip; this library never decides to retain on its own.
+
+`GET /jobs/{id}` may carry an optional terminal `retentionStatus` of `committed` or `failed` for jobs
+that were armed. This client **tolerates** the key and does not surface it as a field. A retention
+failure still reports `done` with the transcript, and a later correction for that id then returns
+`UNKNOWN_SESSION`. Jobs that did not opt in return bodies byte-identical to before.
+
+**Migration for `submitJob`:** there is **no break**. The existing four-parameter `submitJob` is
+unchanged and still abstract, and `retainForCorpus` arrives as an additive overload with an interface
+default body, so callers, implementers and host test fakes compile and link unchanged with no
+source or binary break; the API dump shows only added lines. A call that omits the flag binds to the four-parameter member, and a call that names or passes
+`retainForCorpus` binds to the new overload. For a custom `TranscriptionClient` that does not override
+the new overload the default body behaves as follows: a flagless call and `retainForCorpus = false`
+work unchanged and delegate to the four-parameter member; `retainForCorpus = true` returns
+`SubmitOutcome.Rejected` with `UPLOAD_REJECTED` and uploads nothing (never a silent drop). To honour
+the flag, override the five-parameter overload. Never implement the four-parameter member by calling
+the five-parameter one without overriding it: the two would call each other forever.
 
 ### `SubmitOutcome`
 
@@ -1130,7 +1331,7 @@ error string was copied across.
 | — | `SttErrorCode.ANDROID_ONLY` (3) | **additive** — divergence 1 |
 | `SttEventMap` (7 events) | `SttEvent` sealed interface (7 members) | same names, same payloads |
 | `on(event, cb)` returning an unsubscribe handle | seven `Flow` / `StateFlow` properties + `events` | mechanism differs, event set identical |
-| `SttEngineOptions { serverUrl?, language? }` | `SttConfig(language, prefer, serverUrl, corrections, vocabulary, serverTryTimeoutMs)` | `serverUrl` re-added (Phase 9, D-01) — `prefer`/`backend`/`serverTryTimeoutMs` are Android-only additive; `sampleRate` stays **dropped, not stubbed** |
+| `SttEngineOptions { serverUrl?, language? }` | `SttConfig(language, prefer, serverUrl, corrections, vocabulary, serverTryTimeoutMs, retainForCorpus)` | `serverUrl` re-added (Phase 9, D-01) — `prefer`/`backend`/`serverTryTimeoutMs` are Android-only additive; `retainForCorpus` and `SttEngine.lastSessionId` exist on the Kotlin client only (the TypeScript client carries wire types for them, no corpus API); `sampleRate` stays **dropped, not stubbed** |
 | engine requests microphone access itself | **host** holds `RECORD_AUDIO` | divergence 3 |
 | `start(): Promise<void>` / `stop()` | `suspend fun start()` / `suspend fun stop()` | same settle semantics; on the server path Android's `stop()` waits up to ~2.5 s for the server's flush (see [`start()` and `stop()`](#start-and-stop)) |
 

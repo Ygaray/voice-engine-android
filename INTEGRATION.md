@@ -234,6 +234,81 @@ before the on-device fallback; pass `serverTryTimeoutMs = 2_500L` to keep the ol
 `lastFinal` member with a default of `null`: an existing implementer or test fake needs no change.
 See `API.md` for both.
 
+**Repinning to the voice-corpus release (three Phase 25 changes).**
+
+1. `SttConfig` gained the trailing defaulted `retainForCorpus`. Call sites compile unchanged, but its
+   synthetic default constructor was replaced again, so **recompile** against the new artifact.
+2. `SttEngine` gained the non-abstract `lastSessionId` member with a default of `null`: an existing
+   implementer or test fake needs no change.
+3. `TranscriptionClient` gained an additive five-parameter `submitJob` overload with an interface
+   default body. There is no break for callers, implementers or fakes. A custom implementer that does
+   not override the new overload gets a typed `Rejected` (`UPLOAD_REJECTED`) for
+   `retainForCorpus = true` and nothing is uploaded.
+
+### 4b. Opt a session or a clip into the voice corpus (optional)
+
+The self-hosted server can keep the audio of a dictation session or a batch clip, with the text it
+produced, as a record on the **server host**, so the text the user later corrects can be attached to
+it. Nothing is retained unless you ask, per session or per clip. The corpus is never readable over
+the network, and your app owns the user's consent for keeping their voice.
+
+A server session. Opt in on the config, read the id after `stop()`, then send the corrected text.
+This snippet is illustrative, in the style of 4a:
+
+```kotlin
+val engine = createSttEngine(
+    context = getApplication(),
+    config = SttConfig(
+        serverUrl = "wss://host.ts.net:8444/",
+        retainForCorpus = true,                 // opt this server session into the corpus
+    ),
+)
+
+scope.launch {
+    engine.stop()                               // server path: waits up to ~2.5 s for the flush
+    val id = engine.lastSessionId ?: return@launch   // null: nothing was retained
+    val result = submitCorrection(
+        context = getApplication(),
+        httpBaseUrl = "https://host.ts.net/SttBatch",   // the same base you give createTranscriptionClient
+        sessionId = id,
+        corrected = editedText,
+        language = "en",                        // optional, the bare "en" or "es"
+    )
+    when (result) {
+        CorrectionSubmitResult.ACCEPTED -> markSynced()
+        CorrectionSubmitResult.UNREACHABLE -> retryLater()    // may already be stored
+        // UNKNOWN_SESSION (no such record) and REJECTED (refused) will not succeed on a retry
+        else -> dropIt()                                      // keep an else for entries added later
+    }
+}
+```
+
+A batch clip. Pass the flag to `submitJob`, poll to `Done`, then correct with the job id:
+
+```kotlin
+val client = createTranscriptionClient(serverUrl = "https://host.ts.net/SttBatch")
+val accepted = client.submitJob(file, mimeType, language = "en", retainForCorpus = true)
+// SubmitOutcome.Accepted(jobId) -> poll client.getJobStatus(jobId) until JobStatusOutcome.Done
+// then: submitCorrection(context, "https://host.ts.net/SttBatch", jobId, editedText)
+```
+
+Things to know:
+
+- **Opt-in and consent belong to the host app.** The default retains nothing, and a native session
+  (no `serverUrl`, `prefer = OnDevice`, or a fallback to on-device) never produces a record.
+- **A `null` `lastSessionId` means "no record claimed".** The session was not retained, did not end
+  cleanly, was handed off to on-device recognition, or the server has retention off or predates it.
+  The host cannot tell these apart, and none of them is an error.
+- **Read the id after `stop()`, not before.** If your `stop()` is asynchronous, wait for
+  `EngineState.Idle` and then read it; the id is published before the engine reports `Idle`.
+- **`UNREACHABLE` does not prove nothing was stored.** There is no idempotency key, so a retry can
+  append a duplicate revision, which the append-only corpus tolerates.
+- **A non-null id is not proof the record exists.** A retention failure on a live session sends no
+  signal; a later correction then returns `UNKNOWN_SESSION`, which you may treat as a silent drop.
+- **Ids are capabilities to append.** Do not publish them.
+- **The batch base URL** is the same one you give `createTranscriptionClient`.
+- See `API.md` ("Corpus corrections") for the full result table and the server-side limits.
+
 ## 5. Collect the flows
 
 `state` and `partial` are `StateFlow`s a recomposing host reads directly. The three
@@ -540,6 +615,9 @@ tag's behavior byte-for-byte:
 ```kotlin
 val outcome = client.submitJob(file, mimeType, language = spec.language, vocabulary = listOf("Nintendo", "Kubernetes"))
 ```
+
+To keep a clip in the server host's voice corpus, pass `retainForCorpus = true` (a fifth argument, an
+additive overload; see step 4b for the full flow and `submitCorrection`).
 
 See `API.md`'s Transcription section for the full `SubmitOutcome`/`JobStatusOutcome`/
 `TranscriptionErrorCode` taxonomy.
