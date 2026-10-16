@@ -44,6 +44,166 @@
         "segmentId": 0,
         "language": null
       }
+    },
+    {
+      "name": "auto-fallback",
+      "server": {
+        "text": "good morning",
+        "segmentId": 4,
+        "language": "en",
+        "languageSource": "fallback"
+      },
+      "frame": "{\"type\": \"final\", \"text\": \"good morning\", \"segmentId\": 4, \"language\": \"en\", \"languageSource\": \"fallback\"}",
+      "client": {
+        "outcome": "final",
+        "text": "good morning",
+        "segmentId": 4,
+        "language": "en",
+        "languageSource": "fallback"
+      },
+      "legacy": {
+        "text": "good morning",
+        "segmentId": 4,
+        "language": "en"
+      }
+    },
+    {
+      "name": "language-without-source",
+      "server": {
+        "text": "buenos dias",
+        "segmentId": 5,
+        "language": "es",
+        "languageSource": null
+      },
+      "frame": "{\"type\": \"final\", \"text\": \"buenos dias\", \"segmentId\": 5, \"language\": \"es\"}",
+      "client": {
+        "outcome": "final",
+        "text": "buenos dias",
+        "segmentId": 5,
+        "language": "es",
+        "languageSource": null
+      },
+      "legacy": {
+        "text": "buenos dias",
+        "segmentId": 5,
+        "language": "es"
+      }
+    },
+    {
+      "name": "unknown-source-string",
+      "frame": "{\"type\": \"final\", \"text\": \"uno dos\", \"segmentId\": 6, \"language\": \"es\", \"languageSource\": \"held\"}",
+      "client": {
+        "outcome": "final",
+        "text": "uno dos",
+        "segmentId": 6,
+        "language": "es",
+        "languageSource": null
+      },
+      "legacy": {
+        "text": "uno dos",
+        "segmentId": 6,
+        "language": "es"
+      }
+    },
+    {
+      "name": "wrong-type-number",
+      "frame": "{\"type\": \"final\", \"text\": \"tres cuatro\", \"segmentId\": 7, \"language\": \"es\", \"languageSource\": 1}",
+      "client": {
+        "outcome": "protocol-violation"
+      },
+      "legacy": {
+        "text": "tres cuatro",
+        "segmentId": 7,
+        "language": "es"
+      }
+    },
+    {
+      "name": "wrong-type-boolean",
+      "frame": "{\"type\": \"final\", \"text\": \"cinco seis\", \"segmentId\": 8, \"language\": \"es\", \"languageSource\": true}",
+      "client": {
+        "outcome": "protocol-violation"
+      },
+      "legacy": {
+        "text": "cinco seis",
+        "segmentId": 8,
+        "language": "es"
+      }
+    },
+    {
+      "name": "wrong-type-null",
+      "frame": "{\"type\": \"final\", \"text\": \"siete ocho\", \"segmentId\": 9, \"language\": \"es\", \"languageSource\": null}",
+      "client": {
+        "outcome": "protocol-violation"
+      },
+      "legacy": {
+        "text": "siete ocho",
+        "segmentId": 9,
+        "language": "es"
+      }
+    },
+    {
+      "name": "source-without-language",
+      "frame": "{\"type\": \"final\", \"text\": \"nine ten\", \"segmentId\": 10, \"languageSource\": \"detected\"}",
+      "client": {
+        "outcome": "final",
+        "text": "nine ten",
+        "segmentId": 10,
+        "language": null,
+        "languageSource": null
+      },
+      "legacy": {
+        "text": "nine ten",
+        "segmentId": 10,
+        "language": null
+      }
+    },
+    {
+      "name": "unknown-extra-key",
+      "frame": "{\"type\": \"final\", \"text\": \"once doce\", \"segmentId\": 11, \"language\": \"es\", \"languageSource\": \"detected\", \"futureField\": 7}",
+      "client": {
+        "outcome": "final",
+        "text": "once doce",
+        "segmentId": 11,
+        "language": "es",
+        "languageSource": "detected"
+      },
+      "legacy": {
+        "text": "once doce",
+        "segmentId": 11,
+        "language": "es"
+      }
+    },
+    {
+      "name": "unsupported-language-with-source",
+      "frame": "{\"type\": \"final\", \"text\": \"bonjour tout le monde\", \"segmentId\": 12, \"language\": \"fr\", \"languageSource\": \"detected\"}",
+      "client": {
+        "outcome": "final",
+        "text": "bonjour tout le monde",
+        "segmentId": 12,
+        "language": "fr",
+        "languageSource": "detected"
+      },
+      "legacy": {
+        "text": "bonjour tout le monde",
+        "segmentId": 12,
+        "language": "fr"
+      }
+    },
+    {
+      "name": "empty-language-with-source",
+      "frame": "{\"type\": \"final\", \"text\": \"thirteen fourteen\", \"segmentId\": 13, \"language\": \"\", \"languageSource\": \"detected\"}",
+      "client": {
+        "outcome": "final",
+        "text": "thirteen fourteen",
+        "segmentId": 13,
+        "language": "",
+        "languageSource": "detected"
+      },
+      "legacy": {
+        "text": "thirteen fourteen",
+        "segmentId": 13,
+        "language": ""
+      }
     }
   ]
 }

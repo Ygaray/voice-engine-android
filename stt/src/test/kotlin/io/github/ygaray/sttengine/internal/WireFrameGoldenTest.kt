@@ -108,6 +108,19 @@ class WireFrameGoldenTest {
 
     private companion object {
         /** An emptied or truncated fixture must fail, never pass vacuously. */
-        val REQUIRED_CASES = listOf("auto-detected", "non-auto-no-language")
+        val REQUIRED_CASES = listOf(
+            "auto-detected",
+            "non-auto-no-language",
+            "auto-fallback",
+            "language-without-source",
+            "unknown-source-string",
+            "wrong-type-number",
+            "wrong-type-boolean",
+            "wrong-type-null",
+            "source-without-language",
+            "unknown-extra-key",
+            "unsupported-language-with-source",
+            "empty-language-with-source",
+        )
     }
 }

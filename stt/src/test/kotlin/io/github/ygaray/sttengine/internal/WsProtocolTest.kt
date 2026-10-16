@@ -99,6 +99,86 @@ class WsProtocolTest {
         assertTrue(result is ParseResult.ProtocolViolation)
     }
 
+    // --- languageSource (Phase 23, LSRC-02, D-03 / D-06) -----------------------------------------
+    //
+    // The contract is ONE-WAY: a parsed languageSource implies a parsed language. The converse is
+    // not a contract — a server that predates the field sends a language with no source.
+
+    private fun finalOf(json: String): ServerFrame.Final {
+        val result = parseServerFrame(json)
+        assertTrue("expected Ok, got $result", result is ParseResult.Ok)
+        val frame = (result as ParseResult.Ok).frame
+        assertTrue("expected a final, got $frame", frame is ServerFrame.Final)
+        return frame as ServerFrame.Final
+    }
+
+    @Test
+    fun `parseServerFrame carries a detected languageSource alongside the language`() {
+        val final = finalOf("""{"type":"final","text":"hola","segmentId":0,"language":"es","languageSource":"detected"}""")
+
+        assertEquals(ServerFrame.Final("hola", 0, "es", "detected"), final)
+    }
+
+    @Test
+    fun `parseServerFrame carries a fallback languageSource alongside the language`() {
+        val final = finalOf("""{"type":"final","text":"hi","segmentId":0,"language":"en","languageSource":"fallback"}""")
+
+        assertEquals("fallback", final.languageSource)
+    }
+
+    @Test
+    fun `parseServerFrame older-server frame is a language with no source and never reads as fallback`() {
+        // A server that predates the field: legal wire state, parses to (language, no source) = no claim.
+        val final = finalOf("""{"type":"final","text":"hola","segmentId":0,"language":"es"}""")
+
+        assertEquals("es", final.language)
+        assertEquals(null, final.languageSource)
+    }
+
+    @Test
+    fun `parseServerFrame unknown languageSource string is no source, not a violation`() {
+        val final = finalOf("""{"type":"final","text":"hola","segmentId":0,"language":"es","languageSource":"held"}""")
+
+        assertEquals("es", final.language)
+        assertEquals(null, final.languageSource)
+    }
+
+    @Test
+    fun `parseServerFrame languageSource without a language is dropped so a source implies a language`() {
+        val final = finalOf("""{"type":"final","text":"hi","segmentId":0,"languageSource":"detected"}""")
+
+        assertEquals(null, final.language)
+        assertEquals(null, final.languageSource)
+    }
+
+    @Test
+    fun `parseServerFrame passes an unsupported or empty language through with its source`() {
+        // The EN/ES restriction is a server emission rule, not client validation: a later
+        // multilingual server must stay additive.
+        assertEquals("detected", finalOf("""{"type":"final","text":"a","segmentId":0,"language":"fr","languageSource":"detected"}""").languageSource)
+        assertEquals("", finalOf("""{"type":"final","text":"a","segmentId":0,"language":"","languageSource":"detected"}""").language)
+    }
+
+    @Test
+    fun `parseServerFrame rejects a non-string languageSource as a violation naming languageSource`() {
+        for (bad in listOf("1", "true", "null", "[]", "{}")) {
+            val result = parseServerFrame("""{"type":"final","text":"hi","segmentId":0,"language":"es","languageSource":$bad}""")
+
+            assertTrue("languageSource=$bad should be a violation, got $result", result is ParseResult.ProtocolViolation)
+            assertTrue(
+                (result as ParseResult.ProtocolViolation).message.contains("languageSource"),
+            )
+        }
+    }
+
+    @Test
+    fun `parseServerFrame a malformed language still reports its own message before languageSource`() {
+        val result = parseServerFrame("""{"type":"final","text":"hi","segmentId":0,"language":123,"languageSource":1}""")
+
+        assertTrue(result is ParseResult.ProtocolViolation)
+        assertTrue((result as ParseResult.ProtocolViolation).message.contains("language must be a string"))
+    }
+
     @Test
     fun `parseServerFrame accepts an error frame and carries the code verbatim`() {
         val result = parseServerFrame("""{"type":"error","code":"busy","message":"server busy"}""")
