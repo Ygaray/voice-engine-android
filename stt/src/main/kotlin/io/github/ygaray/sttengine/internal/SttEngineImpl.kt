@@ -9,6 +9,7 @@ import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.LanguageAvailability
+import io.github.ygaray.sttengine.LanguageSource
 import io.github.ygaray.sttengine.ReconnectInfo
 import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttEngine
@@ -270,7 +271,7 @@ internal class SttEngineImpl(
      * detection that already happened this segment. `null` means "unknown for this segment", not
      * "English" — distinguishable from a real detection so a host is never told the system is
      * confident when it is not (NBIL-02). Only ever mutated by [onLanguageDetection] when
-     * [autoDetectionActive] is true; stamped at commit by [languageForFinal] and cleared on every
+     * [autoDetectionActive] is true; stamped at commit by [languageStampForFinal] and cleared on every
      * segment boundary by [advanceSegmentBoundary] — main-thread-confined, no lock (D-09).
      */
     private var detectedLanguage: String? = null
@@ -758,17 +759,26 @@ internal class SttEngineImpl(
         detectedLanguage = null
     }
 
+    /** A label and the provenance of that label, always computed together so they cannot disagree. */
+    private class LanguageStamp(val label: String?, val source: LanguageSource?)
+
     /**
-     * The label to stamp on the NEXT committed [FinalSegment] (D-01/D-02). `null` for any non-
-     * `"auto"` session (byte-identical to today, NBIL-07); [AUTO_SUB34_FALLBACK] (bare `"en"`) for a
-     * sub-34 `"auto"` session, which never runs detection (NBIL-04); the tracked [detectedLanguage]
-     * — possibly still `null` if no confidence-3 event has been seen this segment — for an
-     * API-34+ `"auto"` session.
+     * The (label, source) pair to stamp on the NEXT committed [FinalSegment] (D-01/D-02). Exactly
+     * three outcomes:
+     * - API-34+ `"auto"` session: the tracked [detectedLanguage] with [LanguageSource.DETECTED] when
+     *   a confidence-3 en/es event has been seen this segment, else `(null, null)`;
+     * - sub-34 `"auto"` session, which never runs detection (NBIL-04): [AUTO_SUB34_FALLBACK] (bare
+     *   `"en"`) with [LanguageSource.FALLBACK];
+     * - any non-`"auto"` session: `(null, null)` (byte-identical to today, NBIL-07).
+     *
+     * The source is non-null exactly when the label is, by construction of this one function.
      */
-    private fun languageForFinal(): String? = when {
+    private fun languageStampForFinal(): LanguageStamp = when {
         autoDetectionActive -> detectedLanguage
-        isAutoSession -> AUTO_SUB34_FALLBACK
-        else -> null
+            ?.let { LanguageStamp(it, LanguageSource.DETECTED) }
+            ?: LanguageStamp(null, null)
+        isAutoSession -> LanguageStamp(AUTO_SUB34_FALLBACK, LanguageSource.FALLBACK)
+        else -> LanguageStamp(null, null)
     }
 
     private fun emitFinal(rawSegment: FinalSegment) {
@@ -781,11 +791,18 @@ internal class SttEngineImpl(
         // segments. Both branches construct a FRESH FinalSegment so the language [label] (D-01) is
         // carried regardless of whether a correction ruleset is configured — rawSegment itself is
         // always language-free (SegmentAccumulator stays language-free per D-01).
-        val label = languageForFinal()
+        val stamp = languageStampForFinal()
         val segment =
             config.corrections?.takeIf { it.isNotEmpty() }
-                ?.let { FinalSegment(Corrections.apply(rawSegment.text, it), rawSegment.segmentId, label) }
-                ?: FinalSegment(rawSegment.text, rawSegment.segmentId, label)
+                ?.let {
+                    FinalSegment(
+                        Corrections.apply(rawSegment.text, it),
+                        rawSegment.segmentId,
+                        stamp.label,
+                        stamp.source,
+                    )
+                }
+                ?: FinalSegment(rawSegment.text, rawSegment.segmentId, stamp.label, stamp.source)
         // LAST-01 (D-05): written BEFORE the send, as the same instance, so it is already visible
         // when the commit's caller (e.g. stop()) returns.
         _lastFinal = segment
