@@ -80,10 +80,15 @@ android {
             // lets scripts/check-wire-frame-parity.sh point this leg at a temporary fixture (the 23-06
             // red proof) without ever touching a committed file. The script passes this explicitly on
             // every run, so nothing inherited can choose the fixture.
-            test.systemProperty(
-                "stt.wire.goldenFixture",
-                (project.findProperty("stt.wire.goldenFixture") ?: "").toString(),
-            )
+            val wireGoldenFixture = (project.findProperty("stt.wire.goldenFixture") ?: "").toString()
+            test.systemProperty("stt.wire.goldenFixture", wireGoldenFixture)
+            // The system property is tracked as an input, but the CONTENT of the file it names is not:
+            // without this, editing an override fixture in place and re-running with the same path could
+            // be skipped as UP-TO-DATE and report a stale PASS. Declared only for an existing file so a
+            // bogus path still reaches the test's own loud failure.
+            if (wireGoldenFixture.isNotEmpty() && File(wireGoldenFixture).isFile) {
+                test.inputs.file(wireGoldenFixture).withPropertyName("wireGoldenFixtureContent")
+            }
         }
     }
 
