@@ -99,6 +99,32 @@ class PacedWavFeedTest {
         )
     }
 
+    @Test
+    fun `an odd sized buffer never leaves the cursor mid sample`() {
+        val paced = feed()
+        val source = paced.open(16_000)
+        val startedAt = clock
+        // Let the clock release far more than one buffer (16 000 bytes), so each read is bounded by the
+        // BUFFER size, not by the clock: that is the case an odd buffer used to corrupt.
+        clock = startedAt + 500
+
+        val buffer = ByteArray(3_201) // odd on purpose: a 16-bit sample is 2 bytes
+        val collected = java.io.ByteArrayOutputStream()
+        repeat(4) {
+            val read = source.read(buffer)
+            assertTrue("a paced source must not report end-of-stream mid-passage", read > 0)
+            assertEquals("every read is a whole number of samples", 0, read % 2)
+            collected.write(buffer, 0, read)
+        }
+
+        val got = collected.toByteArray()
+        assertArrayEquals(
+            "the bytes delivered through an odd buffer are exactly the passage prefix, sample aligned",
+            samples.copyOfRange(0, got.size),
+            got,
+        )
+    }
+
     // --- restart continuity ------------------------------------------------------------------------
 
     @Test

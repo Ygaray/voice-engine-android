@@ -134,7 +134,11 @@ internal class PacedWavFeed(
             }
             if (stopped.get()) return END_OF_STREAM
 
-            val want = minOf(buffer.size.toLong(), released - cursor).toInt()
+            // Whole samples only: `released` and `cursor` are 2-byte aligned, but an odd-sized buffer would
+            // make `want` odd and leave `cursor` mid-sample, corrupting every later read. A buffer too small
+            // to hold one 16-bit sample (< 2 bytes) can never be served, so it ends the stream (the pump
+            // asks for 3 200 bytes; this is a latent guard, not a reachable path).
+            val want = (minOf(buffer.size.toLong(), released - cursor).toInt()) and 1.inv()
             if (want <= 0) return END_OF_STREAM
 
             var written = 0
