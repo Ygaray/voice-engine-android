@@ -220,8 +220,11 @@ class BackendSelectorRetainTest {
         return stopJob
     }
 
+    // NOTE: this proves the id is readable once the selector reports Idle. The selector's state
+    // forwarder runs on a standard dispatcher, so it cannot discriminate the ORDER of "assign the id"
+    // versus "set Idle" inside ServerBackend.stop(); that ordering is proven by ServerBackendSessionIdTest.
     @Test
-    fun `the id is published before the selector reports Idle after a flushed stop`() = runTest {
+    fun `the id is readable once the selector reports Idle after a flushed stop`() = runTest {
         val h = committedServerSession()
         assertNull("a live session has no id yet", h.selector.lastSessionId)
 
@@ -235,7 +238,7 @@ class BackendSelectorRetainTest {
         assertTrue(stopJob.isCompleted)
         assertEquals(EngineState.Idle, h.selector.state.value)
         assertEquals(
-            "the id must already be there at the first moment the selector reads Idle",
+            "the id must be there at the first moment the selector reports Idle",
             listOf<String?>(ID),
             h.idle.seen,
         )
