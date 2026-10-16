@@ -22,8 +22,10 @@ import okhttp3.OkHttpClient
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -79,14 +81,19 @@ class ServerBackendRealSocketTest {
     }
 
     /** Answers the config frame with `ready`; on `stop`, flushes a final then closes 1000. */
-    private fun enqueueServer() {
+    private fun enqueueServer(readySessionId: String? = null) {
+        val ready = if (readySessionId == null) {
+            """{"type":"ready"}"""
+        } else {
+            """{"type":"ready","sessionId":"$readySessionId"}"""
+        }
         server.enqueue(
             MockResponse.Builder().webSocketUpgrade(
                 object : WebSocketListener() {
                     override fun onMessage(webSocket: WebSocket, text: String) {
                         received += "text:$text"
                         if (text.startsWith("{")) {
-                            webSocket.send("""{"type":"ready"}""")
+                            webSocket.send(ready)
                         } else if (text == ServerBackend.STOP_TOKEN) {
                             webSocket.send("""{"type":"final","text":"tail","segmentId":4}""")
                             webSocket.close(1000, null)
@@ -111,13 +118,23 @@ class ServerBackendRealSocketTest {
 
     private fun wsUrl(): String = server.url("/").toString().replaceFirst("http", "ws")
 
-    private fun newBackend(sources: FinitePcmSourceFactory): ServerBackend = ServerBackend(
+    private fun newBackend(
+        sources: FinitePcmSourceFactory,
+        retainForCorpus: Boolean = false,
+    ): ServerBackend = ServerBackend(
         webSocketFactory = OkHttpWebSocketFactory(client),
         serverUrl = wsUrl(),
         language = "en",
         mainDispatcher = mainDispatcher,
         pcmSourceFactory = sources,
+        retainForCorpus = retainForCorpus,
     )
+
+    /** The first text frame the SERVER received, i.e. the config frame, parsed. */
+    private fun firstConfigFrame(): JSONObject {
+        val first = synchronized(received) { received.first { it.startsWith("text:{") } }
+        return JSONObject(first.removePrefix("text:"))
+    }
 
     private suspend fun awaitUntil(what: String, timeoutMs: Long = 5_000L, condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -203,6 +220,54 @@ class ServerBackendRealSocketTest {
                 } finally {
                     collectorScope.cancel()
                 }
+            }
+        }
+
+    // --- Phase 25 (CORR-06 / CORR-07): retainForCorpus out, ready.sessionId in, id after a flushed stop
+
+    @Test
+    fun `a retained backend sends the opt-in key, parses the ready id and publishes it only after a flushed stop`() =
+        runBlocking {
+            withTimeout(10_000) {
+                val id = "0123456789abcdef0123456789abcdef"
+                enqueueServer(readySessionId = id)
+                val sources = finitePcmSourceFactory(frames = 10)
+                val backend = newBackend(sources, retainForCorpus = true)
+
+                assertTrue(withContext(mainDispatcher) { backend.connect() })
+                awaitUntil("the config frame at the server") { synchronized(received) { received.any { it.startsWith("text:{") } } }
+
+                val config = firstConfigFrame()
+                assertTrue("config frame must carry the opt-in: $config", config.has("retainForCorpus"))
+                assertEquals(true, config.getBoolean("retainForCorpus"))
+                assertNull("the id is not published while the session is live", backend.endedSessionId)
+
+                awaitUntil("the source to be exhausted") { sources.last.exhausted }
+                val startedNs = System.nanoTime()
+                withContext(mainDispatcher) { backend.stop() }
+                val elapsedMs = (System.nanoTime() - startedNs) / 1_000_000
+                assertTrue("stop() must return inside the flush bound, took ${elapsedMs}ms", elapsedMs < ServerBackend.STOP_FLUSH_TIMEOUT_MS)
+
+                assertEquals(id, backend.endedSessionId)
+            }
+        }
+
+    @Test
+    fun `a backend built without the flag sends no retainForCorpus key and ignores a misbehaving sessionId`() =
+        runBlocking {
+            withTimeout(10_000) {
+                enqueueServer(readySessionId = "0123456789abcdef0123456789abcdef")
+                val sources = finitePcmSourceFactory(frames = 10)
+                val backend = newBackend(sources)
+
+                assertTrue(withContext(mainDispatcher) { backend.connect() })
+                awaitUntil("the config frame at the server") { synchronized(received) { received.any { it.startsWith("text:{") } } }
+                assertTrue("default frame must not carry the key", !firstConfigFrame().has("retainForCorpus"))
+
+                awaitUntil("the source to be exhausted") { sources.last.exhausted }
+                withContext(mainDispatcher) { backend.stop() }
+
+                assertNull(backend.endedSessionId)
             }
         }
 }

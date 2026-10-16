@@ -221,6 +221,9 @@ internal class ServerBackend(
     corrections: CorrectionRuleset? = null,
     private val monotonicMs: () -> Long = { System.currentTimeMillis() },
     vocabulary: List<String>? = null,
+    /** Phase 25 (CORR-06, D-03): opt this session into the host's voice corpus. Sent on the wire only
+     *  when `true`; the default sends nothing. */
+    private val retainForCorpus: Boolean = false,
 ) {
     // WR-03 (13-REVIEW.md): immutable snapshot of the host-supplied ruleset — see SttConfig's
     // matching KDoc note; `CorrectionRuleset` carries no runtime immutability guarantee.
@@ -265,6 +268,32 @@ internal class ServerBackend(
     @Volatile
     private var _lastFinal: FinalSegment? = null
     val lastFinal: FinalSegment? get() = _lastFinal
+
+    /**
+     * The corpus session id the server sent on its first accepted `ready`, kept only when this
+     * instance asked for retention (CORR-06). Never exposed directly: the host-visible read is
+     * [endedSessionId], which is set only at the end of a flushed [stop]. Main-confined write,
+     * `@Volatile` for symmetry with [_lastFinal].
+     */
+    @Volatile
+    private var readySessionId: String? = null
+
+    /**
+     * The retained session's id, published only once this instance finished a flushed [stop]
+     * (CORR-07, D-04 refined by D-17(c)). The server attempts the corpus commit strictly BEFORE it
+     * closes with 1000, so the observed clean close after the flush is the earliest moment the
+     * record can exist. It is NOT proof the commit succeeded: a failed commit still ends in a
+     * normal close and signals nothing to the client. Null on every other path: while the session is
+     * live, after a flush timeout, an error frame, an abnormal close, a [fail], an [abandon], for a
+     * session that never requested retention, and for a `ready` that carried no id.
+     *
+     * Assigned BEFORE [stop] reports [EngineState.Idle], so an observer that waits for Idle and then
+     * reads this already sees the id and cannot race the stop. `@Volatile` like [_lastFinal]: a host
+     * may read it off the main thread, and one instance per session means no reset is needed.
+     */
+    @Volatile
+    var endedSessionId: String? = null
+        private set
 
     /** Also unlimited, and effectively single-shot: at most one error is ever sent per instance
      *  (first-error-wins via [fail]). Never observed at all when [BackendSelector] abandons this
@@ -483,6 +512,9 @@ internal class ServerBackend(
             }
             terminal = true
             epoch.advance()
+            // CORR-07: only a flushed stop (the server's clean close 1000 after the flush) publishes
+            // the id, and BEFORE Idle below so a waiter on Idle never races the read.
+            if (flushed) endedSessionId = readySessionId
             // Idempotent — keeps the mic-released guarantee independent of which stage the deadline
             // (or a caller cancellation) interrupted.
             releaseAudioSource()
@@ -784,7 +816,7 @@ internal class ServerBackend(
         // Pitfall 2: OkHttp's send() returns false rather than throwing on failure (an already
         // closing/closed/canceled socket, or the internal queue ceiling) — checked, unlike the web
         // port's un-checked `socket.send(...)` call sites (which cannot fail synchronously there).
-        val sent = socket.send(buildConfigFrame(language, vocabulary))
+        val sent = socket.send(buildConfigFrame(language, vocabulary, retainForCorpus))
         if (!sent) {
             fail(SttError(SttErrorCode.INTERNAL_ERROR, "failed to send the config frame"))
         }
@@ -794,7 +826,7 @@ internal class ServerBackend(
         if (terminal) return
         when (val result = parseServerFrame(text)) {
             is ParseResult.Ok -> when (val frame = result.frame) {
-                ServerFrame.Ready -> {
+                is ServerFrame.Ready -> {
                     // A Ready that arrives after stop() began must never open the mic.
                     if (stopping) return
                     // 21 W12 review, finding 2: the server sends `ready` exactly once per session.
@@ -806,6 +838,8 @@ internal class ServerBackend(
                     // changes nothing.
                     if (readyAccepted) return
                     readyAccepted = true
+                    // CORR-07: only the first accepted ready, and only for a session that asked.
+                    if (retainForCorpus) readySessionId = frame.sessionId
                     // Open the server-path mic BEFORE declaring the session Listening (Task 1,
                     // SEL-04) — a session is not really live if it cannot capture audio to send.
                     // A capture failure here is routed through the SAME fail() funnel as any other

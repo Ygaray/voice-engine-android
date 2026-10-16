@@ -58,7 +58,66 @@ class WsProtocolTest {
         val result = parseServerFrame("""{"type":"ready"}""")
 
         assertTrue(result is ParseResult.Ok)
-        assertEquals(ServerFrame.Ready, (result as ParseResult.Ok).frame)
+        assertEquals(ServerFrame.Ready(), (result as ParseResult.Ok).frame)
+        assertEquals(null, ((result as ParseResult.Ok).frame as ServerFrame.Ready).sessionId)
+    }
+
+    // --- retainForCorpus + ready.sessionId (Phase 25, CORR-06 / CORR-07, D-03) -------------------
+
+    @Test
+    fun `buildConfigFrame default frames are string-equal to the frozen legacy builder`() {
+        assertEquals(io.github.ygaray.sttengine.legacy.buildConfigFrame("en"), buildConfigFrame("en"))
+        assertEquals(
+            io.github.ygaray.sttengine.legacy.buildConfigFrame("en", listOf("x")),
+            buildConfigFrame("en", listOf("x")),
+        )
+        assertEquals(
+            io.github.ygaray.sttengine.legacy.buildConfigFrame("en"),
+            buildConfigFrame("en", null, false),
+        )
+    }
+
+    @Test
+    fun `buildConfigFrame emits retainForCorpus true only when requested`() {
+        val on = JSONObject(buildConfigFrame("en", null, true))
+        assertTrue(on.has("retainForCorpus"))
+        assertEquals(true, on.getBoolean("retainForCorpus"))
+        assertEquals("en", on.getString("language"))
+
+        assertTrue(!JSONObject(buildConfigFrame("en", null, false)).has("retainForCorpus"))
+        assertTrue(!JSONObject(buildConfigFrame("en", listOf("a"))).has("retainForCorpus"))
+    }
+
+    private fun readyOf(json: String): ServerFrame.Ready {
+        val result = parseServerFrame(json)
+        assertTrue("expected Ok, got $result", result is ParseResult.Ok)
+        return (result as ParseResult.Ok).frame as ServerFrame.Ready
+    }
+
+    @Test
+    fun `parseServerFrame carries a ready sessionId`() {
+        val id = "0123456789abcdef0123456789abcdef"
+        assertEquals(ServerFrame.Ready(id), readyOf("""{"type":"ready","sessionId":"$id"}"""))
+    }
+
+    @Test
+    fun `parseServerFrame treats an empty ready sessionId as no claim`() {
+        assertEquals(ServerFrame.Ready(), readyOf("""{"type":"ready","sessionId":""}"""))
+    }
+
+    @Test
+    fun `parseServerFrame ignores unknown extra keys on a ready frame`() {
+        assertEquals(ServerFrame.Ready(), readyOf("""{"type":"ready","somethingNew":1}"""))
+    }
+
+    @Test
+    fun `parseServerFrame rejects a non-string ready sessionId as a violation naming sessionId`() {
+        for (bad in listOf("12", "null", "{}", "[]", "true")) {
+            val result = parseServerFrame("""{"type":"ready","sessionId":$bad}""")
+
+            assertTrue("sessionId=$bad should be a violation, got $result", result is ParseResult.ProtocolViolation)
+            assertTrue((result as ParseResult.ProtocolViolation).message.contains("sessionId"))
+        }
     }
 
     @Test

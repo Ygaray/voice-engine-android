@@ -56,8 +56,16 @@ internal const val WSS_PORT: Int = 8444
  * omitted entirely for a `null`/empty list (byte-identical to the pre-existing three-key shape),
  * present only when the caller supplies a non-empty list — mirrors `protocol.ts`'s
  * `buildConfigFrame` conditional-spread idiom exactly.
+ *
+ * `retainForCorpus` (Phase 25, CORR-06, D-03) is the second additive field and follows the same
+ * rule: the key is put ONLY when the host asked for it, so a default frame is byte-identical to the
+ * pre-existing builder's output (privacy: a host that never opts in puts nothing new on the wire).
  */
-internal fun buildConfigFrame(language: String, vocabulary: List<String>? = null): String {
+internal fun buildConfigFrame(
+    language: String,
+    vocabulary: List<String>? = null,
+    retainForCorpus: Boolean = false,
+): String {
     val json = JSONObject()
         .put("version", PROTOCOL_VERSION)
         .put("language", language)
@@ -65,13 +73,21 @@ internal fun buildConfigFrame(language: String, vocabulary: List<String>? = null
     if (!vocabulary.isNullOrEmpty()) {
         json.put("vocabulary", JSONArray(vocabulary))
     }
+    if (retainForCorpus) {
+        json.put("retainForCorpus", true)
+    }
     return json.toString()
 }
 
 /** A validated, well-typed server frame — the accept path of [parseServerFrame]. */
 internal sealed interface ServerFrame {
-    /** The server is ready; the session may begin streaming audio. */
-    object Ready : ServerFrame
+    /**
+     * The server is ready; the session may begin streaming audio. [sessionId] (Phase 25, CORR-07)
+     * is the optional corpus session id the server sends only when retention is armed for this
+     * session. Null is "no claim": the key is absent or the empty string. A non-string value is
+     * rejected at parse as a protocol violation (see [parseServerFrame]).
+     */
+    data class Ready(val sessionId: String? = null) : ServerFrame
 
     data class Partial(val text: String, val segmentId: Int) : ServerFrame
 
@@ -142,7 +158,17 @@ internal fun parseServerFrame(raw: String): ParseResult {
     }
 
     return when (type) {
-        "ready" -> ParseResult.Ok(ServerFrame.Ready)
+        "ready" -> {
+            val sessionId = parsed.opt("sessionId")
+            if (sessionId != null && sessionId !is String) {
+                // Phase 25 (D-03): strict optional field, the `final.language` precedent. A JSON null
+                // arrives as JSONObject.NULL (non-null, not a String) and is rejected too.
+                violation("malformed ready frame (sessionId must be a string when present)")
+            } else {
+                // An empty string is no claim, exactly like an absent key.
+                ParseResult.Ok(ServerFrame.Ready((sessionId as String?)?.takeIf { it.isNotEmpty() }))
+            }
+        }
 
         "partial" -> {
             val text = parsed.opt("text")
