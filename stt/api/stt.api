@@ -30,9 +30,11 @@ public final class io/github/ygaray/sttengine/EngineState : java/lang/Enum {
 public final class io/github/ygaray/sttengine/FinalSegment {
 	public fun <init> (Ljava/lang/String;I)V
 	public fun <init> (Ljava/lang/String;ILjava/lang/String;)V
-	public synthetic fun <init> (Ljava/lang/String;ILjava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/lang/String;ILjava/lang/String;Lio/github/ygaray/sttengine/LanguageSource;)V
+	public synthetic fun <init> (Ljava/lang/String;ILjava/lang/String;Lio/github/ygaray/sttengine/LanguageSource;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getLanguage ()Ljava/lang/String;
+	public final fun getLanguageSource ()Lio/github/ygaray/sttengine/LanguageSource;
 	public final fun getSegmentId ()I
 	public final fun getText ()Ljava/lang/String;
 	public fun hashCode ()I
@@ -48,6 +50,14 @@ public final class io/github/ygaray/sttengine/LanguageAvailability : java/lang/E
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
 	public static fun valueOf (Ljava/lang/String;)Lio/github/ygaray/sttengine/LanguageAvailability;
 	public static fun values ()[Lio/github/ygaray/sttengine/LanguageAvailability;
+}
+
+public final class io/github/ygaray/sttengine/LanguageSource : java/lang/Enum {
+	public static final field DETECTED Lio/github/ygaray/sttengine/LanguageSource;
+	public static final field FALLBACK Lio/github/ygaray/sttengine/LanguageSource;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lio/github/ygaray/sttengine/LanguageSource;
+	public static fun values ()[Lio/github/ygaray/sttengine/LanguageSource;
 }
 
 public final class io/github/ygaray/sttengine/ReconnectInfo {

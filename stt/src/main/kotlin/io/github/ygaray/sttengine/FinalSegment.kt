@@ -22,25 +22,44 @@ package io.github.ygaray.sttengine
  *   backend on an API 34+ device (per-segment on-device detection, from a `HIGHLY_CONFIDENT`
  *   event only); `null` when no label was produced, which is always the case for a non-`"auto"`
  *   session on either backend.
+ * @property languageSource The provenance of [language]; see [LanguageSource]. It is only ever set
+ *   together with a language: a source never appears on a segment that has no language. The engine
+ *   sets both together, so a segment from the native engine or from a current server carries either
+ *   both or neither. A segment from a server that predates this field can carry a language and no
+ *   source, which means no claim and is never a fallback — treat `null` as "unknown origin". The
+ *   source is [LanguageSource.DETECTED] for a confident on-device detection or a server detection
+ *   (including a label the server kept because a challenger did not clear its switch margin), and
+ *   [LanguageSource.FALLBACK] for the configured-default stamp on a runtime without detection or for
+ *   a server segment that had no usable detection evidence. **Equality includes the source**: a
+ *   segment that carries one does not equal an otherwise identical segment built without it.
  *
  * **`@JvmOverloads` is required** on this constructor, exactly as [SttConfig] documents: without
- * it, adding [language] as a trailing-defaulted parameter would silently drop the existing
- * 2-arg `<init>(String, Int)` overload from the frozen `stt.api` dump — Kotlin's "every parameter
- * has a default" special case only auto-generates the zero-arg and full-arg constructors, not
- * every arity in between.
+ * it, adding [language] (and later [languageSource]) as trailing-defaulted parameters would silently
+ * drop the existing 2-arg `<init>(String, Int)` overload from the frozen `stt.api` dump — Kotlin's
+ * "every parameter has a default" special case only auto-generates the zero-arg and full-arg
+ * constructors, not every arity in between.
  */
 public class FinalSegment @JvmOverloads constructor(
     public val text: String,
     public val segmentId: Int,
     public val language: String? = null,
+    public val languageSource: LanguageSource? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is FinalSegment) return false
-        return text == other.text && segmentId == other.segmentId && language == other.language
+        return text == other.text &&
+            segmentId == other.segmentId &&
+            language == other.language &&
+            languageSource == other.languageSource
     }
 
-    override fun hashCode(): Int = 31 * (31 * text.hashCode() + segmentId) + (language?.hashCode() ?: 0)
+    // The source folds in by enum NAME, not identity: an enum's own hashCode is an identity hash that
+    // changes between JVM runs, which would make a segment's hash unstable.
+    override fun hashCode(): Int =
+        31 * (31 * (31 * text.hashCode() + segmentId) + (language?.hashCode() ?: 0)) +
+            (languageSource?.name?.hashCode() ?: 0)
 
-    override fun toString(): String = "FinalSegment(text=$text, segmentId=$segmentId, language=$language)"
+    override fun toString(): String =
+        "FinalSegment(text=$text, segmentId=$segmentId, language=$language, languageSource=$languageSource)"
 }

@@ -120,6 +120,26 @@ public class ContractSurfaceTest {
         assertNotNull(download)
     }
 
+    // --- LanguageSource (closed provenance set for FinalSegment.language) ------------------------
+
+    @Test
+    public fun `LanguageSource mirrors the two frozen values in order`() {
+        assertEquals(
+            listOf("DETECTED", "FALLBACK"),
+            LanguageSource.entries.map { it.name },
+        )
+    }
+
+    @Test
+    public fun `FinalSegment keeps all three constructor shapes and defaults the source to null`() {
+        val twoArg = FinalSegment("x", 0)
+        val threeArg = FinalSegment("x", 0, "es")
+        val fourArg = FinalSegment("x", 0, "es", LanguageSource.DETECTED)
+        assertNull(twoArg.languageSource)
+        assertNull(threeArg.languageSource)
+        assertEquals(LanguageSource.DETECTED, fourArg.languageSource)
+    }
+
     // --- SttConfig (web/src/types.ts:32-39, D-13) -----------------------------------------------
 
     @Test
