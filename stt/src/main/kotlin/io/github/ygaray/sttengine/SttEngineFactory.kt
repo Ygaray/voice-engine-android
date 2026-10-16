@@ -176,8 +176,9 @@ public suspend fun checkLanguageAvailability(
  * already has.
  *
  * **What `true` means.** The platform accepted the request. On Android 14 and later that means it
- * acknowledged, scheduled or started the download (a lost progress feed still counts as accepted). On
- * Android 13 it only means the request was handed to the platform without an error — that version
+ * acknowledged, scheduled or started the download; a recognition service that cannot report download
+ * progress is asked again without progress reporting, and `true` then carries the Android 13 meaning.
+ * On Android 13 it only means the request was handed to the platform without an error — that version
  * reports nothing back.
  *
  * **What `false` means.** The request was refused, the language is unsupported on this device, or

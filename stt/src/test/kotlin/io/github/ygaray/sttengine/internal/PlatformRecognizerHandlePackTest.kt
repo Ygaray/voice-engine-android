@@ -8,8 +8,13 @@ import android.speech.SpeechRecognizer
 import androidx.test.core.app.ApplicationProvider
 import io.github.ygaray.sttengine.LanguageAvailability
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -36,6 +41,9 @@ import org.robolectric.shadows.ShadowSpeechRecognizer
  * 3. The model download's API-33 branch through the shadow (the only overload Robolectric
  *    shadows), and the download seam's main-thread requirement: an off-main call throws before any
  *    intent is built, on both the API-33 and the API-34 branch.
+ * 4. The API-34 listener branch with scripted listener callbacks (CR-01): `onError(15)` means the
+ *    service has no listener-based download hook and started nothing, so the adapter must repeat
+ *    the request WITHOUT a listener rather than report a download that never began.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -206,7 +214,78 @@ class PlatformRecognizerHandlePackTest {
         }
     }
 
+    // --- the model download (API 34 listener branch, CR-01) -------------------------------------
+
+    @Test
+    fun `API 34 onError 15 repeats the request without a listener and reports it handed over`() {
+        val handedOver = mutableListOf<android.content.Intent>()
+        val handle = PlatformRecognizerHandle(
+            onDeviceRecognizer(),
+            sdkInt = 34,
+            handOver = { handedOver += it },
+            listenerTrigger = { _, sink -> sink.onError(15) },
+        )
+
+        val accepted = onMainLooper { handle.triggerModelDownload("es-US") }
+
+        assertEquals(
+            "error 15 = no listener hook: exactly one listener-less hand-over must follow",
+            1,
+            handedOver.size,
+        )
+        assertEquals("es-US", handedOver.single().getStringExtra(RecognizerIntent.EXTRA_LANGUAGE))
+        assertTrue("a listener-less hand-over reads accepted, with the API-33 semantics", accepted)
+    }
+
+    @Test
+    fun `API 34 onError 15 followed by a throwing hand-over reads false`() {
+        val handle = PlatformRecognizerHandle(
+            onDeviceRecognizer(),
+            sdkInt = 34,
+            handOver = { throw IllegalStateException("binder died") },
+            listenerTrigger = { _, sink -> sink.onError(15) },
+        )
+
+        assertFalse(onMainLooper { handle.triggerModelDownload("es-US") })
+    }
+
+    @Test
+    fun `API 34 listener acceptance and refusal never fall back to the listener-less call`() {
+        for ((label, answer, expected) in listOf(
+            Triple("onSuccess", { sink: DownloadOutcomeSink -> sink.onSuccess() }, true),
+            Triple("onScheduled", { sink: DownloadOutcomeSink -> sink.onScheduled() }, true),
+            Triple("onProgress", { sink: DownloadOutcomeSink -> sink.onProgress() }, true),
+            Triple("onError(13)", { sink: DownloadOutcomeSink -> sink.onError(13) }, false),
+        )) {
+            val handedOver = mutableListOf<android.content.Intent>()
+            val handle = PlatformRecognizerHandle(
+                onDeviceRecognizer(),
+                sdkInt = 34,
+                handOver = { handedOver += it },
+                listenerTrigger = { _, sink -> answer(sink) },
+            )
+
+            val accepted = onMainLooper { handle.triggerModelDownload("es-US") }
+
+            assertEquals("$label: accepted", expected, accepted)
+            assertTrue("$label: no listener-less fallback may run", handedOver.isEmpty())
+        }
+    }
+
     // -------------------------------------------------------------------------------------------
+
+    /**
+     * Runs [block] in a coroutine on the main looper — the test thread IS the main looper under
+     * Robolectric — and idles the looper so anything [block] posted there runs. `runBlocking` would
+     * block the very looper a posted step needs.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun <T> onMainLooper(block: suspend () -> T): T {
+        val deferred = CoroutineScope(Dispatchers.Main.immediate).async { block() }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue("the call did not complete once the main looper was idle", deferred.isCompleted)
+        return deferred.getCompleted()
+    }
 
     /**
      * A REAL on-device recognizer, created on the test (main) thread. The fold rows wrap it with a

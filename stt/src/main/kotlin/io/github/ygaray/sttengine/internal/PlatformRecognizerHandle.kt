@@ -56,6 +56,20 @@ internal class PlatformRecognizerHandle(
      * always takes the default.
      */
     private val sdkInt: Int = Build.VERSION.SDK_INT,
+    /**
+     * The platform's listener-less `SpeechRecognizer.triggerModelDownload(Intent)` (API 33).
+     * Internal, and exists only so a test can stand in for the platform's queue-then-dispatch
+     * behavior, which Robolectric's shadow does not model (it records the intent synchronously).
+     * Production always takes the default.
+     */
+    private val handOver: (Intent) -> Unit = delegate::triggerModelDownload,
+    /**
+     * The platform's listener overload of `triggerModelDownload` (API 34), restated over the
+     * platform-free [DownloadOutcomeSink]. Internal, and exists only so a test can script the
+     * listener's callbacks: the overload is unshadowed and its listener type is above this module's
+     * floor. `null` — the production default — means the real platform overload.
+     */
+    private val listenerTrigger: ((Intent, DownloadOutcomeSink) -> Unit)? = null,
 ) : RecognizerHandle {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -203,23 +217,25 @@ internal class PlatformRecognizerHandle(
      * `SpeechRecognizer.triggerModelDownload` for [language] (an exact tag such as `es-US`), reduced
      * to "did the platform accept the request?".
      *
-     * - **API 34+:** the listener overload, through [triggerWithListener] and
-     *   [awaitDownloadAcceptance] — the first listener callback decides, bounded by
-     *   [DOWNLOAD_ACCEPT_TIMEOUT_MS].
-     * - **API 33:** the fire-and-forget overload. There is no outcome to wait for, so `true` means
-     *   only that the request was handed to the platform without throwing. A throw is `false`.
+     * - **API 34+:** the listener overload, through [triggerWithListener] and [awaitDownloadOutcome]
+     *   — the first listener callback decides, bounded by [DOWNLOAD_ACCEPT_TIMEOUT_MS]. A service
+     *   that answers `onError(15)` has no listener-based download hook and started NOTHING, so the
+     *   request is repeated without a listener through [handOverWithoutListener] and reported with
+     *   the API-33 semantics.
+     * - **API 33:** the fire-and-forget overload, through [handOverWithoutListener]. There is no
+     *   outcome to wait for, so `true` means only that the request was handed to the platform without
+     *   throwing. A throw is `false`.
      *
      * The 34-only overload is never reached below 34: the branch is on [sdkInt], and the call is
      * isolated in a `@TargetApi` helper.
      *
      * **MAIN-THREAD-ONLY — this method asserts instead of hopping, unlike every other delegate call
-     * here.** A posted call cannot report its own outcome: a hop would make `true` mean only "queued"
-     * on API 33, and on both API levels it would let a later platform throw escape on the main looper,
-     * outside every catch below. Called on main, both branches run the platform synchronously, so
-     * every synchronous throw lands inside a catch and `true` always reflects a call that actually
-     * ran. The only production caller, `LanguagePacks.requestDownload`, runs inside its transient
-     * handle's `withContext(mainDispatcher)`, so the check never fires in production; an off-main
-     * caller is a programming error and gets an [IllegalStateException] before any intent is built.
+     * here.** A posted call cannot report its own outcome, and it would let a later platform throw
+     * escape on the main looper, outside every catch below. Called on main, every synchronous throw
+     * lands inside a catch. The only production caller, `LanguagePacks.requestDownload`, runs inside
+     * its transient handle's `withContext(mainDispatcher)`, so the check never fires in production;
+     * an off-main caller is a programming error and gets an [IllegalStateException] before any intent
+     * is built.
      */
     override suspend fun triggerModelDownload(language: String): Boolean {
         check(Looper.myLooper() == Looper.getMainLooper()) { "triggerModelDownload must be called on the main thread" }
@@ -227,20 +243,46 @@ internal class PlatformRecognizerHandle(
 
         if (sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return triggerWithListener(intent)
 
-        return try {
-            delegate.triggerModelDownload(intent)
+        return handOverWithoutListener(intent)
+    }
+
+    /**
+     * The API-34 listener path. Registration runs synchronously on the main thread, so a synchronous
+     * platform throw is caught by [awaitDownloadOutcome] and resolves [DownloadOutcome.REFUSED].
+     *
+     * [DownloadOutcome.LISTENER_UNSUPPORTED] (`onError(15)`) is NOT acceptance: AOSP's default
+     * listener hook answers 15 without forwarding to the hook that downloads. On API 34+ the
+     * listener-less overload dispatches to that 2-arg hook, so the request is repeated through it.
+     */
+    private suspend fun triggerWithListener(intent: Intent): Boolean =
+        when (awaitDownloadOutcome(DOWNLOAD_ACCEPT_TIMEOUT_MS) { sink -> registerDownloadListener(intent, sink) }) {
+            DownloadOutcome.ACCEPTED -> true
+            DownloadOutcome.LISTENER_UNSUPPORTED -> handOverWithoutListener(intent)
+            DownloadOutcome.REFUSED, DownloadOutcome.NOT_CONFIRMED -> false
+        }
+
+    /**
+     * The listener-less overload: hands [intent] to the platform with no way to hear back. `true`
+     * means only that the hand-over did not throw; a throw is `false`.
+     */
+    private suspend fun handOverWithoutListener(intent: Intent): Boolean =
+        try {
+            handOver(intent)
             true
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (failure: RuntimeException) {
             false
         }
+
+    private fun registerDownloadListener(intent: Intent, sink: DownloadOutcomeSink) {
+        val scripted = listenerTrigger
+        if (scripted != null) scripted(intent, sink) else platformDownloadWithListener(intent, sink)
     }
 
     /**
-     * The API-34 listener overload. `register` runs synchronously on the main thread, so a
-     * synchronous platform throw is caught by [awaitDownloadAcceptance] and resolves `false`. The
-     * listener forwards every callback, verbatim, to the platform-free sink.
+     * The real API-34 listener overload. The listener forwards every callback, verbatim, to the
+     * platform-free sink.
      *
      * `@TargetApi`, not `@RequiresApi`, on purpose: the guard at the only call site is on the
      * injected [sdkInt], which lint cannot read as a version check, so a propagated requirement would
@@ -248,19 +290,18 @@ internal class PlatformRecognizerHandle(
      */
     @SuppressLint("UseRequiresApi")
     @TargetApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-    private suspend fun triggerWithListener(intent: Intent): Boolean =
-        awaitDownloadAcceptance(DOWNLOAD_ACCEPT_TIMEOUT_MS) { sink ->
-            delegate.triggerModelDownload(
-                intent,
-                DIRECT_EXECUTOR,
-                object : ModelDownloadListener {
-                    override fun onProgress(completedPercent: Int) = sink.onProgress()
-                    override fun onSuccess() = sink.onSuccess()
-                    override fun onScheduled() = sink.onScheduled()
-                    override fun onError(error: Int) = sink.onError(error)
-                },
-            )
-        }
+    private fun platformDownloadWithListener(intent: Intent, sink: DownloadOutcomeSink) {
+        delegate.triggerModelDownload(
+            intent,
+            DIRECT_EXECUTOR,
+            object : ModelDownloadListener {
+                override fun onProgress(completedPercent: Int) = sink.onProgress()
+                override fun onSuccess() = sink.onSuccess()
+                override fun onScheduled() = sink.onScheduled()
+                override fun onError(error: Int) = sink.onError(error)
+            },
+        )
+    }
 
     /**
      * `internal` rather than `private` so [matches] is directly testable.

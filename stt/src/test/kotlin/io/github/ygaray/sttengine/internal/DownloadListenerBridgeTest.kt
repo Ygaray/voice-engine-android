@@ -17,73 +17,78 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 /**
- * The listener → Boolean bridge behind the API-34 download path, on virtual time.
+ * The listener → [DownloadOutcome] bridge behind the API-34 download path, on virtual time.
  *
  * Plain JUnit, no Robolectric: the bridge is platform-free by design (no android.* import), which is
  * exactly what lets every outcome be scripted here — the platform's `ModelDownloadListener` itself is
  * an API-34 type that cannot be built on the plain-JVM `android.jar`.
  *
- * The first callback decides. A pack that is downloading, scheduled, done, or whose progress feed
- * was lost (error 15) is ACCEPTED; any other error is refused; silence past the bound is "not
- * confirmed".
+ * The first callback decides. A pack that is downloading, scheduled or done is ACCEPTED; error 15 is
+ * LISTENER_UNSUPPORTED (the service has no listener-based download hook and started nothing — the
+ * adapter must retry without a listener); any other error is REFUSED; silence past the bound is
+ * NOT_CONFIRMED.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class DownloadListenerBridgeTest {
 
     /** Starts the bridge, lets `register` run, and hands back the sink it was given. */
-    private class Started(val result: Deferred<Boolean>, val sink: DownloadOutcomeSink)
+    private class Started(val result: Deferred<DownloadOutcome>, val sink: DownloadOutcomeSink)
 
     private fun TestScope.start(): Started {
         var captured: DownloadOutcomeSink? = null
-        val result = async { awaitDownloadAcceptance(DOWNLOAD_ACCEPT_TIMEOUT_MS) { captured = it } }
+        val result = async { awaitDownloadOutcome(DOWNLOAD_ACCEPT_TIMEOUT_MS) { captured = it } }
         runCurrent()
-        assertNotNull("awaitDownloadAcceptance must hand register a sink", captured)
+        assertNotNull("awaitDownloadOutcome must hand register a sink", captured)
         return Started(result, captured!!)
     }
 
     // --- the first callback decides -----------------------------------------------------------
 
     @Test
-    fun `onSuccess resolves true`() = runTest {
+    fun `onSuccess resolves ACCEPTED`() = runTest {
         val started = start()
         started.sink.onSuccess()
-        assertTrue(started.result.await())
+        assertEquals(DownloadOutcome.ACCEPTED, started.result.await())
     }
 
     @Test
-    fun `onScheduled resolves true`() = runTest {
+    fun `onScheduled resolves ACCEPTED`() = runTest {
         val started = start()
         started.sink.onScheduled()
-        assertTrue(started.result.await())
+        assertEquals(DownloadOutcome.ACCEPTED, started.result.await())
     }
 
     @Test
-    fun `the first onProgress resolves true`() = runTest {
+    fun `the first onProgress resolves ACCEPTED`() = runTest {
         val started = start()
         started.sink.onProgress()
-        assertTrue(started.result.await())
+        assertEquals(DownloadOutcome.ACCEPTED, started.result.await())
     }
 
     @Test
-    fun `onError 15 - progress feed lost, not the download - resolves true`() = runTest {
+    fun `onError 15 - no listener hook, nothing downloaded - resolves LISTENER_UNSUPPORTED`() = runTest {
         val started = start()
         started.sink.onError(15)
-        assertTrue(started.result.await())
+        assertEquals(
+            "AOSP's default listener hook answers 15 without starting a download — never acceptance",
+            DownloadOutcome.LISTENER_UNSUPPORTED,
+            started.result.await(),
+        )
     }
 
     @Test
-    fun `any other onError resolves false`() = runTest {
+    fun `any other onError resolves REFUSED`() = runTest {
         val started = start()
         started.sink.onError(13)
         runCurrent()
         assertTrue("onError(13) must settle immediately", started.result.isCompleted)
-        assertFalse(started.result.await())
+        assertEquals(DownloadOutcome.REFUSED, started.result.await())
     }
 
     // --- the bound ------------------------------------------------------------------------------
 
     @Test
-    fun `no callback is still pending at 4999 ms and false at 5000 ms`() = runTest {
+    fun `no callback is still pending at 4999 ms and NOT_CONFIRMED at 5000 ms`() = runTest {
         val started = start()
 
         advanceTimeBy(DOWNLOAD_ACCEPT_TIMEOUT_MS - 1)
@@ -93,33 +98,33 @@ class DownloadListenerBridgeTest {
         advanceTimeBy(1)
         runCurrent()
         assertTrue("settled at the bound", started.result.isCompleted)
-        assertFalse("silence past the bound is not confirmed", started.result.await())
+        assertEquals("silence past the bound is not confirmed", DownloadOutcome.NOT_CONFIRMED, started.result.await())
     }
 
     // --- repeated and late callbacks -------------------------------------------------------------
 
     @Test
-    fun `three onProgress then onSuccess resolve once to true without a double resume`() = runTest {
+    fun `three onProgress then onSuccess resolve once to ACCEPTED without a double resume`() = runTest {
         val started = start()
         started.sink.onProgress()
         started.sink.onProgress()
         started.sink.onProgress()
         started.sink.onSuccess()
-        assertTrue(started.result.await())
+        assertEquals(DownloadOutcome.ACCEPTED, started.result.await())
     }
 
     @Test
-    fun `a callback after the timeout already returned false is ignored`() = runTest {
+    fun `a callback after the timeout already returned NOT_CONFIRMED is ignored`() = runTest {
         val started = start()
         advanceTimeBy(DOWNLOAD_ACCEPT_TIMEOUT_MS)
         runCurrent()
-        assertFalse(started.result.await())
+        assertEquals(DownloadOutcome.NOT_CONFIRMED, started.result.await())
 
         started.sink.onSuccess()
         started.sink.onProgress()
-        started.sink.onError(13)
+        started.sink.onError(15)
         runCurrent()
-        assertFalse("a late callback cannot rewrite the answer", started.result.await())
+        assertEquals("a late callback cannot rewrite the answer", DownloadOutcome.NOT_CONFIRMED, started.result.await())
     }
 
     // --- the seam default -----------------------------------------------------------------------
@@ -139,14 +144,14 @@ class DownloadListenerBridgeTest {
     // --- registration that throws ----------------------------------------------------------------
 
     @Test
-    fun `register throwing IllegalStateException synchronously resolves false`() = runTest {
+    fun `register throwing IllegalStateException synchronously resolves REFUSED`() = runTest {
         var registered = false
-        val result = awaitDownloadAcceptance(DOWNLOAD_ACCEPT_TIMEOUT_MS) {
+        val result = awaitDownloadOutcome(DOWNLOAD_ACCEPT_TIMEOUT_MS) {
             registered = true
             throw IllegalStateException("binder died")
         }
         assertTrue("register must be called", registered)
-        assertFalse(result)
+        assertEquals(DownloadOutcome.REFUSED, result)
         assertEquals(
             "a registration throw resolves at once, never waiting out the bound",
             0L,
@@ -157,8 +162,8 @@ class DownloadListenerBridgeTest {
     @Test
     fun `register throwing CancellationException propagates`() = runTest {
         try {
-            awaitDownloadAcceptance(DOWNLOAD_ACCEPT_TIMEOUT_MS) { throw CancellationException("caller gone") }
-            fail("a CancellationException from register must propagate, never fold to false")
+            awaitDownloadOutcome(DOWNLOAD_ACCEPT_TIMEOUT_MS) { throw CancellationException("caller gone") }
+            fail("a CancellationException from register must propagate, never fold to an outcome")
         } catch (cancellation: CancellationException) {
             assertEquals("caller gone", cancellation.message)
         }

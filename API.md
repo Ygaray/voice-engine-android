@@ -134,8 +134,9 @@ download finished.
   `true` without asking the platform again, so no system prompt appears for a pack the user already
   has.
 - **`true` on Android 14 and later** means the platform acknowledged, scheduled or started the
-  download (a lost progress feed still counts as accepted). **On Android 13** it only means the request
-  was handed to the platform without an error — that version reports nothing back.
+  download. A recognition service that cannot report download progress is asked again without
+  progress reporting, and `true` then carries the Android 13 meaning below. **On Android 13** it only
+  means the request was handed to the platform without an error — that version reports nothing back.
 - **`false`** means the request was refused, the language is unsupported on this device, or
   acceptance was not confirmed within about five seconds (a user-approval prompt can outlast that).
   **Re-query with `checkLanguageAvailability` rather than calling the download again in a loop.**
