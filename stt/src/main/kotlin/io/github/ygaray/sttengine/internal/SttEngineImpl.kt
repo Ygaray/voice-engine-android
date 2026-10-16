@@ -474,6 +474,10 @@ internal class SttEngineImpl(
                 audioSource = pipe?.readDescriptor,
                 enableLanguageSwitch = autoDetectionActive,
             )
+        // Debug silence-extras override (D-01): applied AFTER the pure builder, once per session
+        // including every restart, so forRung stays a pure function. Null in every shipped build;
+        // nothing in main ever writes the cell.
+        DebugSilenceExtrasHolder.overrides?.applyTo(intent)
         withContext(mainDispatcher) {
             active.setListener(listenerFor(boundEpoch))
             active.startListening(intent)
