@@ -289,4 +289,38 @@ public class ContractSurfaceTest {
 
         assertEquals("0123456789abcdef0123456789abcdef", engine.lastSessionId)
     }
+
+    // --- submitCorrection / CorrectionSubmitResult (Phase 25, D-10 / D-01) -------------------------
+
+    @Test
+    public fun `CorrectionSubmitResult mirrors the four frozen values in order (D-10)`() {
+        assertEquals(
+            listOf("ACCEPTED", "UNKNOWN_SESSION", "UNREACHABLE", "REJECTED"),
+            CorrectionSubmitResult.entries.map { it.name },
+        )
+    }
+
+    @Test
+    public fun `submitCorrection keeps its frozen shape (D-10)`() {
+        // A shape change (parameter types, order, return type, suspend-ness) stops this compiling.
+        // The function is deliberately not called: this pins the signature, not the behavior.
+        val submit: suspend (Context, String, String, String, String?) -> CorrectionSubmitResult =
+            ::submitCorrection
+        assertNotNull(submit)
+    }
+
+    @Test
+    public fun `submitCorrection can be called without language (D-10 default)`() {
+        // Compiles only while `language` keeps its null default. Never invoked.
+        val omitted: suspend (Context) -> CorrectionSubmitResult = { context ->
+            submitCorrection(context, "https://example.ts.net/SttBatch", "0123456789abcdef0123456789abcdef", "fixed")
+        }
+        assertNotNull(omitted)
+    }
+
+    @Test
+    public fun `submitCorrection lives in the SubmitCorrectionKt facade and the enum is not a data type (D-01)`() {
+        assertEquals("io.github.ygaray.sttengine.SubmitCorrectionKt", Class.forName("io.github.ygaray.sttengine.SubmitCorrectionKt").name)
+        assertTrue(CorrectionSubmitResult::class.java.isEnum)
+    }
 }

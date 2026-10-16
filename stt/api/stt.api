@@ -15,6 +15,16 @@ public final class io/github/ygaray/sttengine/BackendPreference : java/lang/Enum
 	public static fun values ()[Lio/github/ygaray/sttengine/BackendPreference;
 }
 
+public final class io/github/ygaray/sttengine/CorrectionSubmitResult : java/lang/Enum {
+	public static final field ACCEPTED Lio/github/ygaray/sttengine/CorrectionSubmitResult;
+	public static final field REJECTED Lio/github/ygaray/sttengine/CorrectionSubmitResult;
+	public static final field UNKNOWN_SESSION Lio/github/ygaray/sttengine/CorrectionSubmitResult;
+	public static final field UNREACHABLE Lio/github/ygaray/sttengine/CorrectionSubmitResult;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lio/github/ygaray/sttengine/CorrectionSubmitResult;
+	public static fun values ()[Lio/github/ygaray/sttengine/CorrectionSubmitResult;
+}
+
 public final class io/github/ygaray/sttengine/EngineState : java/lang/Enum {
 	public static final field Connecting Lio/github/ygaray/sttengine/EngineState;
 	public static final field Error Lio/github/ygaray/sttengine/EngineState;
@@ -216,5 +226,10 @@ public final class io/github/ygaray/sttengine/SttWarning {
 	public final fun getMessage ()Ljava/lang/String;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/SubmitCorrectionKt {
+	public static final fun submitCorrection (Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun submitCorrection$default (Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 }
 
