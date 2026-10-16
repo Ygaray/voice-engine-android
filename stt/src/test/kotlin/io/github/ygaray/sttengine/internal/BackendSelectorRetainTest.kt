@@ -140,6 +140,7 @@ class BackendSelectorRetainTest {
     private class Harness(
         val main: CoroutineDispatcher,
         val fakeWs: FakeWebSocketFactory,
+        val fakeHandle: FakeRecognizerHandle,
         val selector: BackendSelector,
         val idle: IdleSnapshots,
     ) {
@@ -188,7 +189,7 @@ class BackendSelectorRetainTest {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
             selector.state.collect { idle.onState(it) }
         }
-        return Harness(main, fakeWs, selector, idle)
+        return Harness(main, fakeWs, fakeHandle, selector, idle)
     }
 
     /** A selector committed to the server path (its first accepted `ready` is [ready]). */
@@ -281,8 +282,196 @@ class BackendSelectorRetainTest {
         assertEquals("only the Idle after the stop began is recorded", listOf<String?>(ID), h.idle.seen)
     }
 
+    // --- the lifecycle matrix: null on every path except a flushed stop of a retained session ------
+
+    private val errorFrame = """{"type":"error","code":"internal-error","message":"boom"}"""
+
+    @Test
+    fun `a live server session reads a null lastSessionId`() = runTest {
+        val h = committedServerSession()
+        h.fakeWs.fireMessage("""{"type":"partial","text":"hello","segmentId":1}""")
+        runCurrent()
+
+        assertNull("the id exists only after a flushed stop", h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `lastSessionId reads the id once a clean stop returns`() = runTest {
+        val h = committedServerSession()
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertEquals(ID, h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `an in-flight stop reads a null lastSessionId until the server's close arrives`() = runTest {
+        val h = committedServerSession()
+
+        val stopJob = stopUntilTokenSent(h)
+        advanceTimeBy(ServerBackend.STOP_FLUSH_TIMEOUT_MS - 1)
+        runCurrent()
+        assertFalse("the stop is still flushing", stopJob.isCompleted)
+        assertNull("the detached backend has not finished its flush", h.selector.lastSessionId)
+
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertEquals(ID, h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `a flush timeout leaves lastSessionId null after stop returns`() = runTest {
+        val h = committedServerSession()
+
+        val stopJob = stopUntilTokenSent(h)
+        advanceTimeBy(ServerBackend.STOP_FLUSH_TIMEOUT_MS)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull(h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `an abnormal close during the stop flush leaves lastSessionId null`() = runTest {
+        val h = committedServerSession()
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1011, "internal")
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull(h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `a ready without a sessionId leaves lastSessionId null after a clean stop`() = runTest {
+        val h = committedServerSession(ready = readyFrame(null))
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull(h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `an unsolicited sessionId on a non-retained selector session is never exposed`() = runTest {
+        val h = committedServerSession(retain = false)
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull(h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `a second start clears the previous session's id`() = runTest {
+        val h = committedServerSession()
+        val firstStop = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+        assertTrue(firstStop.isCompleted)
+        assertEquals(ID, h.selector.lastSessionId)
+
+        val again = launch(h.main) { h.selector.start() }
+        runCurrent()
+        assertEquals("a start() after stop() returned opens a fresh attempt", 2, h.fakeWs.createCount)
+        assertNull("the new session must not inherit the previous id", h.selector.lastSessionId)
+
+        h.fakeWs.fireOpen()
+        runCurrent()
+        h.fakeWs.fireMessage(readyFrame(OTHER_ID))
+        runCurrent()
+        assertTrue(again.isCompleted)
+        assertNull("the second session is live, so there is no id yet", h.selector.lastSessionId)
+
+        val secondStop = launch(h.main) { h.selector.stop() }
+        runCurrent()
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+        assertTrue(secondStop.isCompleted)
+        assertEquals(OTHER_ID, h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `a server failure mid-session that hands off to native reads a null lastSessionId`() = runTest {
+        val h = committedServerSession()
+
+        h.fakeWs.fireMessage(errorFrame)
+        runCurrent()
+        assertEquals("the failure must have handed the session off to native", 1, h.fakeHandle.startCount)
+        assertNull("a handed-off session never ran a flushed stop", h.selector.lastSessionId)
+
+        val stopJob = launch(h.main) { h.selector.stop() }
+        runCurrent()
+        assertTrue(stopJob.isCompleted)
+        assertNull("stopping the native fallback must not surface an id either", h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `a stop during the try window reads a null lastSessionId`() = runTest {
+        val h = session()
+        val started = launch(h.main) { h.selector.start() }
+        runCurrent()
+        assertEquals("attempt 1 must be in flight", 1, h.fakeWs.createCount)
+        assertEquals(EngineState.Connecting, h.selector.state.value)
+
+        h.idle.arm()
+        val stopJob = launch(h.main) { h.selector.stop() }
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertTrue(started.isCompleted)
+        assertEquals(EngineState.Idle, h.selector.state.value)
+        assertNull(h.selector.lastSessionId)
+        assertEquals("Idle is reported with no id", listOf<String?>(null), h.idle.seen)
+    }
+
+    @Test
+    fun `a session that fell back to native under Auto reads a null lastSessionId`() = runTest {
+        val h = session()
+        launch(h.main) { h.selector.start() }
+        runCurrent()
+        h.fakeWs.fireFailure(java.net.ConnectException("refused"))
+        runCurrent()
+        assertEquals("the refused attempt falls back to native", 1, h.fakeHandle.startCount)
+        h.fakeHandle.reachListening()
+        runCurrent()
+        assertEquals(Backend.Native, h.selector.backend.value)
+        assertNull(h.selector.lastSessionId)
+
+        val stopJob = launch(h.main) { h.selector.stop() }
+        runCurrent()
+        assertTrue(stopJob.isCompleted)
+        assertNull(h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `a failed try under prefer Server reads a null lastSessionId`() = runTest {
+        val h = session(prefer = io.github.ygaray.sttengine.BackendPreference.Server)
+        launch(h.main) { h.selector.start() }
+        runCurrent()
+        h.fakeWs.fireFailure(java.net.ConnectException("refused"))
+        runCurrent()
+
+        assertEquals("prefer = Server never falls back to native", 0, h.fakeHandle.startCount)
+        assertEquals(EngineState.Error, h.selector.state.value)
+        assertNull(h.selector.lastSessionId)
+    }
+
     private companion object {
         /** The fixed 32-lowercase-hex id used by every row. */
         const val ID = "0123456789abcdef0123456789abcdef"
+
+        /** A different well-formed id, used for the second session of the restart row. */
+        const val OTHER_ID = "fedcba9876543210fedcba9876543210"
     }
 }

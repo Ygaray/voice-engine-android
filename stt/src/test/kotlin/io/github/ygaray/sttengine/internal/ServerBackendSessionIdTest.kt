@@ -196,8 +196,206 @@ class ServerBackendSessionIdTest {
         assertEquals(listOf<String?>(ID), h.idle.seen)
     }
 
+    // --- Task 2: the full lifecycle matrix -------------------------------------------------------
+
+    private val errorFrame = """{"type":"error","code":"internal-error","message":"boom"}"""
+
+    @Test
+    fun `a live session has no id, even with partials and finals flowing`() = runTest {
+        val h = harness()
+        h.fakeWs.fireMessage("""{"type":"partial","text":"hello","segmentId":1}""")
+        h.fakeWs.fireMessage("""{"type":"final","text":"hello there","segmentId":1}""")
+        runCurrent()
+
+        assertEquals(EngineState.Listening, h.backend.state.value)
+        assertNull("the id exists only after a flushed stop", h.backend.endedSessionId)
+    }
+
+    @Test
+    fun `a clean stop with the server's close 1000 after the flush publishes the id`() = runTest {
+        val h = harness()
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertEquals(ID, h.backend.endedSessionId)
+    }
+
+    @Test
+    fun `a flush timeout publishes no id`() = runTest {
+        val h = harness()
+
+        val stopJob = stopUntilTokenSent(h)
+        advanceTimeBy(ServerBackend.STOP_FLUSH_TIMEOUT_MS - 1)
+        runCurrent()
+        assertFalse("stop() must wait out the whole bound", stopJob.isCompleted)
+        assertNull(h.backend.endedSessionId)
+
+        advanceTimeBy(1)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertTrue("the unflushed socket must be cancelled: ${h.log()}", "cancel" in h.log())
+        assertNull("a flush that never saw the server's close publishes nothing", h.backend.endedSessionId)
+    }
+
+    @Test
+    fun `an abnormal close during the stop flush publishes no id`() = runTest {
+        val h = harness()
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1011, "internal error")
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull(h.backend.endedSessionId)
+    }
+
+    @Test
+    fun `a socket failure during the stop flush publishes no id`() = runTest {
+        val h = harness()
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireFailure(java.io.IOException("reset"))
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull(h.backend.endedSessionId)
+    }
+
+    @Test
+    fun `an error frame mid-session then stop publishes no id`() = runTest {
+        val h = harness()
+        h.fakeWs.fireMessage(errorFrame)
+        runCurrent()
+        assertEquals(EngineState.Error, h.backend.state.value)
+
+        h.idle.arm()
+        val stopJob = launch(h.main) { h.backend.stop() }
+        runCurrent()
+
+        assertTrue("stop() on a failed instance returns at once", stopJob.isCompleted)
+        assertNull("a failed session is never published", h.backend.endedSessionId)
+        assertTrue("a failed instance never reports Idle", h.idle.seen.isEmpty())
+    }
+
+    @Test
+    fun `an error frame during the stop flush publishes no id`() = runTest {
+        val h = harness()
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireMessage(errorFrame)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull(h.backend.endedSessionId)
+        assertEquals(EngineState.Idle, h.backend.state.value)
+    }
+
+    @Test
+    fun `a stop before any ready publishes no id even after a clean close`() = runTest {
+        val h = harness(ready = null)
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull("no ready, so no id was ever carried", h.backend.endedSessionId)
+        assertEquals(listOf<String?>(null), h.idle.seen)
+    }
+
+    @Test
+    fun `a ready that arrives after the stop began is ignored and publishes no id`() = runTest {
+        val h = harness(ready = null)
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireMessage(readyFrame(ID))
+        runCurrent()
+        assertTrue("a late ready must never open the microphone", h.pcm.opened.isEmpty())
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull(h.backend.endedSessionId)
+    }
+
+    @Test
+    fun `a retained session whose ready carries no sessionId publishes no id`() = runTest {
+        val h = harness(ready = readyFrame(null))
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull("an older or unarmed server sends no id", h.backend.endedSessionId)
+        assertEquals(listOf<String?>(null), h.idle.seen)
+    }
+
+    @Test
+    fun `a retained session whose ready carries an empty sessionId publishes no id`() = runTest {
+        val h = harness(ready = readyFrame(""))
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull("an empty string is no claim", h.backend.endedSessionId)
+    }
+
+    @Test
+    fun `an unsolicited sessionId on a non-retained session is ignored`() = runTest {
+        val h = harness(retain = false)
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertNull("a session that did not ask for retention never exposes an id", h.backend.endedSessionId)
+        assertEquals(listOf<String?>(null), h.idle.seen)
+    }
+
+    @Test
+    fun `a repeated ready with a different id keeps the first id`() = runTest {
+        val h = harness()
+        h.fakeWs.fireMessage(readyFrame(OTHER_ID))
+        runCurrent()
+        assertEquals("the repeat is ignored, the session stays healthy", EngineState.Listening, h.backend.state.value)
+
+        val stopJob = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertEquals(ID, h.backend.endedSessionId)
+    }
+
+    @Test
+    fun `a second stop after the clean one keeps the published id`() = runTest {
+        val h = harness()
+
+        val first = stopUntilTokenSent(h)
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+        assertTrue(first.isCompleted)
+
+        val second = launch(h.main) { h.backend.stop() }
+        runCurrent()
+
+        assertTrue(second.isCompleted)
+        assertEquals(ID, h.backend.endedSessionId)
+    }
+
     private companion object {
         /** The fixed 32-lowercase-hex id used by every row. */
         const val ID = "0123456789abcdef0123456789abcdef"
+
+        /** A different well-formed id, used only to prove the first one wins. */
+        const val OTHER_ID = "fedcba9876543210fedcba9876543210"
     }
 }
