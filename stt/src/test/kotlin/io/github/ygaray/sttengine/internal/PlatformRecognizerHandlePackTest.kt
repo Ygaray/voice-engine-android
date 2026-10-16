@@ -150,7 +150,9 @@ class PlatformRecognizerHandlePackTest {
 
         // If the catch sat outside the posted block, idle() itself would throw the platform's
         // IllegalStateException here on the test (main) thread.
-        val deadline = System.currentTimeMillis() + 5_000L
+        // A generous wall-clock ceiling: it only bounds a hung test on a loaded host. Whether the
+        // query waited out its timeout is asserted separately, below.
+        val deadline = System.currentTimeMillis() + 15_000L
         while (thread.isAlive && System.currentTimeMillis() < deadline) {
             shadowOf(Looper.getMainLooper()).idle()
             thread.join(5L)
@@ -166,7 +168,9 @@ class PlatformRecognizerHandlePackTest {
         assertTrue(
             "posted: must resume as soon as the posted call fails, not wait out the 2 s bound " +
                 "(took $elapsedMs ms)",
-            elapsedMs in 0 until 1_000L,
+            // Strictly under the 2 s timeout, with headroom for a loaded host: anything below it
+            // cannot have waited the timeout out.
+            elapsedMs in 0 until 1_800L,
         )
     }
 

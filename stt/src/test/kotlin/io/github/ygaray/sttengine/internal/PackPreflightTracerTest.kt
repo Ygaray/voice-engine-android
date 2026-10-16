@@ -268,7 +268,7 @@ class PackPreflightTracerTest {
             }
         }.also { it.start() }
 
-        /** Idles the main looper until the call has constructed its recognizer (5 s deadline). */
+        /** Idles the main looper until the call has constructed its recognizer ([DEADLINE_MS]). */
         fun awaitRecognizer(): SpeechRecognizer {
             val deadline = System.currentTimeMillis() + DEADLINE_MS
             while (System.currentTimeMillis() < deadline) {
@@ -279,7 +279,7 @@ class PackPreflightTracerTest {
             throw AssertionError("no recognizer was constructed within ${DEADLINE_MS} ms")
         }
 
-        /** Idles the main looper until the background call finishes (5 s deadline). */
+        /** Idles the main looper until the background call finishes ([DEADLINE_MS]). */
         fun awaitResult(): T {
             val deadline = System.currentTimeMillis() + DEADLINE_MS
             while (thread.isAlive && System.currentTimeMillis() < deadline) {
@@ -293,7 +293,11 @@ class PackPreflightTracerTest {
     }
 
     private companion object {
-        const val DEADLINE_MS = 5_000L
+        /**
+         * Only bounds a hung test. Generous on purpose: a loaded host must not flake a row whose
+         * assertion is about the answer, not about wall-clock speed.
+         */
+        const val DEADLINE_MS = 15_000L
         const val POLL_MS = 5L
     }
 }
