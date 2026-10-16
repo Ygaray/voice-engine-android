@@ -1,6 +1,7 @@
 package io.github.ygaray.sttengine.demo.debug
 
 import io.github.ygaray.sttengine.FinalSegment
+import io.github.ygaray.sttengine.LanguageSource
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -143,5 +144,80 @@ class DemoControlReceiverDiagnosticsTest {
 
         assertEquals(3, into.getInt("lastFinalSegmentId"))
         assertTrue(into.isNull("lastFinalLanguage"))
+    }
+
+    // --- languageSource plumbing (labels only, never text) ------------------------------------------
+
+    @Test
+    fun `lastSegmentLanguageSourceOf is null for an empty list and the latest segment's source otherwise`() {
+        assertNull(lastSegmentLanguageSourceOf(emptyList()))
+        val committed = listOf(
+            FinalSegment("hola", 0, "es", LanguageSource.DETECTED),
+            FinalSegment("hello", 1, "en", LanguageSource.FALLBACK),
+        )
+        assertEquals(LanguageSource.FALLBACK, lastSegmentLanguageSourceOf(committed))
+        assertNull(lastSegmentLanguageSourceOf(committed + FinalSegment("mumble", 2)))
+    }
+
+    @Test
+    fun `segmentLanguagesOf carries languageSource as the enum name or JSON null per entry`() {
+        val committed = listOf(
+            FinalSegment("hola", 0, "es", LanguageSource.DETECTED),
+            FinalSegment("hello", 1, "en", LanguageSource.FALLBACK),
+            FinalSegment("legacy", 2, "en"),
+            FinalSegment("mumble", 3),
+        )
+        val array = segmentLanguagesOf(committed)
+
+        assertEquals(4, array.length())
+        assertEquals("DETECTED", array.getJSONObject(0).getString("languageSource"))
+        assertEquals("FALLBACK", array.getJSONObject(1).getString("languageSource"))
+        // A language with no source (a server predating the field) stays a null source.
+        assertTrue(array.getJSONObject(2).has("languageSource"))
+        assertTrue(array.getJSONObject(2).isNull("languageSource"))
+        assertEquals("en", array.getJSONObject(2).getString("language"))
+        assertTrue(array.getJSONObject(3).has("languageSource"))
+        assertTrue(array.getJSONObject(3).isNull("languageSource"))
+        // Existing keys unchanged.
+        assertEquals(0, array.getJSONObject(0).getInt("segmentId"))
+        assertEquals("es", array.getJSONObject(0).getString("language"))
+    }
+
+    @Test
+    fun `languageDiagnostics writes lastSegmentLanguageSource and never a text key`() {
+        val into = JSONObject()
+        languageDiagnostics(
+            into,
+            listOf(
+                FinalSegment("secret one", 0, "es", LanguageSource.DETECTED),
+                FinalSegment("secret two", 1, "en", LanguageSource.FALLBACK),
+            ),
+        )
+
+        assertEquals("FALLBACK", into.getString("lastSegmentLanguageSource"))
+        assertTrue(!into.toString().contains("secret"))
+
+        val empty = JSONObject()
+        languageDiagnostics(empty, emptyList())
+        assertTrue(empty.has("lastSegmentLanguageSource"))
+        assertTrue(empty.isNull("lastSegmentLanguageSource"))
+    }
+
+    @Test
+    fun `lastFinalDiagnostics writes lastFinalLanguageSource as the enum name or JSON null`() {
+        val none = JSONObject()
+        lastFinalDiagnostics(none, null)
+        assertTrue(none.has("lastFinalLanguageSource"))
+        assertTrue(none.isNull("lastFinalLanguageSource"))
+
+        val detected = JSONObject()
+        lastFinalDiagnostics(detected, FinalSegment("secret words", 7, "es", LanguageSource.DETECTED))
+        assertEquals("DETECTED", detected.getString("lastFinalLanguageSource"))
+        assertTrue(!detected.toString().contains("secret words"))
+
+        val unsourced = JSONObject()
+        lastFinalDiagnostics(unsourced, FinalSegment("legacy", 8, "en"))
+        assertTrue(unsourced.has("lastFinalLanguageSource"))
+        assertTrue(unsourced.isNull("lastFinalLanguageSource"))
     }
 }
