@@ -38,6 +38,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
+private const val SLOT_ATTEMPTS = 10
+
 /**
  * Phase 25 Gate-1 LOOPBACK end-to-end proof, live half (plan 25-09; ROADMAP success criteria 1, 3, 4).
  *
@@ -124,15 +126,30 @@ class CorpusLoopbackE2ETest {
             mainDispatcher = mainDispatcher,
             // serverBackendFactory deliberately NOT overridden: the DEFAULT factory is under test.
         )
-        selector.start()
-        awaitUntil("the Server backend to be listening") {
-            selector.backend.value == Backend.Server && selector.state.value == EngineState.Listening
-        }
+        startWhenSlotFree(selector)
         awaitUntil("the pump to drain the finite tone source") { pcm.opened.isNotEmpty() && pcm.last.exhausted }
         selector.stop()
-        // The server releases its single session slot just after it closes.
-        delay(500)
         return selector.lastSessionId
+    }
+
+    /**
+     * Starts [selector] on the Server backend and waits for it to listen. The server holds a single
+     * session slot that it frees only after its corpus commit and close, so a start right after the
+     * previous session's stop can meet close 1013 (`busy`), which `Prefer.Server` reports as Error.
+     * That is load dependent, so retry the whole start a bounded number of times instead of sleeping
+     * a fixed time.
+     */
+    private suspend fun startWhenSlotFree(selector: BackendSelector) {
+        repeat(SLOT_ATTEMPTS) {
+            selector.start()
+            awaitUntil("the Server backend to listen or fail", timeoutMs = 5_000L) {
+                selector.state.value == EngineState.Listening || selector.state.value == EngineState.Error
+            }
+            if (selector.backend.value == Backend.Server && selector.state.value == EngineState.Listening) return
+            selector.stop()
+            delay(300)
+        }
+        error("the server's single session slot never freed after $SLOT_ATTEMPTS attempts")
     }
 
     /** A retained live session; asserts the id and records the `retained-id` fact. */
