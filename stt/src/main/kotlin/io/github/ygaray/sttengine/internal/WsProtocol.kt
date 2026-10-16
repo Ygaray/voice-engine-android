@@ -1,5 +1,6 @@
 package io.github.ygaray.sttengine.internal
 
+import io.github.ygaray.sttengine.LanguageSource
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -90,6 +91,17 @@ internal sealed interface ServerFrame {
     /** Carries the server's taxonomy code verbatim — this client does not reject an unknown code,
      *  mirroring `protocol.ts:132`'s "the server owns its taxonomy" comment. */
     data class Error(val code: String, val message: String) : ServerFrame
+}
+
+/**
+ * Maps a Final frame's raw `languageSource` string to the public enum. Total over its input: only
+ * the two exact lowercase wire values map; an absent, empty, wrong-case or unknown value degrades to
+ * no claim (null) and is never read as [LanguageSource.FALLBACK].
+ */
+internal fun languageSourceFromWire(raw: String?): LanguageSource? = when (raw) {
+    "detected" -> LanguageSource.DETECTED
+    "fallback" -> LanguageSource.FALLBACK
+    else -> null
 }
 
 /** The parse result: either a validated frame, or a loud typed protocol violation. Never throws. */

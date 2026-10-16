@@ -665,6 +665,7 @@ internal class BackendSelector(
         if (partialText.isNotBlank()) {
             val text = config.corrections?.takeIf { it.isNotEmpty() }
                 ?.let { Corrections.apply(partialText, it) } ?: partialText
+            // The handoff commit carries no detection evidence, so it is language-free and source-free (null/null).
             val segment = FinalSegment(text, HANDOFF_SEGMENT_ID)
             handoffFinal = segment // LAST-01 (D-05): before the send, same instance.
             finalsChannel.trySend(segment)

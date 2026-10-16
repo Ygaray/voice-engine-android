@@ -592,6 +592,7 @@ internal class ServerBackend(
     private fun commitLivePartialLocally() {
         val partialText = _partial.value
         if (partialText.isBlank()) return
+        // A local commit carries no detection evidence, so it is language-free and source-free (null/null).
         val segment = FinalSegment(corrected(partialText), livePartialSegmentId ?: 0)
         _lastFinal = segment // LAST-01 (D-05): before the send, same instance.
         finalsChannel.trySend(segment)
@@ -839,7 +840,12 @@ internal class ServerBackend(
                 is ServerFrame.Final -> {
                     _partial.value = ""
                     livePartialSegmentId = null
-                    val segment = FinalSegment(corrected(frame.text), frame.segmentId, frame.language)
+                    val segment = FinalSegment(
+                        corrected(frame.text),
+                        frame.segmentId,
+                        frame.language,
+                        languageSourceFromWire(frame.languageSource),
+                    )
                     _lastFinal = segment // LAST-01 (D-05): before the send, same instance.
                     finalsChannel.trySend(segment)
                 }
