@@ -277,7 +277,9 @@ scope.launch {
     when (result) {
         CorrectionSubmitResult.ACCEPTED -> markSynced()
         CorrectionSubmitResult.UNREACHABLE -> retryLater()    // may already be stored
-        // UNKNOWN_SESSION (no such record) and REJECTED (refused) will not succeed on a retry
+        // UNKNOWN_SESSION is a 404: no such record, but also what a wrong base URL answers
+        CorrectionSubmitResult.UNKNOWN_SESSION -> reportOnce() // log or surface once, do not drop silently
+        // REJECTED (refused) will not succeed on a retry
         else -> dropIt()                                      // keep an else for entries added later
     }
 }

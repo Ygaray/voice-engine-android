@@ -14,6 +14,7 @@ import io.github.ygaray.sttengine.internal.CorpusCorrections
  *     when (submitCorrection(context, batchBaseUrl, id, editedText, language = "en")) {
  *         CorrectionSubmitResult.ACCEPTED -> markSynced()
  *         CorrectionSubmitResult.UNREACHABLE -> retryLater()   // may already be stored
+ *         CorrectionSubmitResult.UNKNOWN_SESSION -> reportOnce() // no such record, or a wrong base URL
  *         else -> dropIt()
  *     }
  * }
@@ -40,7 +41,11 @@ import io.github.ygaray.sttengine.internal.CorpusCorrections
  *
  * **Results.**
  * - [CorrectionSubmitResult.ACCEPTED]: any 2xx; a revision was appended.
- * - [CorrectionSubmitResult.UNKNOWN_SESSION]: a 404, no such record.
+ * - [CorrectionSubmitResult.UNKNOWN_SESSION]: a 404, no such record. A wrong [httpBaseUrl] (a missing
+ *   mount path, a wrong port, a proxy answering 404, an older server without the route) answers 404
+ *   too and the body is not read, so the two cannot be told apart: log or surface it once rather than
+ *   dropping it silently, because a 404 on the first correction after a configuration change usually
+ *   means the base URL.
  * - [CorrectionSubmitResult.REJECTED]: any other 4xx, a blank corrected text or id, an id that is
  *   a dot segment (`.` or `..`), or a base URL that is not a URL. None of these sends a request.
  * - [CorrectionSubmitResult.UNREACHABLE]: a 408, a 5xx, a timeout, an IO or TLS failure, or any

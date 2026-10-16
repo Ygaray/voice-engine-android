@@ -192,6 +192,7 @@ lifecycleScope.launch {
     when (submitCorrection(context, "https://host.ts.net/SttBatch", id, editedText, language = "en")) {
         CorrectionSubmitResult.ACCEPTED -> markSynced()
         CorrectionSubmitResult.UNREACHABLE -> retryLater() // may already be stored
+        CorrectionSubmitResult.UNKNOWN_SESSION -> reportOnce() // no such record, or a wrong base URL
         else -> dropIt()
     }
 }
@@ -210,7 +211,7 @@ lifecycleScope.launch {
 | `CorrectionSubmitResult` | Meaning | Maps from |
 |---|---|---|
 | `ACCEPTED` | the server appended a revision; nothing was overwritten | any 2xx |
-| `UNKNOWN_SESSION` | there is no such record; retrying the same id will not help. A host may treat it as a silent drop | a 404 (`not-found`) |
+| `UNKNOWN_SESSION` | there is no such record; retrying the same id will not help. A wrong `httpBaseUrl` (a missing mount path, a wrong port, a proxy or an older server without the route) answers 404 too, so do not drop it silently: log or surface it once, because a 404 on the very first correction after a configuration change usually means the base URL | a 404 (`not-found`) |
 | `UNREACHABLE` | the outcome is unknown, the correction MAY or MAY NOT have been stored; a retry may help | a timeout, an IO or TLS failure, a 408, a 5xx, and any unexpected 1xx or 3xx answer |
 | `REJECTED` | the input was refused and sending it again will not succeed | any other 4xx, a blank text or id, a dot-segment id, a base URL that is not a URL |
 

@@ -23,6 +23,9 @@ public enum class CorrectionSubmitResult {
      * The server answered 404: there is no such record. That covers an id that was never retained, a
      * record whose retention failed, a server older than the correction route, and an id of the
      * wrong shape. Retrying the same id will not help.
+     *
+     * A wrong base URL (a missing mount path, a wrong port, a proxy answering 404) lands here too
+     * and cannot be told apart, so log or surface it once instead of dropping it silently.
      */
     UNKNOWN_SESSION,
 
