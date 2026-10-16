@@ -52,8 +52,8 @@ internal object ErrorHints {
         SttErrorCode.BUSY.value to
             "Another dictation session is active — only one runs at a time. Try again in a moment.",
         SttErrorCode.INVALID_CONFIG.value to
-            "The session config was rejected — the server refused it. Check the server address " +
-            "and the engine settings, then tap Start again.",
+            "The session config was rejected — the server refused it. Check the language and " +
+            "engine settings, then tap Start again.",
         SttErrorCode.UNSUPPORTED_SAMPLE_RATE.value to
             "Audio format not supported by the recognizer.",
         SttErrorCode.PROTOCOL_VIOLATION.value to

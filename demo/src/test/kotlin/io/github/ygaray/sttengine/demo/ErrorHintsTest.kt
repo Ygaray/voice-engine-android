@@ -37,6 +37,14 @@ class ErrorHintsTest {
     }
 
     @Test
+    fun `the invalid-config hint points at the settings a rejected config comes from not the server address`() {
+        // A wrong address surfaces as server-unreachable, never as a rejected config.
+        assertFalse(hint!!.contains("address", ignoreCase = true))
+        assertTrue(hint.contains("language", ignoreCase = true))
+        assertTrue(hint.contains("engine settings", ignoreCase = true))
+    }
+
+    @Test
     fun `the invalid-config hint does not mention a setting that does not exist`() {
         // The spike dropped the commit-silence knob (rescoped), so no such setting exists to blame.
         assertFalse(hint!!.contains("silence", ignoreCase = true))

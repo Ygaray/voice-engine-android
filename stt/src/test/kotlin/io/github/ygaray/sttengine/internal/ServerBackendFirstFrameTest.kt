@@ -32,9 +32,12 @@ import org.robolectric.annotation.Config
 class ServerBackendFirstFrameTest {
 
     @Test
-    fun `the first frame is the config frame, sent on open with no delay and virtual time at zero`() = runTest {
+    fun `the first frame is the config frame, sent on open with no delay`() = runTest {
         // StandardTestDispatcher: nothing runs unless the test runs it, so the only work executed
         // after the open callback is what the callback itself queued (runCurrent never advances time).
+        // That is the guard: a send moved behind a delay or a ready-wait is NOT run by runCurrent(), so the
+        // exactly-one-frame assertion below fails. (Comparing virtual time before and after cannot fail,
+        // because runCurrent() never moves it, so no such assertion is made.)
         val dispatcher = StandardTestDispatcher(testScheduler)
         val fakeWs = FakeWebSocketFactory()
         val backend = ServerBackend(
@@ -49,10 +52,8 @@ class ServerBackendFirstFrameTest {
         val socket = fakeWs.lastSocket!!
         assertTrue("nothing may be sent before the socket opens", socket.sendLog.isEmpty())
 
-        val timeBeforeOpen = testScheduler.currentTime
         fakeWs.fireOpen()
         runCurrent() // only the work the open callback already queued; NO advanceTimeBy, NO delay
-        val timeAfterSend = testScheduler.currentTime
 
         assertEquals("exactly one frame after open", 1, socket.sendLog.size)
         assertTrue("the first frame is a text frame, never binary PCM", socket.sendLog[0].startsWith("text:"))
@@ -61,6 +62,5 @@ class ServerBackendFirstFrameTest {
         assertTrue("the first frame carries a version", config.has("version"))
         assertEquals("en", config.getString("language"))
         assertEquals(16_000, config.getInt("sampleRate"))
-        assertEquals("the send is reached with virtual time unchanged", timeBeforeOpen, timeAfterSend)
     }
 }

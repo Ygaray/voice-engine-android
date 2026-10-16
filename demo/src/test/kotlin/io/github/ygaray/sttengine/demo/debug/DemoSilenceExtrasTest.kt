@@ -157,7 +157,7 @@ class DemoSilenceExtrasTest {
 
     @Test
     fun `a 64 character raw string is not refused for length alone`() {
-        // "possibly=" (9) + 55 spaces of padding = 64 characters, then a valid value squeezed in.
+        // "possibly=1" (10) + 54 spaces of padding = 64 characters: a valid value squeezed in.
         val raw = "possibly=1" + " ".repeat(54)
         assertEquals(64, raw.length)
         assertSet(raw, possibly = 1, complete = null, minimum = null)
