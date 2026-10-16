@@ -23,8 +23,9 @@ import org.junit.Test
  * absent from the release compilation, that every assignment to the holder lives under
  * `stt/src/debug/`, that the holder declares itself null, and that the frozen API dump names none of
  * it. What stays in the release compilation is the null-initialized internal holder and the one read
- * hook in `SttEngineImpl.startSession`: a mutable cell nothing in a shipping source set can write,
- * exactly as for `DebugRungCeilingHolder`.
+ * hook in `SttEngineImpl.startSession`: a mutable cell no Kotlin source set that ships can assign,
+ * exactly as for `DebugRungCeilingHolder`. The proof is textual and about Kotlin source: Kotlin
+ * `internal` is public bytecode, so Java or reflection in a consumer process is outside what it covers.
  *
  * Built to the same shape as [ReleaseRungCeilingSeamTest], defending the same property against the
  * same hazard: every assertion that could pass by finding nothing also asserts it found the thing it
@@ -37,6 +38,7 @@ import org.junit.Test
  * |---|---|
  * | [theSeamClassExistsOnlyInTheDebugVariant] | The silence-extras writer ships inside the AAR |
  * | [theHolderIsWrittenOnlyFromTheDebugSourceSet] | Some future `main` code overrides endpointing in a shipped build |
+ * | [noShippingCodeOutsideTheHolderCanAliasOrAssignTheCell] | The same, through an alias, `with(...)`, an import alias or a bare `overrides =` |
  * | [theHolderDeclaresItselfNull] | The cell ships pre-overridden |
  * | [theFrozenApiDumpNamesNoSilenceExtrasSymbol] | The seam widens the published binary contract |
  */
@@ -121,6 +123,53 @@ class ReleaseSilenceExtrasSeamTest {
                 "change its own endpointing: $strays",
             emptyList<File>(),
             strays,
+        )
+    }
+
+    /**
+     * The textual assignment guard above only recognises the literal `DebugSilenceExtrasHolder.overrides =`.
+     * Anything in a shipping source set that could write the cell another way must not exist either: an
+     * import alias, `with(DebugSilenceExtrasHolder)`, a `val h = DebugSilenceExtrasHolder`, a scope function
+     * on the object, or a bare `overrides = ...` in a file that names the holder.
+     */
+    @Test
+    fun noShippingCodeOutsideTheHolderCanAliasOrAssignTheCell() {
+        val sourceRoot = File(moduleDir(), "src")
+        val debugRoot = File(sourceRoot, "debug").absoluteFile
+        val holderFile = File(
+            moduleDir(),
+            "src/main/kotlin/io/github/ygaray/sttengine/internal/DebugSilenceExtrasHolder.kt",
+        ).absoluteFile
+        val shippingFiles = listOf("main", "release")
+            .map { File(sourceRoot, it) }
+            .filter { it.isDirectory }
+            .flatMap { root -> root.walkTopDown().toList() }
+            .filter { it.isFile && it.extension == "kt" }
+            .map { it.absoluteFile }
+            .filter { it != holderFile && !it.path.startsWith(debugRoot.path + File.separator) }
+        val naming = shippingFiles.filter { it.readText().contains("DebugSilenceExtrasHolder") }
+        assertTrue(
+            "expected at least the engine's read hook to name the holder; found none, so this guard " +
+                "scanned nothing (the holder was renamed or the read hook removed)",
+            naming.isNotEmpty(),
+        )
+
+        val risky = listOf(
+            Regex("""\boverrides\s*=(?!=)"""),
+            Regex("""DebugSilenceExtrasHolder\s+as\s+"""),
+            Regex("""\bwith\s*\(\s*DebugSilenceExtrasHolder"""),
+            Regex("""=\s*DebugSilenceExtrasHolder\b(?!\s*\.)"""),
+            Regex("""DebugSilenceExtrasHolder\s*\.\s*(run|apply|let|also)\b"""),
+        )
+        val offenders = naming.filter { file ->
+            val text = file.readText()
+            risky.any { it.containsMatchIn(text) }
+        }
+        assertEquals(
+            "these shipping files name the holder and can write it other than through the literal " +
+                "assignment the primary guard looks for: $offenders",
+            emptyList<File>(),
+            offenders,
         )
     }
 

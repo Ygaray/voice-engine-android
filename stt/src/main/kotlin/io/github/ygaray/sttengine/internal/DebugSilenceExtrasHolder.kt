@@ -5,8 +5,8 @@ import android.speech.RecognizerIntent
 
 /**
  * The one mutable cell that lets a **debug** build change the three silence-related extras of the
- * recognition intent at run time. `null` in every shipped build, and nothing in a shipping source set
- * can write it.
+ * recognition intent at run time. `null` in every shipped build, and it cannot be assigned from any
+ * Kotlin source set that ships.
  *
  * ## What this is for
  *
@@ -28,9 +28,12 @@ import android.speech.RecognizerIntent
  *
  * Stated plainly, so the property is not overstated: the **writer** is structurally absent from the
  * release build. This null-initialized holder and the one read hook in `SttEngineImpl.startSession`
- * DO remain in the release compilation, as a mutable cell in the release read path that nothing in a
- * shipping source set can assign. `ReleaseSilenceExtrasSeamTest` asserts all of that rather than
- * trusting it, and `api/stt.api` is unchanged because every symbol here is `internal`.
+ * DO remain in the release compilation, as a mutable cell in the release read path that no Kotlin
+ * source set that ships can assign. The guarantee is about Kotlin source in this repository: Kotlin
+ * `internal` compiles to public bytecode (with a mangled setter name), so Java code or reflection in
+ * a consumer process could still reach the cell. `ReleaseSilenceExtrasSeamTest` asserts the source
+ * level property rather than trusting it, and `api/stt.api` is unchanged because every symbol here
+ * is `internal`.
  *
  * ## The single-session assumption
  *
