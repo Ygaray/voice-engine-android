@@ -20,6 +20,7 @@ file ever disagree, the file is right and this document is a bug.
 | `EngineState` | enum (5 entries + `wireName`) | the observable state machine |
 | `SttConfig` | class | recognition settings (`language`, backend preference, server URL, try window, corrections, vocabulary) |
 | `FinalSegment` | class | a committed, immutable transcript segment |
+| `LanguageSource` | enum (2 entries) | where a `FinalSegment.language` label came from: a detection or a default stamp |
 | `ReconnectInfo` | class | which bounded recovery attempt is in flight |
 | `SttError` | class | a typed terminal failure (`code`, `message`, `platformDetail`) |
 | `SttErrorCode` | value class + companion | the error taxonomy; 14 constants, two named sets |
@@ -401,11 +402,12 @@ recognition. (A pure-native host that must guarantee bilingual capture below API
 None of these is a `data class`. That is a binary-compatibility decision, not a style one — see
 `CLAUDE.md`.
 
-### `FinalSegment(text: String, segmentId: Int, language: String? = null)`
+### `FinalSegment(text: String, segmentId: Int, language: String? = null, languageSource: LanguageSource? = null)`
 
 A committed, immutable transcript segment. `equals` / `hashCode` / `toString` are hand-written.
-`@JvmOverloads` preserves the existing 2-arg `<init>(String, Int)` in the frozen `.api` dump
-alongside the new 3-arg overload, for the same reason `SttConfig` documents above.
+`@JvmOverloads` preserves the existing 2-arg `<init>(String, Int)` and 3-arg
+`<init>(String, Int, String)` in the frozen `.api` dump alongside the 4-arg form, for the same reason
+`SttConfig` documents above.
 
 **`segmentId` starts at `0`, is library-owned and monotonic within a session, and is OPAQUE and
 PER-SESSION.** It is explicitly **not comparable across backends** and not a stable identifier
@@ -413,11 +415,49 @@ outside the session that produced it — the server-backed client restarts its n
 and this backend owns its own counter. Treat it as an ordering key inside one session and nothing
 more.
 
-**`language` (Phase 17, LANG-02/LANG-03)** is the server-detected language label for a server-backed
-bilingual `"auto"` session — additive and `null` in every other case: always `null` on the native
-on-device backend (native never detects language), and `null` on the server backend unless the
-server frame actually carried a label. A host that never runs a bilingual server session sees `null`
-unconditionally and can ignore the field entirely.
+**`language`** is the bare `"en"` / `"es"` label of a bilingual `"auto"` session, on either backend.
+On the server backend it is the server's per-segment detection. On the native on-device backend it is
+detected on-device from a highly confident event on API 34 and above, and it is the configured default
+`"en"` on native below API 34. It is `null` for every non-`"auto"` session, and `null` when no label
+was produced. A host that never runs a bilingual `"auto"` session sees `null` unconditionally and can
+ignore the field entirely.
+
+**`languageSource`** says whether that label is a detection or a default stamp. It is a closed
+two-value enum, `LanguageSource.DETECTED` or `LanguageSource.FALLBACK`, or `null`. A `DETECTED`
+label is the recognizer's own decision for that segment. A `FALLBACK`
+label is a default stamp, not a detection result, and it may be a label the session already held. The
+enum is closed, so an exhaustive `when` needs no `else` branch, and a non-`"auto"` session reads
+`null`, never a third value. An absent or unrecognized value from a server is `null` and is never
+mapped to `FALLBACK`.
+
+The relationship between the two fields is one-way: a source is only ever present together with a
+language, and the engine sets the two together, so a segment from the native engine or from a current
+server has either both or neither. The single case of a language with no source is a server that
+predates the field (row 9 below), and it means the engine makes no claim about where the label came
+from. `null` must never be read as `FALLBACK`.
+
+| # | Path | `language` | `languageSource` |
+|---|---|---|---|
+| 1 | native, API 34+, a confident `en`/`es` detection | the label | `DETECTED` |
+| 2 | native, API 34+, no confident event for the segment | `null` | `null` |
+| 3 | native, below API 34, `"auto"` session | `"en"` | `FALLBACK` |
+| 4 | native, non-`"auto"` session | `null` | `null` |
+| 5 | server `"auto"`, detection evidence for the segment (including when the previous label was kept because the challenger did not clear the switch margin) | the label | `DETECTED` |
+| 6 | server `"auto"`, no usable `en`/`es` detection evidence for the segment | the label the session already held, or `"en"` when it held none | `FALLBACK` |
+| 7 | server `"auto"`, language detection failed | `"en"` | `FALLBACK` |
+| 8 | server, non-`"auto"` session | `null` | `null` |
+| 9 | a server that predates the field, or a frame without the key | the label, if the frame carried one | `null` |
+| 10 | a segment committed by a mid-session server-to-native handoff, or by a stop-flush timeout | `null` | `null` |
+
+**Migration for `languageSource`:** the parameter is trailing and defaulted, so Kotlin and Java call
+sites compile unchanged and every earlier constructor overload and getter stays. Two things are not
+purely additive. First, the synthetic default-arguments constructor that Kotlin callers use is
+replaced by one that includes the new parameter, so a module compiled against an earlier artifact and
+linked against this one must be recompiled; apps do this on the dependency bump, and a pre-compiled
+library that constructs `FinalSegment` with omitted arguments is the only case. Second, `equals`,
+`hashCode` and `toString` now include the field, so a test that asserts equality between engine
+output and a `FinalSegment` literal built with a language but without a source no longer matches:
+pass the source in the literal, or compare the fields.
 
 **Known seam (Phase 9): a mid-session server→native handoff resets the counter.** When a session
 starts on the server backend and later drops to the on-device fallback (SEL-04), the synthetic final

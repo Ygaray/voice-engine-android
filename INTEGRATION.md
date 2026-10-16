@@ -162,6 +162,10 @@ proposal is ignored, and a missing `en-US`/`es-US` pack fails loud with `no-offl
 API 34**, native `"auto"` falls back to the configured default language rather than failing. So a
 `prefer = Auto` session now bilingual-switches on either backend at API 34+; use
 `prefer = BackendPreference.Server` only if your host must guarantee bilingual capture below API 34.
+Each committed final's `languageSource` says whether its label was detected or is a default stamp:
+use `LanguageSource.DETECTED` when the label drives per-language handling, treat
+`LanguageSource.FALLBACK` as a default stamp rather than a detection, and treat `null` as no claim.
+The field is `null` on every non-`"auto"` session.
 
 Configuration is fixed at construction. A language change or a diagnostic run mints a **new** engine
 rather than mutating a live one, so if your host offers either, hold the engine in something the UI
