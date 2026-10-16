@@ -320,7 +320,8 @@ public class ContractSurfaceTest {
 
     @Test
     public fun `submitCorrection lives in the SubmitCorrectionKt facade and the enum is not a data type (D-01)`() {
-        assertEquals("io.github.ygaray.sttengine.SubmitCorrectionKt", Class.forName("io.github.ygaray.sttengine.SubmitCorrectionKt").name)
+        // Loading the class is the check: it fails if the facade is renamed or moved.
+        Class.forName("io.github.ygaray.sttengine.SubmitCorrectionKt")
         assertTrue(CorrectionSubmitResult::class.java.isEnum)
     }
 }

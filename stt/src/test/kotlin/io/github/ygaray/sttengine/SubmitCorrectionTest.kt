@@ -455,10 +455,20 @@ class SubmitCorrectionTest {
         server.close()
         val afterShutdown = submit()
 
-        for (result in results + afterShutdown) {
-            assertFalse(result.name.contains(marker))
-            assertFalse(result.toString().contains(marker))
-        }
+        // Results are enum entries and cannot carry text; assert the mapping instead, so this test
+        // proves every path was actually exercised. The real privacy guard is the log scan below
+        // and the @After hook.
+        assertEquals(
+            listOf(
+                CorrectionSubmitResult.ACCEPTED,
+                CorrectionSubmitResult.UNREACHABLE,
+                CorrectionSubmitResult.REJECTED,
+                CorrectionSubmitResult.REJECTED,
+                CorrectionSubmitResult.REJECTED,
+                CorrectionSubmitResult.UNREACHABLE,
+            ),
+            results + afterShutdown,
+        )
         // The @After hook asserts the log; here the log must also not have grown a line for the call.
         assertTrue(ShadowLog.getLogs().none { it.msg?.contains(marker) == true })
     }

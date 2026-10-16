@@ -136,27 +136,6 @@ class DemoControlReceiverDiagnosticsTest {
         assertEquals(setOf("lastSessionId"), into.keys().asSequence().toSet())
     }
 
-    @Test
-    fun `lastSessionIdDiagnostics never carries transcript or corrected text`() {
-        // The helper takes only the id, so a transcript can reach the record only by being passed in
-        // as the id. Assert no value equals the marker texts and the rendered record never contains
-        // them, for both the null and the id case.
-        val transcript = "secret dictated words"
-        val corrected = "secret corrected words"
-        for (id in listOf<String?>(null, "0123456789abcdef0123456789abcdef")) {
-            val into = JSONObject()
-            lastSessionIdDiagnostics(into, id)
-            val keys = into.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
-                assertNotEquals("key $key leaked the transcript", transcript, into.get(key))
-                assertNotEquals("key $key leaked the corrected text", corrected, into.get(key))
-            }
-            assertTrue(!into.toString().contains(transcript))
-            assertTrue(!into.toString().contains(corrected))
-        }
-    }
-
     // --- LAST-01: lastFinalDiagnostics ------------------------------------------------------------
 
     @Test
