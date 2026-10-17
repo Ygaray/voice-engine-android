@@ -33,7 +33,7 @@ maven { url = uri("https://jitpack.io") }
 In your app module's **`build.gradle.kts`**:
 
 ```kotlin
-implementation("com.github.Ygaray:voice-engine-android:v0.7.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray:voice-engine-android:v0.8.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 Pin a tag or a commit SHA. **Never `main-SNAPSHOT` or any moving branch ref** — a moving coordinate
@@ -45,13 +45,13 @@ repository name, not the Gradle module name (`:stt`).
 > POM resolves at HTTP 200, but it is JitPack's synthesized **root/aggregator** POM for the whole
 > multi-module repo — its own dependency list pulls in `voice-engine-android` (the real `:stt` AAR, under
 > a *different* groupId), `-recorder`, `-transcription`, `-voicenotes`, and `-corrections` as
-> `<type>aar</type>` dependencies. Declaring `implementation("com.github.Ygaray:voice-engine-android:v0.7.0")`
+> `<type>aar</type>` dependencies. Declaring `implementation("com.github.Ygaray:voice-engine-android:v0.8.0")`
 > therefore transitively links **all five modules**, not `:stt` alone. If you want `:stt`'s recognition
 > code with zero Recorder/VoiceNotes/Transcription/Corrections bytes pulled in, depend on the real
 > standalone artifact instead:
-> `implementation("com.github.Ygaray.voice-engine-android:voice-engine-android:v0.7.0")` — note the
+> `implementation("com.github.Ygaray.voice-engine-android:voice-engine-android:v0.8.0")` — note the
 > `.voice-engine-android` suffix on the **groupId**, matching the pattern the four secondary modules use
-> (§7–10 below). Both coordinates are live and immutable at `v0.7.0`; pick the aggregator only if you
+> (§7–10 below). Both coordinates are live and immutable at `v0.8.0`; pick the aggregator only if you
 > genuinely want every module.
 
 ### Migrating from `stt-engine-android`
@@ -385,7 +385,7 @@ record-only consumer. A record-only host depends on **only** this coordinate and
 recognition code (REC-05):
 
 ```kotlin
-implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-recorder:v0.7.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-recorder:v0.8.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 > **Groupid note.** Secondary modules carry a **different groupId prefix** than the plain
@@ -524,7 +524,7 @@ and validation rules.
 above with a durable Room-backed queue and the Phase 7 batch endpoint:
 
 ```kotlin
-implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-voicenotes:v0.7.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-voicenotes:v0.8.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 > **Groupid note.** Same wrinkle as `:recorder` (step 7): the groupId prefix is
@@ -582,7 +582,7 @@ drain timing. See `API.md`'s Voice Notes section for the full `NoteRecord`/`Note
 plus `GET /jobs/{id}`), with zero `:stt`/`:recorder`/`:voicenotes`/Room/`WorkManager` coupling:
 
 ```kotlin
-implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-transcription:v0.7.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-transcription:v0.8.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 > **Groupid note.** Same wrinkle as `:recorder`/`:voicenotes` (steps 7–8): the groupId prefix is
@@ -644,7 +644,7 @@ module pulls in only the pure correction primitives, with zero `:stt`/`:recorder
 `:transcription` coupling:
 
 ```kotlin
-implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-corrections:v0.7.0")   // immutable tag — NEVER a branch snapshot
+implementation("com.github.Ygaray.voice-engine-android:voice-engine-android-corrections:v0.8.0")   // immutable tag — NEVER a branch snapshot
 ```
 
 > **Groupid note.** Same wrinkle as `:recorder`/`:voicenotes`/`:transcription` (steps 7–9): the
