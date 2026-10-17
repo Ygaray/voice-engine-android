@@ -77,7 +77,7 @@ import java.util.concurrent.atomic.AtomicReference
  * ### Running it
  *
  * ```
- * cd android && ANDROID_SERIAL=100.113.42.22:1496 ./gradlew :stt:connectedDebugAndroidTest \
+ * cd android && ANDROID_SERIAL=<serial> ./gradlew :stt:connectedDebugAndroidTest \
  *   -Pandroid.testInstrumentationRunnerArguments.class=io.github.ygaray.sttengine.probe.RecognizerBehaviourProbeTest \
  *   -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true
  * ```

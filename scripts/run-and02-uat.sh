@@ -67,7 +67,7 @@
 #
 # ─── USAGE (all inputs are environment variables; nothing is hardcoded) ──────────────────────────
 #
-#   AND02_SERIAL=100.113.42.22:1496 AND02_DURATION_S=130 ./scripts/run-and02-uat.sh
+#   AND02_SERIAL=<serial> AND02_DURATION_S=130 ./scripts/run-and02-uat.sh
 #
 # Optional:
 #   AND02_LANGUAGE=en-US     BCP-47 tag the session requests (default en-US)
@@ -114,7 +114,7 @@ set -euo pipefail
 
 # NOTE: no apostrophes inside these two messages. Bash tracks quotes INSIDE ${...} even within a
 # double-quoted word, so a lone ' would swallow the closing brace and the whole file after it.
-: "${AND02_SERIAL:?run-and02: ABORT [env] set AND02_SERIAL to the target device (e.g. 100.113.42.22:1496) — the wireless-adb port on the tester rotates, so it is never hardcoded}"
+: "${AND02_SERIAL:?run-and02: ABORT [env] set AND02_SERIAL to the target device (e.g. <serial>) — the wireless-adb port on the tester rotates, so it is never hardcoded}"
 : "${AND02_DURATION_S:?run-and02: ABORT [env] set AND02_DURATION_S to the hold duration in seconds (use 130 — it clears the 120 s assertion with margin)}"
 
 SERIAL="${AND02_SERIAL}"

@@ -35,13 +35,13 @@ import java.util.concurrent.TimeUnit
  *
  * ```
  * # 1. synthesise the parts on the tester (note BOTH plan-01 invocation fixes)
- * cd android && ANDROID_SERIAL=100.113.42.22:1496 ./gradlew :stt:connectedDebugAndroidTest \
+ * cd android && ANDROID_SERIAL=<serial> ./gradlew :stt:connectedDebugAndroidTest \
  *   -Pandroid.testInstrumentationRunnerArguments.class=io.github.ygaray.sttengine.probe.StimulusGeneratorTest \
  *   -Pandroid.testInstrumentationRunnerArguments.generateStimulus=true \
  *   -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true
  *
  * # 2. pull them IMMEDIATELY — connectedAndroidTest deletes the app's external files dir on teardown
- * adb -s 100.113.42.22:1496 pull \
+ * adb -s <serial> pull \
  *   /sdcard/Android/data/io.github.ygaray.sttengine.test/files/stimulus-parts <dest>
  *
  * # 3. stitch + resample on the host (the .py deliberately lives OUTSIDE assets/, which is
