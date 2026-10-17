@@ -113,7 +113,7 @@ publishing {
             // the module's shape matches every sibling from its first commit.
             artifactId = "voice-engine-android-corrections"
             // Matches the version every other published module currently carries.
-            version = "0.7.0"
+            version = "0.8.0"
             afterEvaluate {
                 from(components["release"])
             }
