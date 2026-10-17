@@ -82,6 +82,13 @@
 #            scoped to TRACKED paths and TRACKED content only. See the block itself for why: a
 #            filesystem walk of the post-build tree produces false positives on AGP's own build
 #            outputs, and tracked content is what `git push` actually sends.
+#            It then requires the push to fast-forward the published main (read with
+#            `git ls-remote`, fail closed) and runs the repo-root leak scanner
+#            (`scripts/check-mirror-leaks.sh`) over the pristine tree, its path names, and every
+#            commit message, added line and changed path the push would add. The scanner checks
+#            the tailnet's carrier-grade-NAT and IPv6 ranges, tailnet hostnames, private device
+#            names, development-machine paths and secret shapes. It lives at the repo root, outside
+#            the split prefix, because its device-name denylist must never be published.
 #
 #   PREREQUISITES — mono-repo release only. The wire-parity gate in GATE 2 scores three languages, so
 #            the server virtual environment (server/.venv with pytest), the web dependencies
@@ -302,8 +309,25 @@ leaked_devpath="$(git -C "${MIRROR}" grep -InE "${DEVPATH_RE}" -- . || true)"
 in the split tree:
 ${leaked_devpath}"
 
+# The push must fast-forward the published main, and every commit it adds must be clean too: the
+# split copies each commit message verbatim, and an intermediate commit or a merge resolution can
+# carry what the tip tree no longer shows. Read the published main (fail closed: a release that
+# cannot read it cannot prove it only adds clean commits), require it to be an ancestor of the
+# split, then run the repo-root scanner over the pristine tree and the push range. The scanner and
+# its private denylist live at the repo root, outside the split prefix, so neither is ever published.
+MIRROR_BASE="$(git ls-remote "${PUSH_URL}" refs/heads/main | cut -f1)"
+[ -n "${MIRROR_BASE}" ] || abort "GATE 3b failed — could not read the published mirror's main \
+(fail closed: the push range cannot be proven clean)"
+git -C "${REPO_ROOT}" merge-base --is-ancestor "${MIRROR_BASE}" "${SPLIT_BRANCH}" \
+  || abort "GATE 3b failed — the split is not a fast-forward of the published mirror's main"
+( cd "${REPO_ROOT}" && bash scripts/check-mirror-leaks.sh --tree "${MIRROR}" \
+    --range "${MIRROR_BASE}..${SPLIT_BRANCH}" ) \
+  || abort "GATE 3b failed — a private address, host, device name, path or secret would reach the \
+public mirror (scripts/check-mirror-leaks.sh output above)"
+
 echo "release-android: GATE 3b — clean: no .planning/, no server/, no local.properties, no tailnet \
-hostname, no development-machine path."
+hostname, no development-machine path, no tailnet address, no denylisted device name, no secret, \
+no leak in any commit message or added line of the push range, and the push fast-forwards the published main."
 
 # Extract the install commands from the MIRROR's own jitpack.yml so this gate can never drift from
 # the file JitPack actually reads. Only lines whose first non-space character is a list dash are
