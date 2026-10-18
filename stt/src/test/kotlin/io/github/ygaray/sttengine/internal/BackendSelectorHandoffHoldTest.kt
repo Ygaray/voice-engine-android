@@ -26,6 +26,8 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -146,6 +148,8 @@ class BackendSelectorHandoffHoldTest {
             )
             assertEquals(EngineState.Listening, h.selector.state.value)
             assertEquals("backend stays Server until native reaches Listening", Backend.Server, h.selector.backend.value)
+            val holdJob = h.selector.handoffHoldJob
+            assertTrue("the handoff hold must be running", holdJob?.isActive == true)
 
             h.fakeHandle.reachListening()
             runCurrent()
@@ -154,6 +158,7 @@ class BackendSelectorHandoffHoldTest {
             assertEquals(EngineState.Listening, h.selector.state.value)
             assertEquals(Backend.Native, h.selector.backend.value)
             assertTrue(h.errors.isEmpty())
+            assertFalse("Listening ends the hold and its timer", holdJob!!.isActive)
         }
 
     // --- Test A': the same on the real Dispatchers.Main.immediate ----------------------------------
@@ -216,6 +221,7 @@ class BackendSelectorHandoffHoldTest {
             assertEquals("the Error must not wait for the hold window", t0, testScheduler.currentTime)
             assertEquals(1, h.errors.size)
             assertEquals(SttErrorCode.MIC_DENIED, h.errors.single().code)
+            assertFalse("Error ends the hold and its timer", h.selector.handoffHoldJob!!.isActive)
 
             advanceTimeBy(WINDOW_MS * 2)
             runCurrent()
@@ -273,6 +279,7 @@ class BackendSelectorHandoffHoldTest {
         commitServerThenDrop(h)
         h.fakeHandle.reachListening()
         runCurrent()
+        assertFalse("Listening ends the hold and its timer", h.selector.handoffHoldJob!!.isActive)
 
         h.fakeHandle.fireError(ERROR_SERVER_DISCONNECTED)
         runCurrent()
@@ -302,6 +309,7 @@ class BackendSelectorHandoffHoldTest {
 
         assertEquals(listOf(EngineState.Connecting, EngineState.Listening), h.states.toList())
         assertEquals(Backend.Native, h.selector.backend.value)
+        assertNull("the Auto-fallback path launches no hold timer", h.selector.handoffHoldJob)
     }
 
     @Test
@@ -314,6 +322,7 @@ class BackendSelectorHandoffHoldTest {
         runCurrent()
         assertEquals(1, h.fakeHandle.startCount)
         assertEquals(listOf(EngineState.Connecting), h.states.toList())
+        assertNull("the Auto-fallback path launches no hold timer", h.selector.handoffHoldJob)
 
         advanceTimeBy(WINDOW_MS * 2)
         runCurrent()
@@ -336,7 +345,10 @@ class BackendSelectorHandoffHoldTest {
             advanceTimeBy(WINDOW_MS / 2)
             runCurrent()
 
+            val holdJob = h.selector.handoffHoldJob
+            assertTrue("the handoff hold must be running before stop()", holdJob?.isActive == true)
             h.selector.stop()
+            assertTrue("stop() must cancel the hold timer", holdJob!!.isCancelled)
             runCurrent()
 
             assertEquals(EngineState.Idle, h.selector.state.value)

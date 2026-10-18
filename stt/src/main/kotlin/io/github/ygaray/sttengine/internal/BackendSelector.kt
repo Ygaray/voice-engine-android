@@ -107,7 +107,8 @@ internal class BackendSelector(
      *  the TCP+TLS handshake. The Phase-9 on-device probe that was meant to measure a fixed value
      *  (`ServerHandoffProbeTest`, never run) is superseded by connection-phase classification
      *  (D-06): a refused/DNS-class failure fails fast regardless of the window, so the window only
-     *  has to cover a cold-starting host; the live cold-start capture is plan 21-08. `internal` (not
+     *  has to cover a cold-starting host; the live cold-start capture is plan 21-08. It also bounds
+     *  the XR-01 handoff hold (see [startNative]). `internal` (not
      *  private) so the factory-level test can prove the host's value arrives here; tests that pass
      *  an explicit value keep doing so. */
     internal val tryServerTimeoutMs: Long = config.serverTryTimeoutMs,
@@ -279,6 +280,18 @@ internal class BackendSelector(
         private set
 
     /**
+     * The current session's XR-01 handoff-hold timer, if [handleServerDrop] started one (see
+     * [startNative]). Launched under the session's [sessionForwarders], so the next [runStart]'s
+     * cancel kills it; [stop] also cancels it explicitly, so it never fires after `stop()` returns.
+     * `null` on every session that did not hand off, including the Auto-fallback path. Reset per
+     * session in [runStart]. Main-confined.
+     *
+     * `internal` (read-only) only so a test can prove [stop] cancelled it.
+     */
+    internal var handoffHoldJob: Job? = null
+        private set
+
+    /**
      * Re-entry mirrors [SttEngineImpl.start]'s own `if (running) return`: a `start()` while this
      * selector's session is still starting (the try-server loop, its backoffs, the native start) or
      * live (a committed server, or a native session that has not stopped or failed) is a no-op that
@@ -344,6 +357,9 @@ internal class BackendSelector(
         terminal = false
         handoffStarted = false
         handoffFinal = null
+        // Already cancelled as a child of the sessionForwarders cancelled above; the reset keeps
+        // the accessor honest for this session.
+        handoffHoldJob = null
         lastServer = null
         activeServer = null
         activeNative = null
@@ -374,7 +390,8 @@ internal class BackendSelector(
         }
 
         setBackend(Backend.Native)
-        startNative()
+        // XR-01 ruling (c): the Auto-fallback entry holds nothing — it stays [Connecting, Listening].
+        startNative(holdUntilListening = false)
     }
 
     /**
@@ -566,6 +583,8 @@ internal class BackendSelector(
         // activeServer/activeNative — so nothing further in that sequence (a still-pending
         // startNative() call, most notably) can mutate state/backend after this stop() returns.
         startJob?.cancel()
+        // XR-01: the handoff hold ends with the session — it never fires after stop() returns.
+        handoffHoldJob?.cancel()
         // Belt-and-suspenders alongside the cancellation above: abandon a try-server attempt that
         // is still pending RIGHT NOW, in case stop() is racing runStart() between two suspension
         // points where cancellation has not yet been delivered. abandon() is idempotent.
@@ -650,13 +669,19 @@ internal class BackendSelector(
      *                                       cannot coexist, T-09-06; the WebSocket is already closed
      *                                       by ServerBackend's OWN fail() funnel by the time an
      *                                       error reaches this collector at all)
-     * 3. construct native and start it    (native acquisition happens only AFTER release)
+     * 3. construct native and start it    (native acquisition happens only AFTER release), with the
+     *                                       XR-01 handoff hold on: native's own pre-Listening
+     *                                       Connecting/Reconnecting is held off `state`
      * ```
      *
      * `state` never transitions to [EngineState.Reconnecting] anywhere in this sequence, and
      * [ServerBackend]'s own terminal [EngineState.Error] is never mirrored onto this selector's
-     * `state` in the first place ([forwardServer] filters it) — the whole transition is invisible on
-     * the shared contract, exactly like an ordinary native restart already is (D-17). [backend] is
+     * `state` in the first place ([forwardServer] filters it). Since XR-01, native's own
+     * [EngineState.Connecting] is not forwarded either: [startNative]'s handoff hold keeps `state` at
+     * the server's [EngineState.Listening] until native reaches Listening itself, so a host sees
+     * `[Connecting, Listening]` for the whole session — the transition is invisible on the shared
+     * contract, exactly like an ordinary native restart already is (D-17). The hold is bounded by
+     * [tryServerTimeoutMs], and a native Error/Idle ends it at once (see [startNative]). [backend] is
      * flipped to [Backend.Native] only once the native session actually reaches [EngineState.Listening]
      * (see [startNative]'s own state collector), never before — a host reading [backend] must never
      * observe `Native` ahead of native audio actually flowing.
@@ -689,7 +714,8 @@ internal class BackendSelector(
         serverBackend.releaseAudioSource()
 
         // 3. construct native and start it — native acquisition happens only AFTER release (above).
-        startNative()
+        //    The ONLY entry that holds (XR-01): the host already saw this session's Listening.
+        startNative(holdUntilListening = true)
     }
 
     /**
@@ -697,8 +723,35 @@ internal class BackendSelector(
      * [io.github.ygaray.sttengine.createSttEngine] — both segmented rungs on, the platform
      * recognizer factory, the context permission checker — so a session that falls back here
      * behaves byte-identically to a plain v1.0 engine for the rest of its life.
+     *
+     * ## The handoff hold (XR-01, SEL-04, D-03)
+     *
+     * [holdUntilListening] is `true` only from [handleServerDrop]. There the host has already seen
+     * this session's [EngineState.Listening] from the server, and forwarding native's own start-up
+     * [EngineState.Connecting] would surface the handoff as `Listening → Connecting → Listening` —
+     * exactly what SEL-04/D-03 promise a host never sees. (The probe behind XR-01 showed the
+     * collector's first read is native's Connecting, never a transient Idle, so the hold targets
+     * Connecting/Reconnecting and filters nothing else.) The Auto-fallback entry from [runStart]
+     * passes `false`: there the host has not seen Listening yet, so `[Connecting, Listening]` is
+     * already right and nothing is held (ruling (c)).
+     *
+     * While the hold is on:
+     * - native's [EngineState.Connecting] and [EngineState.Reconnecting] are not forwarded — `state`
+     *   stays Listening and [backend] stays [Backend.Server];
+     * - any other state ends the hold and forwards normally: [EngineState.Listening] (which flips
+     *   [backend], SEL-04's unchanged rule), and [EngineState.Error] / [EngineState.Idle], which
+     *   ALWAYS pass through at once — a native failure is never delayed or swallowed (ruling (a));
+     * - it is bounded by [tryServerTimeoutMs]: a native that has not reached Listening by then ends
+     *   the hold, and its CURRENT state is forwarded (so the host sees Connecting) — no new error and
+     *   no new error code (ruling (b)).
+     *
+     * Once the hold has ended every later native state forwards as before, so a Reconnecting during
+     * native's life reaches the host. The timer ([handoffHoldJob]) runs under the session's
+     * [sessionForwarders], so the next [runStart] cancels it, and [stop] cancels it explicitly — it
+     * never fires after `stop()` and never writes into a later session. The flag the collector and
+     * the timer share is main-confined, like the rest of this class.
      */
-    private suspend fun startNative() {
+    private suspend fun startNative(holdUntilListening: Boolean) {
         val native = SttEngineImpl(
             appContext = appContext,
             config = config,
@@ -711,14 +764,31 @@ internal class BackendSelector(
         )
         activeNative = native
         val forwarders = sessionForwarders
+
+        // The ONE forwarding step for native state, shared by the collector and the hold's expiry
+        // so SEL-04's flip-on-Listening rule lives in one place. Only flip `backend` once native
+        // audio is ACTUALLY flowing (SEL-04) — never before, so a host reading `backend` never
+        // observes Native ahead of native audio. A no-op on the plain v1.0/native-only path, where
+        // `backend` is already Native from construction.
+        fun forwardNativeState(next: EngineState) {
+            if (next == EngineState.Listening) setBackend(Backend.Native)
+            setState(next)
+        }
+
+        // XR-01's handoff hold (see the KDoc). Shared by the collector and the timer below; both
+        // run on mainDispatcher.
+        var holding = holdUntilListening
+        var holdTimer: Job? = null
+
         scope.launch(forwarders) {
             native.state.collect { next ->
-                // Only flip `backend` once native audio is ACTUALLY flowing (SEL-04) — never
-                // before, so a host reading `backend` never observes Native ahead of native audio.
-                // A no-op on the plain v1.0/native-only path, where `backend` is already Native
-                // from construction.
-                if (next == EngineState.Listening) setBackend(Backend.Native)
-                setState(next)
+                if (holding) {
+                    if (next == EngineState.Connecting || next == EngineState.Reconnecting) return@collect
+                    // Listening, Error or Idle: the hold is over (Error/Idle always pass through).
+                    holding = false
+                    holdTimer?.cancel()
+                }
+                forwardNativeState(next)
             }
         }
         scope.launch(forwarders) {
@@ -747,6 +817,19 @@ internal class BackendSelector(
                 _level.tryEmit(level)
                 _events.tryEmit(SttEvent.Level(level))
             }
+        }
+        // Launched BEFORE native.start(), which suspends until Listening or a terminal failure.
+        // Ruling (b): the existing try-window bounds the hold; on expiry forward native's CURRENT
+        // state (no new error).
+        if (holding) {
+            holdTimer = scope.launch(forwarders) {
+                delay(tryServerTimeoutMs)
+                if (holding) {
+                    holding = false
+                    forwardNativeState(native.state.value)
+                }
+            }
+            handoffHoldJob = holdTimer
         }
         native.start()
     }
