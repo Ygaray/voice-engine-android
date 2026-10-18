@@ -44,6 +44,17 @@ release, not something this phase's growth introduced or is scoped to close.)_
 
 ---
 
+## Migrating to v0.8.1
+
+No migration; drop-in from `v0.8.0`. This is a patch release: the public API dump is unchanged, and
+there is nothing to recompile.
+
+| ID | Kind | Surface | Change | What hosts do |
+|---|---|---|---|---|
+| MIG-16 | behaviour | `SttEngine.state` (server-to-native handoff) | A mid-session drop from the server backend to on-device recognition no longer shows on `state`. Before, `state` went `Listening` -> `Connecting` -> `Listening` while the native recognizer started. Now it stays `Listening` until native audio flows. Errors and `Idle` still arrive at once. If native has not reached `Listening` within `serverTryTimeoutMs`, the host sees its current state (`Connecting`). The `Auto` fallback at session start is unchanged (`Connecting` -> `Listening`). | Nothing. A host that hid UI on any non-`Listening` state no longer flickers on a handoff. |
+
+---
+
 ## Migrating to v0.8.0
 
 Every change a host can see between `v0.7.0` and `v0.8.0`, one row each. The IDs are stable anchors a repin
