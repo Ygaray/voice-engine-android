@@ -180,6 +180,13 @@ internal class BackendSelector(
     private val _backend = MutableStateFlow(Backend.Native)
     override val backend: StateFlow<Backend> = _backend.asStateFlow()
 
+    /**
+     * LIVE-04 (D-01, D-03): why this session fell back to native, or `null`. Reset by [runStart];
+     * written only on a server-caused flip of [backend] to [Backend.Native], and always BEFORE that
+     * flip (in [runStart] for a start-time fallback, in [startNative]'s Listening step for a
+     * mid-session handoff), so a [backend] collector that sees Native already reads the reason.
+     * Main-confined writes.
+     */
     private val _fallbackReason = MutableStateFlow<FallbackReason?>(null)
     override val fallbackReason: StateFlow<FallbackReason?> = _fallbackReason.asStateFlow()
 
@@ -270,6 +277,21 @@ internal class BackendSelector(
     /** The latest typed error any attempt of the current try-server loop produced — what
      *  `prefer = Server` surfaces when the loop gives up (TRY-02). Reset per [tryServer]. */
     private var lastTryError: SttError? = null
+
+    /**
+     * The [FallbackReason] the current [tryServer] loop ended with when it returned no server: set
+     * by a fast-fail, or at window expiry. Published by [runStart] just before its Auto flip to
+     * native. Reset per [tryServer] and per [runStart]. Main-confined.
+     */
+    private var lastTryReason: FallbackReason? = null
+
+    /**
+     * Whether the newest RESOLVED attempt of the current [tryServer] loop was a busy rejection.
+     * Decides BUSY vs TIMEOUT only when the window runs out during a backoff (no attempt in flight);
+     * an attempt still in flight at expiry is decided by its own observation instead (review 28-04).
+     * Reset per [tryServer] and per [runStart]. Main-confined.
+     */
+    private var lastRetryWasBusy = false
 
     /**
      * The job actually running [runStart] — launched on [scope] rather than executed inline in the
@@ -366,6 +388,10 @@ internal class BackendSelector(
         terminal = false
         handoffStarted = false
         handoffFinal = null
+        // LIVE-04 (D-01): every start() resets the fallback reason.
+        _fallbackReason.value = null
+        lastTryReason = null
+        lastRetryWasBusy = false
         // Already cancelled as a child of the sessionForwarders cancelled above; the reset keeps
         // the accessor honest for this session.
         handoffHoldJob = null
@@ -395,7 +421,9 @@ internal class BackendSelector(
                 return
             }
             // Otherwise (Auto): fall through to native below — SEL-01's silent swallow of the
-            // fast-fail / window-expired conditions.
+            // fast-fail / window-expired conditions. LIVE-04 (D-01): the reason is published
+            // BEFORE the backend flip, so a host that sees Native already reads it.
+            _fallbackReason.value = lastTryReason
         }
 
         setBackend(Backend.Native)
@@ -421,6 +449,8 @@ internal class BackendSelector(
      */
     private suspend fun tryServer(url: String): ServerBackend? {
         lastTryError = null
+        lastTryReason = null
+        lastRetryWasBusy = false
         var attempt = 0
         var gaveUp = false
         // This loop's OWN in-flight attempt. [pendingServer] is the shared handle [stop] reads; every
@@ -454,6 +484,7 @@ internal class BackendSelector(
                         gaveUp = true
                         return@withTimeoutOrNull null
                     }
+                    lastRetryWasBusy = isBusyRejection(observation)
                     delay(RETRY_BACKOFF_MS[min(retryIndex, RETRY_BACKOFF_MS.lastIndex)])
                     retryIndex += 1
                 }
@@ -469,6 +500,12 @@ internal class BackendSelector(
                 expired?.lastError?.let { lastTryError = it }
                 expired?.abandon()
                 logAttempt(attempt, WINDOW_EXPIRED, observation)
+                // LIVE-04 (D-03): BUSY only when the server was still busy as the window ended.
+                // An attempt still in flight decides from its OWN observation (an unanswered one
+                // reads TIMEOUT, even after an earlier busy); with none in flight the window ran
+                // out during a backoff, and the newest resolved attempt decides.
+                val stillBusy = if (expired != null) isBusyRejection(observation) else lastRetryWasBusy
+                lastTryReason = if (stillBusy) FallbackReason.BUSY else FallbackReason.TIMEOUT
             }
             return connected
         } finally {

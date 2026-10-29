@@ -155,9 +155,15 @@ internal fun classifyConnectFailure(observation: ConnectObservation): ConnectFai
     }
 }
 
-// RED skeleton (28-04): the real bodies land with the GREEN commit.
-internal fun isBusyRejection(observation: ConnectObservation): Boolean = false
+/**
+ * `true` when [observation] is a busy server: a `busy` error frame or a close `1013` (rules 1 and 2
+ * of [classifyConnectFailure]). [BackendSelector] uses it to tell [FallbackReason.BUSY] from
+ * [FallbackReason.TIMEOUT] when its try window runs out (LIVE-04, D-03).
+ */
+internal fun isBusyRejection(observation: ConnectObservation): Boolean =
+    observation.serverErrorCode == BUSY_ERROR_CODE || observation.closeCode == BUSY_CLOSE_CODE
 
+// RED skeleton (28-04): the real body lands with the Task 2 GREEN commit.
 internal fun fallbackReasonForFastFail(observation: ConnectObservation): FallbackReason =
     FallbackReason.REJECTED
 
