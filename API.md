@@ -523,10 +523,15 @@ The set is **open**, for the same reason `SttErrorCode` is a value class: more r
 later, so a `when` over it keeps an `else` branch that reads "fell back for a reason this build does
 not name". The values are fixed lowercase words, never built from server text.
 
-**Snapshot semantics.** The value is set only when `backend` flips to `Backend.Native` because of a
-server failure, and it is written before that flip is visible, so a collector of `backend` that sees
-`Native` already reads the reason here. Read it together with `backend` as each final arrives, and
-expect both to change during a session.
+**Snapshot semantics.** The value is set only when the session falls back to `Backend.Native`
+because of a server failure, and it is written before `backend` is set to `Native`. For a
+mid-session handoff (`dropped`) that is a real flip from `Server`, so a collector of `backend` that
+sees `Native` already reads the reason here. For a start-time fallback (`busy`, `timeout`,
+`unreachable`, `rejected`), `backend` may already read `Native`: it is not reset per start, so a
+fresh engine, or one whose previous session ran on-device, makes no `backend` emission at all.
+Collect `fallbackReason` itself (it is a `StateFlow` and does emit) rather than waiting for a
+`backend` emission. Read it together with `backend` as each final arrives, and expect both to change
+during a session.
 
 - **Reset on every `start()`**, so a reused engine never reports a previous session's reason.
 - **`null`** on a session running on the server, on an engine that chose on-device recognition from

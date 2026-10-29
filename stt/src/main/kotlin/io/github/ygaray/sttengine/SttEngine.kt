@@ -60,9 +60,14 @@ public interface SttEngine {
      * `null`. Android-only additive metadata, like [backend]: the web client is server-only, with no
      * backend selection and no fallback, so it has no counterpart.
      *
-     * It is set only when [backend] flips to [Backend.Native] because of a server failure, and the
-     * reason is written BEFORE that flip is visible, so a collector of [backend] that sees `Native`
-     * already reads the reason here. It is `null`:
+     * It is set only when the session falls back to [Backend.Native] because of a server failure,
+     * and the reason is written BEFORE [backend] is set to `Native`. For a mid-session handoff
+     * (`dropped`) that is a real flip from [Backend.Server], so a collector of [backend] that sees
+     * `Native` already reads the reason here. For a start-time fallback (`busy`, `timeout`,
+     * `unreachable`, `rejected`) [backend] may already read `Native` (it is not reset per start: a
+     * fresh engine, or one whose previous session ran on-device, starts at `Native`), so [backend]
+     * may not emit at all; collect this flow itself, which does emit, rather than waiting for a
+     * [backend] emission. It is `null`:
      * - on a session running on the server;
      * - on an engine that chose on-device recognition from its config (no `serverUrl`, or
      *   [BackendPreference.OnDevice]);

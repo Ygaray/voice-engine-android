@@ -183,10 +183,12 @@ internal class BackendSelector(
 
     /**
      * LIVE-04 (D-01, D-03): why this session fell back to native, or `null`. Reset by [runStart];
-     * written only on a server-caused flip of [backend] to [Backend.Native], and always BEFORE that
-     * flip (in [runStart] for a start-time fallback, in [startNative]'s Listening step for a
-     * mid-session handoff), so a [backend] collector that sees Native already reads the reason.
-     * Main-confined writes.
+     * written only on a server-caused fallback to [Backend.Native], and always BEFORE [backend] is
+     * set to Native (in [runStart] for a start-time fallback, in [startNative]'s Listening step for a
+     * mid-session handoff). Only the handoff is guaranteed to be a visible flip: [_backend] starts at
+     * Native and is not reset per start, so a start-time fallback on a fresh engine (or after a
+     * native session) makes no [backend] emission at all — a host collects this flow itself for
+     * those (Phase 28 review WR-04). Main-confined writes.
      */
     private val _fallbackReason = MutableStateFlow<FallbackReason?>(null)
     override val fallbackReason: StateFlow<FallbackReason?> = _fallbackReason.asStateFlow()
