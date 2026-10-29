@@ -8,6 +8,7 @@ import io.github.ygaray.sttengine.SttErrorCode
 import io.github.ygaray.sttengine.corrections.CorrectionPair
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -366,9 +367,19 @@ class ServerBackendTest {
         var released = false
             private set
 
-        override fun read(buffer: ByteArray): Int = 0
-        override fun stop() = Unit
+        /** Phase 28 (D-13): a live, silent mic — the read parks (untimed) until teardown opens the
+         *  latch, so the pump never ends unasked (which would now fail the session by itself). */
+        private val unpark = java.util.concurrent.CountDownLatch(1)
+
+        override fun read(buffer: ByteArray): Int {
+            unpark.await()
+            return -1
+        }
+        override fun stop() {
+            unpark.countDown()
+        }
         override fun release() {
+            unpark.countDown()
             released = true
         }
     }
@@ -455,4 +466,120 @@ class ServerBackendTest {
             assertEquals("Yahir", vocabulary.getString(0))
             assertEquals("SecondBrain", vocabulary.getString(1))
         }
+
+    // --- LIVE-02 (Phase 28, D-14, D-08): a post-ready server close 1000 ends the session ----------
+
+    /** A backend driven to `ready` on a parked (live, silent) mic, with its errors and finals. */
+    private class ReadySession(
+        val backend: ServerBackend,
+        val fakeWs: FakeWebSocketFactory,
+        val sources: FinitePcmSourceFactory,
+        val errors: MutableList<SttError>,
+        val finals: MutableList<FinalSegment>,
+    ) {
+        val socket: FakeWebSocket get() = checkNotNull(fakeWs.lastSocket)
+    }
+
+    private fun TestScope.readySession(): ReadySession {
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val fakeWs = FakeWebSocketFactory()
+        val sources = finitePcmSourceFactory(frames = 0)
+        val backend = ServerBackend(
+            webSocketFactory = fakeWs,
+            serverUrl = "wss://example.ts.net:8444/",
+            language = "en",
+            mainDispatcher = dispatcher,
+            pcmSourceFactory = sources,
+        )
+        val errors = mutableListOf<SttError>()
+        val finals = mutableListOf<FinalSegment>()
+        backgroundScope.launch(dispatcher) { backend.errors.collect { errors += it } }
+        backgroundScope.launch(dispatcher) { backend.finals.collect { finals += it } }
+        backgroundScope.launch(dispatcher) { backend.connect() }
+        fakeWs.fireOpen()
+        fakeWs.fireMessage("""{"type":"ready"}""")
+        assertEquals(EngineState.Listening, backend.state.value)
+        return ReadySession(backend, fakeWs, sources, errors, finals)
+    }
+
+    @Test
+    fun `a post-ready close 1000 replies close 1000 once, ends Idle with no error, and releases the mic once`() =
+        runTest {
+            val s = readySession()
+
+            s.fakeWs.fireClosing(1000, "")
+
+            assertEquals(listOf("close:1000"), s.socket.sendLog.filter { it.startsWith("close") })
+            assertEquals(1, s.socket.closeCount)
+            assertEquals(EngineState.Idle, s.backend.state.value)
+            assertTrue("a graceful server close is not an error: ${s.errors}", s.errors.isEmpty())
+            assertEquals("the mic is released exactly once", 1, s.sources.last.releaseCount)
+            assertFalse("an empty reason is not the idle timeout", s.backend.closedByIdleTimeout)
+
+            // The closing handshake's onClosed afterwards changes nothing.
+            s.fakeWs.fireClosed(1000)
+
+            assertEquals(EngineState.Idle, s.backend.state.value)
+            assertTrue(s.errors.isEmpty())
+            assertEquals(1, s.socket.closeCount)
+            assertEquals("a graceful close never cancels the socket", 0, s.socket.cancelCount)
+            assertEquals(1, s.sources.last.releaseCount)
+        }
+
+    @Test
+    fun `a post-ready close 1000 drops a live partial without committing it, and keeps an earlier final once`() =
+        runTest {
+            val s = readySession()
+            s.fakeWs.fireMessage("""{"type":"final","text":"first words","segmentId":1}""")
+            s.fakeWs.fireMessage("""{"type":"partial","text":"still talking","segmentId":2}""")
+            assertEquals("still talking", s.backend.partial.value)
+
+            s.fakeWs.fireClosing(1000, "")
+
+            // Mirrors the web client: a graceful close commits NO partial locally. The final the
+            // server already sent is delivered exactly once; the live partial produces no final.
+            assertEquals(listOf(FinalSegment("first words", 1)), s.finals)
+            assertTrue(
+                "the dropped partial must not become a final: ${s.finals}",
+                s.finals.none { it.text == "still talking" },
+            )
+            assertEquals("", s.backend.partial.value)
+            assertEquals(FinalSegment("first words", 1), s.backend.lastFinal)
+            assertEquals(EngineState.Idle, s.backend.state.value)
+            assertTrue(s.errors.isEmpty())
+        }
+
+    @Test
+    fun `a post-ready close 1000 with reason idle-timeout is recorded as the idle close`() = runTest {
+        assertEquals("idle-timeout", ServerBackend.IDLE_TIMEOUT_CLOSE_REASON)
+        val s = readySession()
+
+        s.fakeWs.fireClosing(1000, ServerBackend.IDLE_TIMEOUT_CLOSE_REASON)
+
+        assertTrue(s.backend.closedByIdleTimeout)
+        assertEquals(EngineState.Idle, s.backend.state.value)
+        assertTrue(s.errors.isEmpty())
+        assertEquals(1, s.socket.closeCount)
+    }
+
+    @Test
+    fun `a close 1000 before ready still fails connect with SERVER_UNREACHABLE`() = runTest {
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val fakeWs = FakeWebSocketFactory()
+        val backend = ServerBackend(
+            webSocketFactory = fakeWs,
+            serverUrl = "wss://example.ts.net:8444/",
+            language = "en",
+            mainDispatcher = dispatcher,
+            pcmSourceFactory = finitePcmSourceFactory(frames = 0),
+        )
+        val connected = backgroundScope.async(dispatcher) { backend.connect() }
+        fakeWs.fireOpen()
+
+        fakeWs.fireClosing(1000, ServerBackend.IDLE_TIMEOUT_CLOSE_REASON)
+
+        assertFalse(connected.await())
+        assertEquals(SttErrorCode.SERVER_UNREACHABLE, backend.lastError?.code)
+        assertFalse("a pre-ready close is never the idle close", backend.closedByIdleTimeout)
+    }
 }
