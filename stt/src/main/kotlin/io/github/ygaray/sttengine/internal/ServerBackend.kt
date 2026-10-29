@@ -978,9 +978,13 @@ internal class ServerBackend(
             NORMAL_CLOSE_CODE ->
                 // Before ready, a normal close ends the attempt (TRY-02: the selector classifies it
                 // Retryable) instead of leaving connect() hanging until the window expires. After
-                // ready it is an ordinary teardown, not a failure.
+                // ready (and not stopping — that branch is above) the SERVER ended the session —
+                // its idle timeout, or any other graceful close: end it here, gracefully, mirroring
+                // the web client (LIVE-02, D-14). Never a failure, never a handoff.
                 if (connecting) {
                     fail(SttError(SttErrorCode.SERVER_UNREACHABLE, "server closed before ready"))
+                } else {
+                    endSessionFromServerClose(reason)
                 }
             // Mirrors protocol.ts's closeCodeFor/engine.ts's failBusy(): the server closes 1013 when
             // it is already serving its single permitted session.
@@ -989,6 +993,37 @@ internal class ServerBackend(
 
             else -> fail(SttError(SttErrorCode.INTERNAL_ERROR, "server closed the connection: $code $reason"))
         }
+    }
+
+    /**
+     * The server closed a live session with 1000 after `ready`, while no [stop] was in flight
+     * (LIVE-02, D-14) — for example its idle timeout ([IDLE_TIMEOUT_CLOSE_REASON], D-08). Mirrors
+     * the web client's post-ready 1000 arm:
+     *
+     * - reply `close(1000)` — OkHttp 5.2.1 does not reply on its own;
+     * - every final the server sent before its close is already on [finals] (callbacks hop onto one
+     *   FIFO dispatcher, so they were handled before this one);
+     * - a live partial is DROPPED, never committed: the web client commits no partial on a graceful
+     *   close, and the server's idle close already flushes an open tail as a final before closing;
+     * - then the same terminal sequence [stop] runs in its `finally`, ending in
+     *   [EngineState.Idle] — nothing on [errors], no [EngineState.Error], so [BackendSelector]
+     *   never hands off. With [terminal] set, the later `onClosed` is a no-op.
+     */
+    private fun endSessionFromServerClose(reason: String) {
+        closedByIdleTimeout = reason == IDLE_TIMEOUT_CLOSE_REASON
+        webSocket?.close(NORMAL_CLOSE_CODE, "normal")
+        // Web mirror: the live partial is cleared without a final.
+        _partial.value = ""
+        livePartialSegmentId = null
+        terminal = true
+        epoch.advance()
+        releaseAudioSource()
+        dropPendingFrames()
+        frames = null
+        consumerJob = null
+        outboundQueue.clear()
+        webSocket = null
+        setState(EngineState.Idle)
     }
 
     private fun doOnClosed(code: Int) {

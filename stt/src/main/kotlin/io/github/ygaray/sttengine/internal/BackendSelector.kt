@@ -162,8 +162,9 @@ internal class BackendSelector(
      * [finals] is lossless, so these are never cancelled. They are retired by
      * [retireFinalsForwarders]: each backend's own `finals` is closed, and each collector is joined
      * once it has handed everything still buffered to [finals] and completed. That happens when
-     * [stop] has settled the session, and again at the top of [runStart] for a session that ended
-     * without a `stop()` (a terminal error). So a previous session's final is always delivered
+     * [stop] has settled the session, when the server ended it with a graceful close
+     * ([detachEndedServer], before Idle is published), and again at the top of [runStart] for a
+     * session that ended without a `stop()` (a terminal error). So a previous session's final is always delivered
      * BEFORE the next session resets anything or emits a single event, and no collector outlives its
      * session.
      */
@@ -675,11 +676,27 @@ internal class BackendSelector(
      * [handleServerDrop]'s one-way handoff (SEL-04, D-03), never mirrored onto this selector's own
      * `state` — the whole transition stays invisible on the shared contract (`state` never even
      * touches `Error`, let alone `Reconnecting`), exactly like an ordinary native restart already is.
+     *
+     * **A session the server ended (LIVE-02, D-14).** A post-ready close 1000 (the server's idle
+     * timeout, or any other graceful close) takes the committed [ServerBackend] to
+     * [EngineState.Idle] with no error. That Idle is NOT forwarded directly: [detachEndedServer]
+     * publishes it, only after the `finals` forwarders are drained and joined. State and finals
+     * travel through separate collectors, so forwarding Idle first and retiring afterwards could not
+     * restore the order — a host would see Idle before the server's last finals. The identity check
+     * (`serverBackend === activeServer`) is the one the stop path relies on: [detachAndFlush] clears
+     * [activeServer] BEFORE its flush, so a requested stop's Idle never takes this branch.
      */
     private fun forwardServer(serverBackend: ServerBackend) {
         val forwarders = sessionForwarders
         scope.launch(forwarders) {
-            serverBackend.state.collect { next -> if (next != EngineState.Error) setState(next) }
+            serverBackend.state.collect { next ->
+                when {
+                    next == EngineState.Error -> Unit // handleServerDrop owns a failure (see above)
+                    // The SERVER ended the session (LIVE-02): Idle waits for the drain.
+                    next == EngineState.Idle && serverBackend === activeServer -> detachEndedServer(serverBackend)
+                    else -> setState(next)
+                }
+            }
         }
         scope.launch(forwarders) {
             serverBackend.partial.collect { text ->
@@ -712,6 +729,32 @@ internal class BackendSelector(
         // as SttEvent.Warning whenever the socket falls behind.
         scope.launch(forwarders) {
             serverBackend.warnings.collect { warning -> _events.tryEmit(SttEvent.Warning(warning)) }
+        }
+    }
+
+    /**
+     * The server ended [serverBackend]'s session gracefully (LIVE-02, D-14): drain, then Idle, then
+     * detach. No handoff, no error, no [fallbackReason].
+     *
+     * 1. [retireFinalsForwarders] closes each `finals` source and joins each collector, so every
+     *    final the server sent before its close is on [finals] and [events] first.
+     * 2. Only then, if [serverBackend] is still [activeServer], ONE uninterrupted main-thread step
+     *    clears [activeServer] (keeping it as [lastServer], so [lastFinal] still reads its tail) and
+     *    publishes [EngineState.Idle].
+     *
+     * [activeServer] stays set during the drain, so a `start()` meanwhile is ignored by
+     * [sessionActive]. If a host `stop()` took the session meanwhile ([detachAndFlush] already
+     * cleared [activeServer]), the Idle write is skipped — that stop settles Idle itself — so a late
+     * write can never land on a newer session. Launched on [scope], not under [sessionForwarders],
+     * so a following [runStart] cannot cancel it half-way.
+     */
+    private fun detachEndedServer(serverBackend: ServerBackend) {
+        scope.launch {
+            retireFinalsForwarders()
+            if (activeServer !== serverBackend) return@launch
+            activeServer = null
+            lastServer = serverBackend
+            setState(EngineState.Idle)
         }
     }
 
