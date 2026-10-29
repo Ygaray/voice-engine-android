@@ -18,10 +18,13 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -43,6 +46,9 @@ import org.robolectric.annotation.Config
 @OptIn(ExperimentalCoroutinesApi::class)
 class BackendSelectorServerCloseTest {
 
+    @get:Rule
+    val folder: TemporaryFolder = TemporaryFolder()
+
     private fun context(): Context = ApplicationProvider.getApplicationContext()
 
     private class Harness(
@@ -61,7 +67,7 @@ class BackendSelectorServerCloseTest {
         var watchedFinalsJobs: List<Job> = emptyList()
     }
 
-    private fun TestScope.harness(): Harness {
+    private fun TestScope.harness(sessionLog: SessionLog = SessionLog()): Harness {
         val main = StandardTestDispatcher(testScheduler)
         val fakeWs = FakeWebSocketFactory()
         val fakeHandle = FakeRecognizerHandle()
@@ -73,6 +79,7 @@ class BackendSelectorServerCloseTest {
                 PreflightHandle(fakeHandle, LanguageAvailability.INSTALLED)
             },
             permissions = PermissionChecker { true },
+            log = sessionLog,
             webSocketFactory = fakeWs,
             mainDispatcher = main,
             tryServerTimeoutMs = WINDOW_MS,
@@ -209,6 +216,61 @@ class BackendSelectorServerCloseTest {
             assertEquals(EngineState.Listening, h.selector.state.value)
             assertEquals(Backend.Server, h.selector.backend.value)
         }
+
+    // --- IN-01 (Phase 28 review): the opt-in trace tells the idle close apart ----------------------
+
+    private fun serverCloseLines(log: SessionLog): List<JSONObject> =
+        (log.file?.readLines() ?: emptyList())
+            .filter { it.isNotBlank() }
+            .map { JSONObject(it) }
+            .filter { it.getString("kind") == SessionLog.KIND_SERVER_CLOSE }
+
+    @Test
+    fun `an idle close writes one server-close trace line with reason idle-timeout`() = runTest {
+        val log = SessionLog(enabled = true, directory = folder.root, sessionStartEpochMs = 1L)
+        val h = harness(log)
+        commitServer(h, index = 0)
+
+        h.fakeWs.fireClosing(1000, ServerBackend.IDLE_TIMEOUT_CLOSE_REASON)
+        runCurrent()
+
+        val lines = serverCloseLines(log)
+        assertEquals(1, lines.size)
+        assertEquals("idle-timeout", lines.single().getString("reason"))
+    }
+
+    @Test
+    fun `any other graceful server close writes reason normal and never the server's text`() = runTest {
+        val log = SessionLog(enabled = true, directory = folder.root, sessionStartEpochMs = 1L)
+        val h = harness(log)
+        commitServer(h, index = 0)
+
+        h.fakeWs.fireClosing(1000, "some free-form server text")
+        runCurrent()
+
+        val lines = serverCloseLines(log)
+        assertEquals(1, lines.size)
+        assertEquals("normal", lines.single().getString("reason"))
+        assertTrue(
+            "the server's own reason text never reaches the trace",
+            !(log.file?.readText() ?: "").contains("free-form"),
+        )
+    }
+
+    @Test
+    fun `a requested stop writes no server-close line`() = runTest {
+        val log = SessionLog(enabled = true, directory = folder.root, sessionStartEpochMs = 1L)
+        val h = harness(log)
+        commitServer(h, index = 0)
+
+        launch(h.main) { h.selector.stop() }
+        runCurrent()
+        h.fakeWs.fireClosing(1000, "")
+        runCurrent()
+
+        assertEquals(EngineState.Idle, h.selector.state.value)
+        assertTrue(serverCloseLines(log).isEmpty())
+    }
 
     private companion object {
         const val SERVER_URL = "wss://example.ts.net:8444/"

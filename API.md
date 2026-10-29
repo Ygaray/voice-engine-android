@@ -349,7 +349,9 @@ and a host cannot change it from the client.
 - What a host sees: `state` goes to `Idle`, nothing is emitted on `errors`, there is no handoff to
   on-device recognition, and `fallbackReason` stays `null`. A live partial is not committed. Call
   `start()` again to keep dictating. Every server close 1000 after `ready` ends the same way; the
-  reason string only tells the idle close apart in logs. On a session that asked for
+  reason string only tells the idle close apart in logs: the server's own log, and on Android the
+  opt-in `diagnosticLogging` trace, which writes one `server-close` line with reason `idle-timeout`
+  or `normal`. On a session that asked for
   `retainForCorpus`, the server commits the record before it closes, so `lastSessionId` carries its
   id after the close, exactly as after `stop()`.
 - **Silenced capture is cut only by this timer.** An app whose microphone is silenced in the

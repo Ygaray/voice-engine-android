@@ -785,6 +785,9 @@ internal class BackendSelector(
      * so a following [runStart] cannot cancel it half-way.
      */
     private fun detachEndedServer(serverBackend: ServerBackend) {
+        // IN-01 (Phase 28 review): the one opt-in trace line that tells the idle close (D-08) apart
+        // from any other graceful server close. A fixed word, never the server's reason text.
+        log.serverClose(idleTimeout = serverBackend.closedByIdleTimeout)
         scope.launch {
             retireFinalsForwarders()
             if (activeServer !== serverBackend) return@launch

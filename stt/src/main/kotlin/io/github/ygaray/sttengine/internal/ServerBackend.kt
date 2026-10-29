@@ -405,7 +405,8 @@ internal class ServerBackend(
     /**
      * `true` once the server ended this session after `ready` with a close 1000 whose reason was
      * [IDLE_TIMEOUT_CLOSE_REASON] (Phase 28, D-08) — so an idle close can be told apart from any
-     * other graceful post-ready close 1000. Main-confined write.
+     * other graceful post-ready close 1000. Read by [BackendSelector] for the opt-in `server-close`
+     * trace line ([SessionLog.serverClose], review IN-01). Main-confined write.
      */
     internal var closedByIdleTimeout: Boolean = false
         private set

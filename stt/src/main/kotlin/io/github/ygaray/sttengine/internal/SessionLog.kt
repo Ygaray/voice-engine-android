@@ -45,11 +45,17 @@ import org.json.JSONObject
  * | `ready` | `epoch`, `deafWindowMs` |
  * | `error` | `code`, `platformDetail` (present as JSON `null` when there is none) |
  * | `server-attempt` | `attempt`, `class`, `exception`, `sawOpen`, `closeCode`, `responseCode` (absent values as JSON `null`) |
+ * | `server-close` | `reason` — `idle-timeout` or `normal` |
  *
  * `server-attempt` (TRY-02) is one line per server connection attempt; `class` is `Connected`,
  * `FastFail`, `Retryable` or `WindowExpired`. Its `exception` is the throwable's simple class name
  * only — never its message (it embeds the server URL) and never text. The analyzer ignores the kind
  * (unknown kinds are additive).
+ *
+ * `server-close` (Phase 28, D-08, review IN-01) is one line when the server ends a live session with
+ * a graceful close 1000 after `ready` (no stop asked for). `reason` is a fixed word chosen by the
+ * client — `idle-timeout` for the server's idle close, `normal` for any other — never the server's
+ * free-form close text. The analyzer ignores this kind too.
  *
  * ## Failure is always a no-op
  *
@@ -167,6 +173,18 @@ internal class SessionLog(
         }
     }
 
+    /**
+     * The server ended a live session with a graceful close 1000 after `ready` (LIVE-02, D-14).
+     *
+     * @param idleTimeout `true` when the close reason was the idle-timeout constant (D-08); written
+     *   as `reason`: `idle-timeout`, otherwise `normal`. Never the server's own reason text.
+     */
+    fun serverClose(idleTimeout: Boolean) {
+        write(KIND_SERVER_CLOSE) {
+            it.put("reason", if (idleTimeout) SERVER_CLOSE_IDLE_TIMEOUT else SERVER_CLOSE_NORMAL)
+        }
+    }
+
     // --- internals ------------------------------------------------------------------------------------
 
     private inline fun write(kind: String, fill: (JSONObject) -> Unit) {
@@ -206,6 +224,11 @@ internal class SessionLog(
         const val KIND_READY = "ready"
         const val KIND_ERROR = "error"
         const val KIND_SERVER_ATTEMPT = "server-attempt"
+        const val KIND_SERVER_CLOSE = "server-close"
+
+        /** `server-close` reasons: fixed client-side words, never server text. */
+        const val SERVER_CLOSE_IDLE_TIMEOUT = ServerBackend.IDLE_TIMEOUT_CLOSE_REASON
+        const val SERVER_CLOSE_NORMAL = "normal"
 
         /**
          * A log rooted at the application's own external files directory.
