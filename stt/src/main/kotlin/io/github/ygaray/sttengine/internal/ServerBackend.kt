@@ -511,13 +511,31 @@ internal class ServerBackend(
      * 7. terminal, epoch advanced, mic released again (idempotent), state Idle
      * ```
      *
-     * One deadline bounds the whole call: [STOP_FLUSH_TIMEOUT_MS] is measured from entry and covers
-     * every stage 1-5 — the pump's ≤ [PUMP_JOIN_MS] join, the channel drain, the FIFO flush, the
-     * token and the flush await all sit inside the same `withTimeoutOrNull`. Exhausting it at any
-     * stage lands on step 6, so a starved drain cannot push `stop()` past the bound and sends no
-     * frame after it. It never calls `close` before the server's own close (the web client's order
+     * Three outcomes, told apart by how the flush ended (Phase 28, LIVE-05):
+     *
+     * - a CLEAN close 1000 completes the flush: the client replies `close(1000)`, does not cancel the
+     *   socket, and publishes [endedSessionId] (when the session asked for retention and `ready`
+     *   supplied an id);
+     * - an ABNORMAL close, a socket failure or a refused `stop` token ends the flush as not flushed,
+     *   and step 6 runs PROMPTLY, as soon as that happens, well before the bound;
+     * - SILENCE (neither a close nor a failure) runs step 6 when the bound expires.
+     *
+     * Step 6 therefore runs whenever the flush did not complete cleanly, not only at the bound. The
+     * first completion wins: a failure that lands after a clean close cannot undo the flush, and a
+     * clean close that lands after a failure cannot revive it.
+     *
+     * One deadline bounds the whole call: [STOP_FLUSH_TIMEOUT_MS] (about 5 s) is measured from entry
+     * and covers every stage 1-5 — the pump's ≤ [PUMP_JOIN_MS] join, the channel drain, the FIFO
+     * flush, the token and the flush await all sit inside the same `withTimeoutOrNull`. Exhausting it
+     * at any stage lands on step 6, so a starved drain cannot push `stop()` past the bound and sends
+     * no frame after it. It never calls `close` before the server's own close (the web client's order
      * loses the flushed final), and the epoch is advanced only after the flush settles (advancing it
      * first would fence the flushed final away).
+     *
+     * The bound is this client's own wait. The server's close timeout is a separate bound that starts
+     * at a different instant (after its own stop, writer drain and retention commit), so equal values
+     * guarantee nothing end to end: this bounds how long `stop()` waits, and is not a promise about
+     * how soon the server's slot is free.
      */
     suspend fun stop() {
         if (terminal || stopping) return
@@ -1066,9 +1084,16 @@ internal class ServerBackend(
         /** The protocol's end-of-audio text token (mirrors `server/` and `web/src/engine.ts`). */
         const val STOP_TOKEN = "stop"
 
-        /** The ONE end-to-end bound on [stop] (D-04), measured from entry: pump teardown, frame
-         *  drain, FIFO flush, token send and flush await all share it. */
-        const val STOP_FLUSH_TIMEOUT_MS: Long = 2_500L
+        /**
+         * The ONE end-to-end bound on [stop] (D-04), measured from entry: pump teardown, frame
+         * drain, FIFO flush, token send and flush await all share it. About 5 s since Phase 28
+         * (D-12; it was 2.5 s, shorter than a well-behaved server close needs under load). The
+         * server's close 1000 stays the end-of-flush marker; this only bounds how long the client
+         * waits for it when the server stays silent (an abnormal close, a failure or a refused token
+         * end the wait at once). It is the client's own wait, independent of the server's close
+         * timeout, and says nothing about when the server's slot is free.
+         */
+        const val STOP_FLUSH_TIMEOUT_MS: Long = 5_000L
 
         /** How long a teardown waits for the pump thread to notice and exit (copies
          *  `AudioSourcePipe`'s bound): never unbounded, because teardown can run on the main looper

@@ -137,7 +137,7 @@ internal class BackendSelector(
     /**
      * How many [stop] calls are still running — main-confined (every [stop] runs on
      * [mainDispatcher]). While it is above zero the session is still tearing down (the server flush
-     * can take ~2.5 s), so [start]'s guard treats the session as active. See [start].
+     * can take up to about 5 s), so [start]'s guard treats the session as active. See [start].
      */
     private var stopsInFlight = 0
 
@@ -350,7 +350,7 @@ internal class BackendSelector(
      * is already on the main thread the hop is free — the immediate dispatcher runs it in place.
      *
      * **A `start()` during a `stop()` is ignored too.** A server-path [stop] suspends for the flush
-     * (up to ~2.5 s) after detaching [activeServer] (D-04), and the session is not over until it
+     * (up to about 5 s) after detaching [activeServer] (D-04), and the session is not over until it
      * returns. Admitting a `start()` in that window would open a second socket mid-flush, and its
      * [runStart] would clear [lastServer] before the original `stop()` returned — breaking LAST-01's
      * promise that [lastFinal] holds the flushed tail as soon as `stop()` returns. So [stopsInFlight]
@@ -552,9 +552,12 @@ internal class BackendSelector(
      *
      * On the server path this now waits for the server's flush (Phase 21, SRV-05, D-04):
      * [ServerBackend.stop] sends the protocol `stop` token and suspends until the server's close
-     * 1000, bounded by [ServerBackend.STOP_FLUSH_TIMEOUT_MS] (~2.5 s) — on timeout it commits the
-     * open partial locally. So a server-path `stop()` can take up to ~2.5 s; the native path's
-     * `stop()` is unchanged.
+     * 1000, bounded by [ServerBackend.STOP_FLUSH_TIMEOUT_MS] (about 5 s). Whenever the flush does not
+     * complete cleanly it commits the open partial locally and cancels the socket: at the bound if
+     * the server stays silent, but promptly on an abnormal close, a socket failure or a refused
+     * `stop` token. So a server-path `stop()` can take up to about 5 s; the native path's `stop()`
+     * is unchanged. That bound is this client's own wait, independent of the server's close
+     * timeout, so it is not a promise about how soon the server's slot is free.
      *
      * **Detach before await.** The committed server is read into a local and [activeServer] is
      * cleared BEFORE that suspending flush starts. Any socket failure, abnormal close or error frame
@@ -580,7 +583,7 @@ internal class BackendSelector(
      * microphone held. Under [NonCancellable] the whole teardown always runs to the end, flush
      * included. That stays bounded: [ServerBackend.stop]'s own deadline
      * ([ServerBackend.STOP_FLUSH_TIMEOUT_MS], D-04) still applies, so a cancelled caller waits at most
-     * the same ~2.5 s as any other. A cancelled caller then sees its own cancellation once `stop()`
+     * the same about 5 s as any other. A cancelled caller then sees its own cancellation once `stop()`
      * returns, as with any suspend call.
      */
     override suspend fun stop() {

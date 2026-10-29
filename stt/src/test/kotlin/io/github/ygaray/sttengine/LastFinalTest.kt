@@ -266,7 +266,7 @@ class LastFinalTest {
             runCurrent()
             assertFalse(stopJob.isCompleted)
 
-            // No reply at all: the ~2.5 s bound commits the open partial locally.
+            // No reply at all: the about-5 s bound commits the open partial locally.
             advanceTimeBy(ServerBackend.STOP_FLUSH_TIMEOUT_MS)
             runCurrent()
 

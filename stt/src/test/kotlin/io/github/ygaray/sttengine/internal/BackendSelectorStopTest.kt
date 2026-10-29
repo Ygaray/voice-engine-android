@@ -34,7 +34,7 @@ import org.robolectric.annotation.Config
 /**
  * `BackendSelector.stop()` on a committed server session (Phase 21, SRV-05, D-04).
  *
- * The selector detaches [ServerBackend] (`activeServer = null`) BEFORE it awaits the up-to-~2.5 s
+ * The selector detaches [ServerBackend] (`activeServer = null`) BEFORE it awaits the up-to-about-5 s
  * flush, so anything that goes wrong on the socket during that wait lands on
  * `handleServerDrop`'s identity guard as a no-op: a stop can never start the native recognizer.
  * The forwarding collectors keep running after the detach, so the server's flushed tail still
