@@ -37,6 +37,29 @@ public final class io/github/ygaray/sttengine/EngineState : java/lang/Enum {
 	public static fun values ()[Lio/github/ygaray/sttengine/EngineState;
 }
 
+public final class io/github/ygaray/sttengine/FallbackReason {
+	public static final field Companion Lio/github/ygaray/sttengine/FallbackReason$Companion;
+	public static final synthetic fun box-impl (Ljava/lang/String;)Lio/github/ygaray/sttengine/FallbackReason;
+	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
+	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public static fun hashCode-impl (Ljava/lang/String;)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (Ljava/lang/String;)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()Ljava/lang/String;
+}
+
+public final class io/github/ygaray/sttengine/FallbackReason$Companion {
+	public final fun getBUSY-dbBcdlQ ()Ljava/lang/String;
+	public final fun getDROPPED-dbBcdlQ ()Ljava/lang/String;
+	public final fun getREJECTED-dbBcdlQ ()Ljava/lang/String;
+	public final fun getTIMEOUT-dbBcdlQ ()Ljava/lang/String;
+	public final fun getUNREACHABLE-dbBcdlQ ()Ljava/lang/String;
+}
+
 public final class io/github/ygaray/sttengine/FinalSegment {
 	public fun <init> (Ljava/lang/String;I)V
 	public fun <init> (Ljava/lang/String;ILjava/lang/String;)V
@@ -105,6 +128,7 @@ public abstract interface class io/github/ygaray/sttengine/SttEngine {
 	public abstract fun getBackend ()Lkotlinx/coroutines/flow/StateFlow;
 	public abstract fun getErrors ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun getEvents ()Lkotlinx/coroutines/flow/Flow;
+	public fun getFallbackReason ()Lkotlinx/coroutines/flow/StateFlow;
 	public abstract fun getFinals ()Lkotlinx/coroutines/flow/Flow;
 	public fun getLastFinal ()Lio/github/ygaray/sttengine/FinalSegment;
 	public fun getLastSessionId ()Ljava/lang/String;
@@ -116,6 +140,7 @@ public abstract interface class io/github/ygaray/sttengine/SttEngine {
 }
 
 public final class io/github/ygaray/sttengine/SttEngine$DefaultImpls {
+	public static fun getFallbackReason (Lio/github/ygaray/sttengine/SttEngine;)Lkotlinx/coroutines/flow/StateFlow;
 	public static fun getLastFinal (Lio/github/ygaray/sttengine/SttEngine;)Lio/github/ygaray/sttengine/FinalSegment;
 	public static fun getLastSessionId (Lio/github/ygaray/sttengine/SttEngine;)Ljava/lang/String;
 }
