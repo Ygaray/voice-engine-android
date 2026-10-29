@@ -198,11 +198,12 @@ What to know before shipping this:
 - **Tuning `serverTryTimeoutMs`.** This is how long session start keeps trying the server. A host
   that is down hard (DNS failure, no network, connection refused) fails fast whatever the window
   is, and a server that answers but is still starting up, or answers `busy` because it is still
-  serving another session, is retried within it. Only a
-  black-holed host (one that never answers) waits the full window, and no audio is captured
-  meanwhile. The default already sits at the 10 000 ms ceiling, so a session started while the
+  serving another session, is retried within it. A
+  black-holed host (one that never answers), or a server that stays busy because another session
+  is active, waits the full window, and no audio is captured meanwhile. The default already sits at the 10 000 ms ceiling, so a session started while the
   server is cold-starting can wait up to 10 s before the on-device fallback. **Lower it** (down to
-  1 000 ms) if a dead network should hand the user to on-device dictation quickly. Values outside
+  1 000 ms) if a dead network, or a server busy with someone else's long session, should hand the
+  user to on-device dictation quickly. Values outside
   the range are clamped, never rejected.
 - **`stop()` can take up to ~5 s on the server path.** It sends the protocol's `stop` token and
   waits for the server to flush the tail of the utterance, so the last words the user spoke are not

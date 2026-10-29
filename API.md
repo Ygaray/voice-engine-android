@@ -54,7 +54,7 @@ unchanged and still describe those releases.
 | ID | Kind | Surface | Change | What hosts do |
 |---|---|---|---|---|
 | MIG-17 | additive | `SttEngine.fallbackReason`, `FallbackReason` | New non-abstract member, default `null`: a `StateFlow<FallbackReason?>` that says why the current session fell back from the server to on-device recognition (`busy`, `timeout`, `unreachable`, `rejected` or `dropped`). `FallbackReason` is a new value class holding those five constants; the set is open. Android-only metadata, like `backend`. | Nothing, unless you want to show or log why a session ran on-device. Read it together with `backend`, and keep an `else` branch for values this build does not name. Implementers and test fakes need no change. See "`fallbackReason` - why a session fell back". |
-| MIG-18 | behaviour | busy server at session start | A server that answers `busy` (it is still serving another session) is now retried inside the try window with the existing backoff, instead of falling back at once. Only a busy that lasts past `serverTryTimeoutMs` falls back, with `fallbackReason` `busy`; under `prefer = Server` the `busy` error arrives when the window ends. | Nothing. A start issued right after another session's `stop()` now waits the busy out and lands on the server when the slot frees inside the window. |
+| MIG-18 | behaviour | busy server at session start | A server that answers `busy` (it is still serving another session) is now retried inside the try window with the existing backoff, instead of falling back at once. Only a busy that lasts past `serverTryTimeoutMs` falls back, with `fallbackReason` `busy`; under `prefer = Server` the `busy` error arrives when the window ends. | Nothing for the common case: a start issued right after another session's `stop()` now waits the busy out and lands on the server when the slot frees inside the window. But a server that stays busy because another long session is active now costs up to `serverTryTimeoutMs` (10 s by default) of deaf time in `Connecting`, with no audio captured, before the on-device fallback, where the previous release fell back at once. A host that cares should lower `serverTryTimeoutMs`. |
 | MIG-19 | behaviour | live server session liveness | Two separate outcomes. (a) A microphone stream that ends while the session is live and no stop was asked for, and a server that stops answering (WebSocket ping, detected within about 20 s), now hand the session off to on-device recognition silently, with `fallbackReason` `dropped`; the live partial is committed first, as on any handoff. (b) A server close 1000 after `ready`, including the server's idle close (reason `idle-timeout`, 300 s server default, no error frame), ends the session in `Idle` with no error, no handoff and `fallbackReason` `null`; a live partial is not committed. | Nothing for (a). For (b), call `start()` again to keep dictating. See "Idle close: 1000 with reason `idle-timeout`". |
 | MIG-20 | behaviour | `SttEngine.stop()` | On the server backend `stop()` can now wait up to about 5 s for the server's tail flush (was about 2.5 s). MIG-03 describes the `v0.8.0` behaviour and is unchanged. | Keep calling `stop()` from a coroutine, not from a blocking UI handler. See "`stop()` latency on the server backend". |
 
@@ -646,7 +646,8 @@ connection got:
   `Auto` falls back or `Server` reports an error.
 
 No audio is captured while the window runs, so a longer window means more deaf time at session
-start when the server is off or black-holed: up to 10 s with the default. Ignored when no server is
+start when the server is off, black-holed, or stays busy with another session: up to 10 s with the
+default. Ignored when no server is
 configured.
 
 **Migration for `serverTryTimeoutMs`:** it is a trailing defaulted parameter, so existing Kotlin and
@@ -657,7 +658,7 @@ does not set the knob now gets a **10 000 ms** window, where the previous releas
 2 500 ms. (A 5 000 ms value was set during development and never released.) A session started while
 the server is cold-starting can therefore wait up to 10 s before the on-device fallback under
 `Auto`. Refused and DNS-class failures still fail fast; only a black-holed host or a slow cold start
-uses the longer window. A host that wants the old behavior passes `serverTryTimeoutMs = 2_500L`.
+uses the longer window (and, since MIG-18, a server that stays busy with another session). A host that wants the old behavior passes `serverTryTimeoutMs = 2_500L`.
 
 `retainForCorpus` (CORR-06) opts this **server** session into the host's voice corpus. When `true`,
 the server keeps the session's audio and its committed finals as a record on the server host, and
