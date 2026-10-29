@@ -66,7 +66,11 @@ class ServerBackendStopFlushTest {
     }
 
     /** A backend connected to `ready` whose pump has delivered all [frames] frames to the socket. */
-    private fun TestScope.readyHarness(frames: Int = 3): Harness {
+    private fun TestScope.readyHarness(
+        frames: Int = 3,
+        retainForCorpus: Boolean = false,
+        readyFrame: String = """{"type":"ready"}""",
+    ): Harness {
         val main = StandardTestDispatcher(testScheduler)
         val fakeWs = FakeWebSocketFactory()
         val sources = finitePcmSourceFactory(frames = frames)
@@ -76,6 +80,7 @@ class ServerBackendStopFlushTest {
             language = "en",
             mainDispatcher = main,
             pcmSourceFactory = sources,
+            retainForCorpus = retainForCorpus,
         )
         val finals = mutableListOf<FinalSegment>()
         val errors = mutableListOf<SttError>()
@@ -88,7 +93,7 @@ class ServerBackendStopFlushTest {
         runCurrent()
         fakeWs.fireOpen()
         runCurrent()
-        fakeWs.fireMessage("""{"type":"ready"}""")
+        fakeWs.fireMessage(readyFrame)
         runCurrent()
         assertEquals(EngineState.Listening, backend.state.value)
 
@@ -109,6 +114,80 @@ class ServerBackendStopFlushTest {
         assertTrue("a requested stop must never emit on errors: ${h.errors}", h.errors.isEmpty())
         assertFalse("a requested stop must never reach Error: ${h.states}", EngineState.Error in h.states)
         assertEquals(EngineState.Idle, h.backend.state.value)
+    }
+
+    /** D-12 (Phase 28): the client waits about 5 s for the server's flush and close, not 2.5 s. */
+    @Test
+    fun `the stop flush bound is 5 seconds`() {
+        assertEquals(5_000L, ServerBackend.STOP_FLUSH_TIMEOUT_MS)
+    }
+
+    /**
+     * LIVE-05 race, clean close first: the tail final and the server's clean close 1000 complete the
+     * flush, and a socket failure that lands before `stop()` resumes cannot turn it into a timeout
+     * commit. First completion wins in `flushDone`: one tail final, one close reply, no cancel, the
+     * id published, no virtual time spent.
+     */
+    @Test
+    fun `a failure after a clean close cannot undo the flush`() = runTest {
+        val h = readyHarness(retainForCorpus = true, readyFrame = READY_WITH_ID)
+        openPartial(h)
+        val start = testScheduler.currentTime
+
+        val stopJob = launch(h.main) { h.backend.stop() }
+        runCurrent()
+        assertEquals("text:stop", h.log().last())
+
+        // All three callbacks are queued before any of them (or stop()'s resumption) runs.
+        h.fakeWs.fireMessage("""{"type":"final","text":"open words done","segmentId":9}""")
+        h.fakeWs.fireClosing(1000)
+        h.fakeWs.fireFailure(IOException("reset after close"))
+        runCurrent()
+
+        assertTrue(stopJob.isCompleted)
+        assertEquals("a clean close finishes without spending the bound", start, testScheduler.currentTime)
+        assertEquals(
+            "the tail final exactly once, no extra local commit",
+            listOf(FinalSegment("open words done", 9)),
+            h.finals,
+        )
+        assertEquals(1, h.log().count { it == "close:1000" })
+        assertEquals("a clean flush never cancels the socket: ${h.log()}", 0, h.socket.cancelCount)
+        assertEquals(SESSION_ID, h.backend.endedSessionId)
+        assertRequestedStopNeverErrored(h)
+    }
+
+    /**
+     * LIVE-05 race, abnormal failure first: a socket failure ends the flush as not-flushed, and a
+     * clean close 1000 arriving after it cannot revive it. `stop()` finishes promptly (no virtual
+     * time, well before the bound), cancels once, commits the live partial locally once, publishes
+     * no id and raises no error.
+     */
+    @Test
+    fun `a clean close after a failure cannot revive the flush`() = runTest {
+        val h = readyHarness(retainForCorpus = true, readyFrame = READY_WITH_ID)
+        openPartial(h)
+        val start = testScheduler.currentTime
+
+        val stopJob = launch(h.main) { h.backend.stop() }
+        runCurrent()
+        assertEquals("text:stop", h.log().last())
+
+        h.fakeWs.fireFailure(IOException("reset"))
+        h.fakeWs.fireClosing(1000)
+        runCurrent()
+
+        assertTrue("an abnormal end must not wait out the bound", stopJob.isCompleted)
+        assertEquals("prompt: no virtual time elapsed", start, testScheduler.currentTime)
+        assertEquals("cancelled exactly once: ${h.log()}", 1, h.socket.cancelCount)
+        assertEquals("the cancel is the last thing done to the socket", "cancel", h.log().last())
+        assertEquals(
+            "the live partial is committed locally exactly once",
+            listOf(FinalSegment("open words", 9)),
+            h.finals,
+        )
+        assertNull("an unflushed stop publishes no id", h.backend.endedSessionId)
+        assertRequestedStopNeverErrored(h)
     }
 
     @Test
@@ -352,5 +431,11 @@ class ServerBackendStopFlushTest {
             check(System.currentTimeMillis() < deadline) { "timed out waiting for: $what" }
             Thread.sleep(5)
         }
+    }
+
+    private companion object {
+        /** A retained session's id, as the server's `ready` supplies it (CORR-07). */
+        const val SESSION_ID = "0123456789abcdef0123456789abcdef"
+        const val READY_WITH_ID = """{"type":"ready","sessionId":"$SESSION_ID"}"""
     }
 }
