@@ -8,6 +8,7 @@ import io.github.ygaray.sttengine.internal.OkHttpWebSocketFactory
 import io.github.ygaray.sttengine.internal.PlatformRecognizerHandleFactory
 import io.github.ygaray.sttengine.internal.SessionLog
 import io.github.ygaray.sttengine.internal.SttEngineImpl
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import okhttp3.OkHttpClient
 
@@ -35,6 +36,13 @@ import okhttp3.OkHttpClient
  * No network is used and none can be: the engine constructs only the system-resolved on-device
  * recognizer and never falls back to the network-backed one. An unavailable on-device recognizer is
  * a typed [SttErrorCode.RECOGNIZER_UNAVAILABLE] failure, not a reason to switch backends.
+ *
+ * **A silent server is dropped.** Once a server session is live the client pings it every 10 s and
+ * drops a peer that stops answering within about 20 s: OkHttp fails the socket at the first ping
+ * that finds the previous one unanswered, so a server that goes silent mid-session is detected
+ * between 10 and 20 s later, and the session then hands off to on-device recognition. The 20 s is
+ * OkHttp's ping scheduling bound only; how soon a [SttEngine.stop] returns, or a server frees its
+ * slot, is measured behaviour and does not follow from it.
  *
  * @param context any context — the application context is taken from it and retained, so passing an
  *   Activity leaks nothing.
@@ -72,7 +80,8 @@ public fun createSttEngine(
             // seam of their own). Platform-default TLS validation only — no custom TrustManager or
             // hostnameVerifier (T-09-02, RESEARCH.md Security Domain V6): the `*.ts.net` cert is
             // publicly trusted, so a hand-rolled trust control here would be the anti-pattern.
-            webSocketFactory = OkHttpWebSocketFactory(OkHttpClient()),
+            // The builder adds only the liveness ping (Phase 28, LIVE-03, D-11).
+            webSocketFactory = OkHttpWebSocketFactory(buildServerHttpClient()),
             mainDispatcher = Dispatchers.Main.immediate,
             // TRY-01 (Pitfall 14): the try-server window is threaded from the host's config.
             tryServerTimeoutMs = config.serverTryTimeoutMs,
@@ -106,11 +115,27 @@ public fun createSttEngine(
     )
 }
 
-/** The ping interval of a server session's socket, in seconds (Phase 28, LIVE-03). */
+/** How often a live server session pings its peer, in seconds (Phase 28, LIVE-03, D-11). */
 internal const val SERVER_PING_INTERVAL_SECONDS: Long = 10L
 
-/** The OkHttp client behind a server session (Phase 28, LIVE-03). RED skeleton: not yet wired. */
-internal fun buildServerHttpClient(): OkHttpClient = OkHttpClient()
+/**
+ * The one [OkHttpClient] behind a server-backed session (Phase 28, LIVE-03, D-11).
+ *
+ * Its only change from a default client is a WebSocket ping every [SERVER_PING_INTERVAL_SECONDS].
+ * Without it a peer that stops answering — a hung server, or a half-open path the client cannot see
+ * — leaves the session in Listening for good. With it, OkHttp fails the socket at the first ping tick
+ * that finds the previous ping still unanswered, so a peer that goes silent mid-session is dropped
+ * between one and two intervals later (20 s worst case at 10 s). That failure arrives through the
+ * listener's `onFailure`, which the session already turns into `SERVER_UNREACHABLE` and a handoff to
+ * on-device recognition: no extra plumbing.
+ *
+ * TLS is platform-default and stays that way: no custom socket factory, trust manager, hostname
+ * verifier or certificate pinner (T-09-02). `ServerHttpClientTest` pins both facts.
+ */
+internal fun buildServerHttpClient(): OkHttpClient =
+    OkHttpClient.Builder()
+        .pingInterval(SERVER_PING_INTERVAL_SECONDS, TimeUnit.SECONDS)
+        .build()
 
 /**
  * Ask this device's recognition service whether the on-device language packs for [langs] are
