@@ -56,6 +56,44 @@ public interface SttEngine {
     public val backend: StateFlow<Backend>
 
     /**
+     * Why the current session fell back from the server to on-device recognition (LIVE-04), or
+     * `null`. Android-only additive metadata, like [backend]: the web client is server-only, with no
+     * backend selection and no fallback, so it has no counterpart.
+     *
+     * It is set only when [backend] flips to [Backend.Native] because of a server failure, and the
+     * reason is written BEFORE that flip is visible, so a collector of [backend] that sees `Native`
+     * already reads the reason here. It is `null`:
+     * - on a session running on the server;
+     * - on an engine that chose on-device recognition from its config (no `serverUrl`, or
+     *   [BackendPreference.OnDevice]);
+     * - when `prefer = Server` fails, because that raises an error on [errors] instead of falling
+     *   back;
+     * - from every [start] until a fallback happens. Each [start] resets it, so a reused engine
+     *   never reports a previous session's reason.
+     *
+     * The values are the [FallbackReason] constants: `busy`, `timeout`, `unreachable` and `rejected`
+     * when the server could not be used at start, and `dropped` when a session that was running on
+     * the server failed mid-session. The set is open; treat an unknown value as a fallback for a
+     * reason this build does not name.
+     *
+     * It is NOT on [FinalSegment], not an [SttEvent] and never sent on [errors], so a fallback under
+     * [BackendPreference.Auto] stays silent on the shared contract. A host that wants to label text
+     * by where it was recognized reads [backend] and this value together as each final arrives (a
+     * snapshot), and must expect both to change during a session.
+     *
+     * Worked example of that snapshot: a server session drops mid-session while the user is
+     * speaking. Its live partial is committed as a final BEFORE the on-device recognizer is even
+     * constructed, so a host that reads the pair as that final arrives sees `(Server, null)`. Once
+     * on-device recognition is listening, the pair reads `(Native, dropped)`. So the reason for a
+     * handoff is read from the engine after the [backend] flip, not from the handoff final's own
+     * snapshot.
+     *
+     * Defaulted to a shared `null` flow so existing implementers (including host test fakes) stay
+     * source- and binary-compatible; a fake may override it to drive host logic.
+     */
+    public val fallbackReason: StateFlow<FallbackReason?> get() = NoFallbackReason.flow
+
+    /**
      * The live, in-progress transcript text. Latest-wins.
      *
      * A `StateFlow` because conflation IS the desired semantic here: a partial that has been

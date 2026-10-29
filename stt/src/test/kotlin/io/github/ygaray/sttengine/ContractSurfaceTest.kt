@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -288,6 +289,67 @@ public class ContractSurfaceTest {
         }
 
         assertEquals("0123456789abcdef0123456789abcdef", engine.lastSessionId)
+    }
+
+    // --- SttEngine.fallbackReason / FallbackReason (Phase 28, LIVE-04, D-01 / D-02) ---------------
+
+    @Test
+    public fun `an implementer that does not override fallbackReason reads null from one shared flow (D-01)`() {
+        // Compiling this anonymous object with NO fallbackReason override is the source-compat proof.
+        val engine: SttEngine = object : SttEngine {
+            override val state: StateFlow<EngineState> = MutableStateFlow(EngineState.Idle)
+            override val backend: StateFlow<Backend> = MutableStateFlow(Backend.Native)
+            override val partial: StateFlow<String> = MutableStateFlow("")
+            override val finals: Flow<FinalSegment> = emptyFlow()
+            override val errors: Flow<SttError> = emptyFlow()
+            override val level: Flow<Float> = emptyFlow()
+            override val events: Flow<SttEvent> = emptyFlow()
+            override suspend fun start() = Unit
+            override suspend fun stop() = Unit
+        }
+
+        assertNull(engine.fallbackReason.value)
+        assertSame("the default getter hands out one shared flow", engine.fallbackReason, engine.fallbackReason)
+    }
+
+    @Test
+    public fun `an implementer that overrides fallbackReason returns the override`() {
+        val engine: SttEngine = object : SttEngine {
+            override val state: StateFlow<EngineState> = MutableStateFlow(EngineState.Idle)
+            override val backend: StateFlow<Backend> = MutableStateFlow(Backend.Native)
+            override val fallbackReason: StateFlow<FallbackReason?> = MutableStateFlow(FallbackReason.DROPPED)
+            override val partial: StateFlow<String> = MutableStateFlow("")
+            override val finals: Flow<FinalSegment> = emptyFlow()
+            override val errors: Flow<SttError> = emptyFlow()
+            override val level: Flow<Float> = emptyFlow()
+            override val events: Flow<SttEvent> = emptyFlow()
+            override suspend fun start() = Unit
+            override suspend fun stop() = Unit
+        }
+
+        assertEquals(FallbackReason.DROPPED, engine.fallbackReason.value)
+    }
+
+    @Test
+    public fun `FallbackReason carries the five frozen values (D-03)`() {
+        assertEquals(
+            listOf("busy", "timeout", "unreachable", "rejected", "dropped"),
+            listOf(
+                FallbackReason.BUSY,
+                FallbackReason.TIMEOUT,
+                FallbackReason.UNREACHABLE,
+                FallbackReason.REJECTED,
+                FallbackReason.DROPPED,
+            ).map { it.value },
+        )
+    }
+
+    @Test
+    public fun `FallbackReason is an open set (D-02)`() {
+        val future = FallbackReason("future")
+        assertEquals("future", future.value)
+        assertEquals(FallbackReason("busy"), FallbackReason.BUSY)
+        assertTrue(future != FallbackReason.BUSY)
     }
 
     // --- submitCorrection / CorrectionSubmitResult (Phase 25, D-10 / D-01) -------------------------

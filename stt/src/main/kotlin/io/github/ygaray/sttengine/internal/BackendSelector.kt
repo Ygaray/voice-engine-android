@@ -4,6 +4,7 @@ import android.content.Context
 import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.BackendPreference
 import io.github.ygaray.sttengine.EngineState
+import io.github.ygaray.sttengine.FallbackReason
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttEngine
@@ -178,6 +179,9 @@ internal class BackendSelector(
 
     private val _backend = MutableStateFlow(Backend.Native)
     override val backend: StateFlow<Backend> = _backend.asStateFlow()
+
+    private val _fallbackReason = MutableStateFlow<FallbackReason?>(null)
+    override val fallbackReason: StateFlow<FallbackReason?> = _fallbackReason.asStateFlow()
 
     private val _partial = MutableStateFlow("")
     override val partial: StateFlow<String> = _partial.asStateFlow()

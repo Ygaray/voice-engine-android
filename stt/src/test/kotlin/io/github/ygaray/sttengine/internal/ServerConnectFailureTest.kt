@@ -1,5 +1,6 @@
 package io.github.ygaray.sttengine.internal
 
+import io.github.ygaray.sttengine.FallbackReason
 import java.io.EOFException
 import java.io.IOException
 import java.net.ConnectException
@@ -16,6 +17,8 @@ import javax.net.ssl.SSLException
 import javax.net.ssl.SSLHandshakeException
 import javax.net.ssl.SSLPeerUnverifiedException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -371,5 +374,58 @@ class ServerConnectFailureTest {
     @Test
     fun `a non-IO throwable fast-fails`() {
         assertEquals(ConnectFailureClass.FastFail, classify(IllegalStateException("x")))
+    }
+
+    // --- LIVE-04 (D-03): which FallbackReason a resolved attempt maps to ----------------------------
+
+    private fun observation(
+        throwable: Throwable? = null,
+        responseCode: Int? = null,
+        closeCode: Int? = null,
+        serverErrorCode: String? = null,
+    ): ConnectObservation = ConnectObservation(throwable, responseCode, closeCode, serverErrorCode, sawOpen = true)
+
+    @Test
+    fun `a busy error frame or a close 1013 is a busy rejection`() {
+        assertTrue(isBusyRejection(observation(serverErrorCode = "busy")))
+        assertTrue(isBusyRejection(observation(closeCode = 1013)))
+        assertTrue(isBusyRejection(observation(closeCode = 1013, serverErrorCode = "busy")))
+    }
+
+    @Test
+    fun `nothing else is a busy rejection`() {
+        assertFalse(isBusyRejection(observation()))
+        assertFalse(isBusyRejection(observation(serverErrorCode = "unsupported-language")))
+        assertFalse(isBusyRejection(observation(closeCode = 1011)))
+        assertFalse(isBusyRejection(observation(throwable = SocketTimeoutException("x"))))
+        assertFalse(isBusyRejection(observation(throwable = IOException("x"), responseCode = 503)))
+    }
+
+    @Test
+    fun `a host that never answered or a refused upgrade maps to UNREACHABLE`() {
+        listOf(
+            observation(throwable = UnknownHostException("x")),
+            observation(throwable = ConnectException("x")),
+            observation(throwable = NoRouteToHostException("x")),
+            observation(throwable = UnknownServiceException("CLEARTEXT communication not permitted")),
+            observation(throwable = SSLPeerUnverifiedException("hostname")),
+            observation(throwable = SSLHandshakeException("x").apply { initCause(CertificateException("y")) }),
+            observation(throwable = ProtocolException("Expected HTTP 101 response but was '404'"), responseCode = 404),
+            observation(responseCode = 401),
+        ).forEach {
+            assertEquals("${it.throwable} / ${it.responseCode}", FallbackReason.UNREACHABLE, fallbackReasonForFastFail(it))
+        }
+    }
+
+    @Test
+    fun `a server error frame other than busy maps to REJECTED`() {
+        listOf("unsupported-language", "invalid-config", "version-mismatch", "internal-error").forEach {
+            assertEquals(it, FallbackReason.REJECTED, fallbackReasonForFastFail(observation(serverErrorCode = it)))
+        }
+    }
+
+    @Test
+    fun `the residual fast-fail with nothing observed maps to REJECTED`() {
+        assertEquals(FallbackReason.REJECTED, fallbackReasonForFastFail(observation()))
     }
 }

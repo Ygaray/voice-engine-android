@@ -1,5 +1,6 @@
 package io.github.ygaray.sttengine.internal
 
+import io.github.ygaray.sttengine.FallbackReason
 import java.io.EOFException
 import java.io.IOException
 import java.net.ConnectException
@@ -153,6 +154,12 @@ internal fun classifyConnectFailure(observation: ConnectObservation): ConnectFai
         else -> ConnectFailureClass.FastFail
     }
 }
+
+// RED skeleton (28-04): the real bodies land with the GREEN commit.
+internal fun isBusyRejection(observation: ConnectObservation): Boolean = false
+
+internal fun fallbackReasonForFastFail(observation: ConnectObservation): FallbackReason =
+    FallbackReason.REJECTED
 
 /**
  * `true` for a connect-phase failure type — the host never answered — see [classifyConnectFailure]
