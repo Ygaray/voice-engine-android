@@ -1,7 +1,11 @@
 package io.github.ygaray.sttengine.internal
 
 import io.github.ygaray.sttengine.EngineState
+import io.github.ygaray.sttengine.SttError
+import io.github.ygaray.sttengine.SttErrorCode
+import java.io.IOException
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineDispatcher
@@ -73,6 +77,92 @@ class ServerBackendPumpTest {
 
         assertTrue(frames.isEmpty())
         assertFalse(running.get())
+    }
+
+    // --- the end reason (Phase 28, LIVE-01, D-13): true = the pump ended UNASKED ----------------
+
+    @Test
+    fun `pumpFrames returns true when a read returns end of stream while running is still set`() {
+        val source = FinitePcmSource(frames = 2) // returns -1 forever once drained
+        val running = AtomicBoolean(true)
+
+        val endedUnasked = pumpFrames(source, running, ServerBackend.FRAME_BYTES) { }
+
+        assertTrue("a -1 read with running still set is an unasked end", endedUnasked)
+        assertFalse(running.get())
+    }
+
+    @Test
+    fun `pumpFrames returns true when a read returns 0 while running is still set`() {
+        val source = object : PcmSource {
+            override fun read(buffer: ByteArray): Int = 0
+            override fun stop() = Unit
+            override fun release() = Unit
+        }
+
+        assertTrue(pumpFrames(source, AtomicBoolean(true), ServerBackend.FRAME_BYTES) { })
+    }
+
+    @Test
+    fun `pumpFrames returns true when a read throws while running is still set`() {
+        val source = object : PcmSource {
+            override fun read(buffer: ByteArray): Int = throw IllegalStateException("recorder died")
+            override fun stop() = Unit
+            override fun release() = Unit
+        }
+
+        assertTrue(pumpFrames(source, AtomicBoolean(true), ServerBackend.FRAME_BYTES) { })
+    }
+
+    @Test
+    fun `pumpFrames returns false when running was cleared - before the next read, after a late read, or before a throw`() {
+        // Cleared between frames: the loop check ends it.
+        val running1 = AtomicBoolean(true)
+        var frames = 0
+        val cleared = pumpFrames(FinitePcmSource(frames = 1_000), running1, ServerBackend.FRAME_BYTES) {
+            frames++
+            if (frames == 2) running1.set(false)
+        }
+        assertFalse("a loop that saw running cleared ended because it was asked to", cleared)
+
+        // Cleared while a read was in flight, which then returned bytes.
+        val running2 = AtomicBoolean(true)
+        val late = object : PcmSource {
+            override fun read(buffer: ByteArray): Int {
+                running2.set(false)
+                return buffer.size
+            }
+            override fun stop() = Unit
+            override fun release() = Unit
+        }
+        assertFalse(pumpFrames(late, running2, ServerBackend.FRAME_BYTES) { })
+
+        // Cleared, then the read returned end of stream (teardown's source.stop() unblocking it).
+        val running3 = AtomicBoolean(true)
+        val stoppedRead = object : PcmSource {
+            override fun read(buffer: ByteArray): Int {
+                running3.set(false)
+                return -1
+            }
+            override fun stop() = Unit
+            override fun release() = Unit
+        }
+        assertFalse(pumpFrames(stoppedRead, running3, ServerBackend.FRAME_BYTES) { })
+
+        // Cleared, then the read threw (a recorder released under a wedged read after teardown).
+        val running4 = AtomicBoolean(true)
+        val throwsAfterClear = object : PcmSource {
+            override fun read(buffer: ByteArray): Int {
+                running4.set(false)
+                throw IllegalStateException("released under the read")
+            }
+            override fun stop() = Unit
+            override fun release() = Unit
+        }
+        assertFalse(pumpFrames(throwsAfterClear, running4, ServerBackend.FRAME_BYTES) { })
+
+        // Never running at all.
+        assertFalse(pumpFrames(FinitePcmSource(frames = 1), AtomicBoolean(false), ServerBackend.FRAME_BYTES) { })
     }
 
     @Test
@@ -349,44 +439,255 @@ class ServerBackendPumpTest {
         }
     }
 
+    /** Collects [ServerBackend.errors] synchronously (Unconfined) into a thread-safe list. */
+    private class ErrorRecorder(backend: ServerBackend) {
+        val errors: MutableList<SttError> = Collections.synchronizedList(mutableListOf())
+        private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+
+        init {
+            scope.launch { backend.errors.collect { errors += it } }
+        }
+
+        val codes: List<SttErrorCode> get() = synchronized(errors) { errors.map { it.code } }
+
+        fun close() = scope.cancel()
+    }
+
+    private fun newBackend(fakeWs: FakeWebSocketFactory, mainExec: CoroutineDispatcher, pcm: PcmSourceFactory) =
+        ServerBackend(
+            webSocketFactory = fakeWs,
+            serverUrl = "wss://example.ts.net:8444/",
+            language = "en",
+            mainDispatcher = mainExec,
+            pcmSourceFactory = pcm,
+        )
+
     @Test
-    fun `a pump that ended on its own is released by teardown, exactly once, after the join`() {
+    fun `a pump that ended on its own fails the session and releases the mic exactly once, after the join`() {
+        // Rewritten for Phase 28 (D-13). The old premise — an ended pump sits there until a teardown
+        // releases it — is exactly the LIVE-01 hole: nobody observed the end. Now the end itself
+        // fails the session, which releases the source once, only after the pump thread is gone,
+        // and a later teardown changes nothing.
         val executor = Executors.newSingleThreadExecutor()
         val mainExec = executor.asCoroutineDispatcher()
         try {
             runBlocking {
                 withTimeout(10_000) {
                     val fakeWs = FakeWebSocketFactory()
-                    val sources = finitePcmSourceFactory(frames = 2)
-                    val backend = ServerBackend(
-                        webSocketFactory = fakeWs,
-                        serverUrl = "wss://example.ts.net:8444/",
-                        language = "en",
-                        mainDispatcher = mainExec,
-                        pcmSourceFactory = sources,
-                    )
+                    val sources = finitePcmSourceFactory(frames = 2, endsStream = true)
+                    val backend = newBackend(fakeWs, mainExec, sources)
                     connectToReady(backend, fakeWs, mainExec)
-                    awaitOn(mainExec, "the source to be exhausted") {
-                        sources.opened.isNotEmpty() && sources.last.exhausted
+                    awaitOn(mainExec, "the dead pump to fail the session") {
+                        backend.state.value == EngineState.Error
                     }
                     val source = sources.last
                     val pump = assertNotNullAndGet(source.readerThread)
                     pump.join(2_000)
                     assertFalse(pump.isAlive)
-                    assertEquals("an ended pump must not release on its own", 0, source.releaseCount)
+                    assertEquals("the failed session releases the source once", 1, source.releaseCount)
+                    assertEquals(
+                        "release() must run only after the pump thread was gone",
+                        false,
+                        source.readerAliveAtRelease,
+                    )
 
                     withContext(mainExec) {
                         backend.abandon()
                         backend.releaseAudioSource()
                     }
 
-                    assertEquals("release() must run exactly once", 1, source.releaseCount)
-                    assertEquals(false, source.readerAliveAtRelease)
+                    assertEquals("a later teardown must not release again", 1, source.releaseCount)
                 }
             }
         } finally {
             mainExec.close()
         }
+    }
+
+    // --- LIVE-01 (D-13): an unasked pump end fails the session; a requested teardown never does -----
+
+    @Test
+    fun `a pump that ends unasked after ready emits one AUDIO_ERROR, goes Error, cancels the socket once and releases once`() {
+        val executor = Executors.newSingleThreadExecutor()
+        val mainExec = executor.asCoroutineDispatcher()
+        try {
+            runBlocking {
+                withTimeout(10_000) {
+                    val fakeWs = FakeWebSocketFactory()
+                    // Three frames of audio, then the mic dies (end of stream with the run flag set).
+                    val sources = finitePcmSourceFactory(frames = 3, endsStream = true)
+                    val backend = newBackend(fakeWs, mainExec, sources)
+                    val recorder = ErrorRecorder(backend)
+                    try {
+                        connectToReady(backend, fakeWs, mainExec)
+                        val socket = checkNotNull(fakeWs.lastSocket)
+
+                        awaitOn(mainExec, "the session to leave Listening on the dead pump") {
+                            backend.state.value == EngineState.Error
+                        }
+                        delay(300) // a second error or cancel would show up here
+
+                        assertEquals(listOf(SttErrorCode.AUDIO_ERROR), recorder.codes)
+                        assertEquals(EngineState.Error, withContext(mainExec) { backend.state.value })
+                        assertEquals("the socket is cancelled exactly once", 1, socket.cancelCount)
+                        assertTrue(
+                            "only the captured frames were sent",
+                            withContext(mainExec) { socket.sentBinary.size } <= 3,
+                        )
+                        val source = sources.last
+                        assertEquals("the mic is released exactly once", 1, source.releaseCount)
+                        assertEquals(false, source.readerAliveAtRelease)
+
+                        // A stop() after the death is a no-op: no throw, no emission, no state change.
+                        withContext(mainExec) { backend.stop() }
+                        delay(100)
+                        assertEquals(listOf(SttErrorCode.AUDIO_ERROR), recorder.codes)
+                        assertEquals(EngineState.Error, withContext(mainExec) { backend.state.value })
+                        assertEquals(1, socket.cancelCount)
+                        assertEquals(1, source.releaseCount)
+                    } finally {
+                        recorder.close()
+                        withContext(mainExec) { backend.abandon() }
+                    }
+                }
+            }
+        } finally {
+            mainExec.close()
+        }
+    }
+
+    /** Drives a parked (live, silent) mic to `ready`, runs [teardown] on main, and proves the pump's
+     *  end it caused never reads as a death: no error within 300 ms. Returns the final state. */
+    private fun requestedTeardown(teardown: suspend (ServerBackend) -> Unit): EngineState {
+        val executor = Executors.newSingleThreadExecutor()
+        val mainExec = executor.asCoroutineDispatcher()
+        try {
+            return runBlocking {
+                withTimeout(10_000) {
+                    val fakeWs = FakeWebSocketFactory()
+                    val sources = finitePcmSourceFactory(frames = 2) // parks: a live mic
+                    val backend = newBackend(fakeWs, mainExec, sources)
+                    val recorder = ErrorRecorder(backend)
+                    try {
+                        connectToReady(backend, fakeWs, mainExec)
+                        val socket = checkNotNull(fakeWs.lastSocket)
+                        // The server answers the stop token with its clean close, so stop() flushes.
+                        socket.onTextSent = { text ->
+                            if (text == ServerBackend.STOP_TOKEN) fakeWs.fireClosing(1000, "", socket)
+                        }
+                        awaitOn(mainExec, "the pump to be parked on the live mic") {
+                            sources.opened.isNotEmpty() && sources.last.exhausted
+                        }
+                        val pump = assertNotNullAndGet(sources.last.readerThread)
+
+                        withContext(mainExec) { teardown(backend) }
+                        pump.join(2_000)
+                        assertFalse("the asked-for pump end must have happened", pump.isAlive)
+                        delay(300)
+
+                        assertTrue("a requested teardown must not emit an error: ${recorder.codes}", recorder.codes.isEmpty())
+                        withContext(mainExec) { backend.state.value }
+                    } finally {
+                        recorder.close()
+                        withContext(mainExec) { backend.abandon() }
+                    }
+                }
+            }
+        } finally {
+            mainExec.close()
+        }
+    }
+
+    @Test
+    fun `a requested stop never reads as a dead pump and ends Idle`() {
+        assertEquals(EngineState.Idle, requestedTeardown { it.stop() })
+    }
+
+    @Test
+    fun `a requested abandon never reads as a dead pump`() {
+        assertTrue(requestedTeardown { it.abandon() } != EngineState.Error)
+    }
+
+    @Test
+    fun `the selector's releaseAudioSource never reads as a dead pump`() {
+        assertEquals(EngineState.Listening, requestedTeardown { it.releaseAudioSource() })
+    }
+
+    /**
+     * The fail-versus-pump-end race (review 28-05 round 2), on the real single-thread executor. The
+     * executor is held by a latch-guarded blocker task, so the order in which the socket failure and
+     * the pump-end callback are QUEUED behind it is exactly the order they run in. Whichever runs
+     * first wins; the other is a no-op. Either way: one error, one cancel, one release.
+     */
+    private fun failVersusPumpEnd(pumpEndFirst: Boolean): Triple<List<SttErrorCode>, Int, Int> {
+        val executor = Executors.newSingleThreadExecutor()
+        val mainExec = executor.asCoroutineDispatcher()
+        try {
+            return runBlocking {
+                withTimeout(10_000) {
+                    val fakeWs = FakeWebSocketFactory()
+                    val gate = CountDownLatch(1)
+                    val (source, factory) = gatedEndPcmSourceFactory(gate)
+                    val backend = newBackend(fakeWs, mainExec, factory)
+                    val recorder = ErrorRecorder(backend)
+                    try {
+                        connectToReady(backend, fakeWs, mainExec)
+                        val socket = checkNotNull(fakeWs.lastSocket)
+                        val deadline = System.currentTimeMillis() + 5_000
+                        while (source.readerThread == null) {
+                            check(System.currentTimeMillis() < deadline) { "the pump never started reading" }
+                            delay(10)
+                        }
+                        val pump = assertNotNullAndGet(source.readerThread)
+                        assertEquals(ServerBackend.PUMP_THREAD_NAME, pump.name)
+
+                        val blocker = CountDownLatch(1)
+                        executor.execute { blocker.await() }
+                        try {
+                            if (pumpEndFirst) {
+                                gate.countDown()
+                                pump.join(5_000) // its end callback is now queued FIRST
+                                assertFalse(pump.isAlive)
+                                fakeWs.fireFailure(IOException("connection reset"))
+                            } else {
+                                fakeWs.fireFailure(IOException("connection reset")) // queued FIRST
+                                gate.countDown()
+                                pump.join(5_000) // its end callback is now queued SECOND
+                                assertFalse(pump.isAlive)
+                            }
+                        } finally {
+                            blocker.countDown()
+                        }
+
+                        awaitOn(mainExec, "the session to fail") { backend.state.value == EngineState.Error }
+                        delay(300) // a second error would show up here
+                        Triple(recorder.codes, socket.cancelCount, source.releaseCount)
+                    } finally {
+                        recorder.close()
+                        gate.countDown()
+                        withContext(mainExec) { backend.abandon() }
+                    }
+                }
+            }
+        } finally {
+            mainExec.close()
+        }
+    }
+
+    @Test
+    fun `fail first, then the pump end - exactly one SERVER_UNREACHABLE, one cancel, one release`() {
+        val (codes, cancels, releases) = failVersusPumpEnd(pumpEndFirst = false)
+        assertEquals(listOf(SttErrorCode.SERVER_UNREACHABLE), codes)
+        assertEquals(1, cancels)
+        assertEquals(1, releases)
+    }
+
+    @Test
+    fun `pump end first, then fail - exactly one AUDIO_ERROR, one cancel, one release`() {
+        val (codes, cancels, releases) = failVersusPumpEnd(pumpEndFirst = true)
+        assertEquals(listOf(SttErrorCode.AUDIO_ERROR), codes)
+        assertEquals(1, cancels)
+        assertEquals(1, releases)
     }
 
     @Test

@@ -1,19 +1,34 @@
 package io.github.ygaray.sttengine.internal
 
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * A finite [PcmSource] for the server-path pump tests (Phase 21, SRV-05, Pitfall 1).
  *
  * Hands out exactly `frames * frameBytes` bytes of little-endian [sample], at most [chunkBytes] per
- * `read()` (so a test can force short reads), then returns `-1` forever — end of stream, which ends
- * [pumpFrames] quietly. Also returns `-1` once [stop] has been called. Unlike the Robolectric shadow
- * `AudioRecord` (whose `read()` returns a full buffer forever), a pump over this source always ends.
+ * `read()` (so a test can force short reads). What happens once the bytes run out depends on
+ * [parkWhenExhausted]:
  *
- * Every observable flag is `@Volatile`: the pump thread writes them, the test thread reads them.
+ * - `false` (the direct-constructor default): `read()` returns `-1` forever — end of stream. Fed to
+ *   the pure [pumpFrames] loop that is just the end of the loop. Fed to a REAL [ServerBackend] after
+ *   `ready` it models a microphone that died (Phase 28, D-13): the pump ends unasked and the session
+ *   fails with `AUDIO_ERROR`.
+ * - `true` (what [FinitePcmSourceFactory] opens unless asked for `endsStream`): the read that finds
+ *   no bytes left sets [exhausted] and then PARKS on a latch until [stop] or [release] opens it,
+ *   returning `-1` only then. That models a live microphone that simply has nothing more to say: the
+ *   pump stays alive until a teardown asks it to stop, so a test that ends its session normally
+ *   never trips the dead-pump path. The latch has NO wall-clock expiry on purpose: a timeout would
+ *   let a test that leaves a backend open produce a delayed unasked pump death after its assertions.
+ *   The pump thread is a daemon, so a test that forgets to tear down leaks only a parked daemon thread.
+ *
+ * Also returns `-1` once [stop] has been called. Every observable flag is `@Volatile`: the pump
+ * thread writes them, the test thread reads them.
  *
  * @param readDelayMs an optional sleep per successful read, so a teardown test can catch the pump
  *   mid-stream without flooding memory.
+ * @param parkWhenExhausted see above; `false` keeps the historic "returns `-1` forever" behaviour.
  */
 internal class FinitePcmSource(
     frames: Int,
@@ -21,7 +36,11 @@ internal class FinitePcmSource(
     private val chunkBytes: Int = frameBytes,
     sample: Short = 0,
     private val readDelayMs: Long = 0L,
+    private val parkWhenExhausted: Boolean = false,
 ) : PcmSource {
+
+    /** Opened by [stop] and [release]; a parked read waits on it, untimed. */
+    private val unpark = CountDownLatch(1)
 
     private val lo: Byte = (sample.toInt() and 0xFF).toByte()
     private val hi: Byte = ((sample.toInt() shr 8) and 0xFF).toByte()
@@ -62,6 +81,8 @@ internal class FinitePcmSource(
         if (stopped) return -1
         if (remaining <= 0L) {
             exhausted = true
+            // A live mic with nothing more to say: wait (untimed) for a teardown to ask us to stop.
+            if (parkWhenExhausted) unpark.await()
             return -1
         }
         if (readDelayMs > 0L) Thread.sleep(readDelayMs)
@@ -76,12 +97,14 @@ internal class FinitePcmSource(
 
     override fun stop() {
         stopped = true
+        unpark.countDown()
     }
 
     override fun release() {
         readerAliveAtRelease = readerThread?.isAlive
         released = true
         releaseCount++
+        unpark.countDown()
     }
 }
 
@@ -178,12 +201,19 @@ internal class SingleSourceFactory(private val source: PcmSource) : PcmSourceFac
     }
 }
 
-/** A [PcmSourceFactory] of [FinitePcmSource]s that remembers every source it opened. */
+/**
+ * A [PcmSourceFactory] of [FinitePcmSource]s that remembers every source it opened.
+ *
+ * By default each source PARKS once exhausted (a live mic with nothing more to say — see
+ * [FinitePcmSource]), so a backend that reaches `ready` never sees an unasked pump end. Pass
+ * [endsStream] = `true` to model a microphone that dies once the frames run out (Phase 28, D-13).
+ */
 internal class FinitePcmSourceFactory(
     private val frames: Int,
     private val chunkBytes: Int = 1024,
     private val sample: Short = 0,
     private val readDelayMs: Long = 0L,
+    private val endsStream: Boolean = false,
 ) : PcmSourceFactory {
 
     /** Every source this factory opened, oldest first. */
@@ -199,13 +229,63 @@ internal class FinitePcmSourceFactory(
             chunkBytes = chunkBytes,
             sample = sample,
             readDelayMs = readDelayMs,
+            parkWhenExhausted = !endsStream,
         ).also { opened += it }
 }
 
-/** `frames` whole 1 024-byte frames of [sample], then end of stream (see [FinitePcmSource]). */
+/**
+ * `frames` whole 1 024-byte frames of [sample], then a parked live mic (the default) or, with
+ * [endsStream], end of stream — a dead pump (see [FinitePcmSource]).
+ */
 internal fun finitePcmSourceFactory(
     frames: Int,
     chunkBytes: Int = 1024,
     sample: Short = 0,
     readDelayMs: Long = 0L,
-): FinitePcmSourceFactory = FinitePcmSourceFactory(frames, chunkBytes, sample, readDelayMs)
+    endsStream: Boolean = false,
+): FinitePcmSourceFactory = FinitePcmSourceFactory(frames, chunkBytes, sample, readDelayMs, endsStream)
+
+/**
+ * A [PcmSource] whose pump ends unasked exactly when the test says so (Phase 28, D-13 race tests).
+ *
+ * [read] waits on [gate] with the untimed `await()` (no wall-clock expiry) and then returns `-1`.
+ * If the test opened the gate (not a teardown), the backend's run flag is still set at that moment,
+ * so the pump ends UNASKED — at a moment the test controls. [stop] and [release] also open the gate,
+ * so a test that forgets to open it never leaks a blocked daemon thread past teardown.
+ */
+internal class GatedEndPcmSource(private val gate: CountDownLatch) : PcmSource {
+
+    private val releases = AtomicInteger(0)
+
+    /** The thread that called [read] — the pump thread. */
+    @Volatile var readerThread: Thread? = null
+        private set
+
+    /** Whether [readerThread] was still alive when [release] last ran. Must be `false`. */
+    @Volatile var readerAliveAtRelease: Boolean? = null
+        private set
+
+    val releaseCount: Int get() = releases.get()
+
+    override fun read(buffer: ByteArray): Int {
+        readerThread = Thread.currentThread()
+        gate.await()
+        return -1
+    }
+
+    override fun stop() {
+        gate.countDown()
+    }
+
+    override fun release() {
+        readerAliveAtRelease = readerThread?.isAlive
+        releases.incrementAndGet()
+        gate.countDown()
+    }
+}
+
+/** Hands out one [GatedEndPcmSource] over [gate] as the backend's mic, and remembers it. */
+internal fun gatedEndPcmSourceFactory(gate: CountDownLatch): Pair<GatedEndPcmSource, SingleSourceFactory> {
+    val source = GatedEndPcmSource(gate)
+    return source to SingleSourceFactory(source)
+}

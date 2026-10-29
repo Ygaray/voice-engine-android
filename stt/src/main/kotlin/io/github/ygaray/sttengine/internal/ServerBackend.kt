@@ -74,7 +74,7 @@ internal fun pumpFrames(
     running: AtomicBoolean,
     frameBytes: Int,
     onFrame: (ByteArray) -> Unit,
-) {
+): Boolean {
     val frame = ByteArray(frameBytes)
     var filled = 0
     try {
@@ -98,6 +98,7 @@ internal fun pumpFrames(
     } finally {
         running.set(false)
     }
+    return false // RED skeleton (28-05): the real end-reason lands with the implementation.
 }
 
 /**
@@ -376,6 +377,14 @@ internal class ServerBackend(
      * path (D-04) — the swallow path never reads it at all.
      */
     var lastError: SttError? = null
+        private set
+
+    /**
+     * `true` once the server ended this session after `ready` with a close 1000 whose reason was
+     * [IDLE_TIMEOUT_CLOSE_REASON] (Phase 28, D-08) — so an idle close can be told apart from any
+     * other graceful post-ready close 1000. Main-confined write.
+     */
+    internal var closedByIdleTimeout: Boolean = false
         private set
 
     // --- the connect observation (Phase 21, TRY-02, D-06) -----------------------------------------
@@ -983,6 +992,14 @@ internal class ServerBackend(
 
         /** The pump thread's name — findable in a thread dump. */
         const val PUMP_THREAD_NAME = "stt-server-pcm-pump"
+
+        /**
+         * The close reason the server sends with its close 1000 when it ends an idle session
+         * (Phase 28, D-08). A close REASON, never an error code: the error-code set is untouched.
+         * The same string is pinned in the server, the web client and the protocol doc, so a change
+         * must move all of them together.
+         */
+        const val IDLE_TIMEOUT_CLOSE_REASON = "idle-timeout"
 
         /** One wire frame: [FRAME_SAMPLES] samples of 16-bit PCM = 1 024 bytes. */
         const val FRAME_BYTES = FRAME_SAMPLES * 2

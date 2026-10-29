@@ -48,13 +48,23 @@ class HandoffOrderingTest {
     private class RecordingPcmSource(private val log: MutableList<String>) : PcmSource {
         private var released = false
 
-        override fun read(buffer: ByteArray): Int = 0
+        /** Phase 28 (D-13): a read that returned 0 at once would now be a DEAD mic (an unasked pump
+         *  end hands off by itself). This one models a live, silent mic instead: the read parks,
+         *  untimed, until teardown's stop()/release() opens the latch. */
+        private val unpark = java.util.concurrent.CountDownLatch(1)
+
+        override fun read(buffer: ByteArray): Int {
+            unpark.await()
+            return -1
+        }
 
         override fun stop() {
             log += "server.audioSource.stop"
+            unpark.countDown()
         }
 
         override fun release() {
+            unpark.countDown()
             if (released) return
             released = true
             log += "server.audioSource.release"

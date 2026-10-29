@@ -294,10 +294,15 @@ private class ToneSource(frames: Int) : PcmSource {
 
     @Volatile private var stopped = false
 
+    /** Opened by [stop]; an exhausted read parks on it, untimed (Phase 28, D-13: a live mic with
+     *  nothing more to say, never a dead one — the pump ends only when teardown asks it to). */
+    private val unpark = java.util.concurrent.CountDownLatch(1)
+
     override fun read(buffer: ByteArray): Int {
         if (stopped) return -1
         if (remaining <= 0L) {
             exhausted = true
+            unpark.await()
             return -1
         }
         val count = minOf(1024L, buffer.size.toLong(), remaining).toInt() and 1.inv()
@@ -315,9 +320,12 @@ private class ToneSource(frames: Int) : PcmSource {
 
     override fun stop() {
         stopped = true
+        unpark.countDown()
     }
 
-    override fun release() = Unit
+    override fun release() {
+        unpark.countDown()
+    }
 }
 
 private class ToneSourceFactory(private val frames: Int) : PcmSourceFactory {
