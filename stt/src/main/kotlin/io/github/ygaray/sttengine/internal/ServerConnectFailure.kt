@@ -41,51 +41,63 @@ internal class ConnectObservation(
 
 /**
  * Classifies a failed server try by connection phase (D-06): **before the host answers, or on a
- * deterministic rejection → fast-fail; on a post-answer transient failure before `ready` → retry.**
- * A host that never answered will not answer a quarter-second later, and a rejection the server or
- * the client made on purpose (busy, a refused config, a non-5xx upgrade answer, a certificate that
- * does not verify) will not change inside the window either — retrying those only adds deaf time
- * before the native fallback. A host that answered and then dropped the attempt is, typically, a
- * service that is still starting.
+ * deterministic rejection → fast-fail; on a post-answer transient failure before `ready`, or a busy
+ * server → retry.** A host that never answered will not answer a quarter-second later, and a
+ * rejection the server or the client made on purpose (a refused config, a non-5xx upgrade answer, a
+ * certificate that does not verify) will not change inside the window either — retrying those only
+ * adds deaf time before the native fallback. A host that answered and then dropped the attempt is,
+ * typically, a service that is still starting.
+ *
+ * **Busy is retried inside the window (Phase 28 D-05, LIVE-04).** A busy server frees its single
+ * session slot within seconds — most often it is still releasing the previous session after that
+ * session's flushing `stop()` — so busy is no longer a deterministic rejection: both of its wire
+ * signals (the `busy` error frame and close `1013`) are Retryable under the selector's existing
+ * backoff and single window deadline, with no budget of their own. This reverses Phase 21 D-06 for
+ * busy only; every other pre-`ready` error frame still fast-fails. The real server sends the frame
+ * AND the close, but a [ServerBackend] records only the first terminal signal (the frame's `fail()`
+ * fences the close out), so in practice an observation carries one or the other; rules 1 and 2 also
+ * cover an observation that holds both.
  *
  * Rules, first match wins:
  *
- * 1. a server `error` frame before `ready` (including `internal-error`) → [ConnectFailureClass.FastFail]
- * 2. close `1013` (busy) → FastFail
- * 3. [UnknownHostException] (DNS / no network) → FastFail
- * 4. [ConnectException] or [NoRouteToHostException] → FastFail
- * 5. [UnknownServiceException] (cleartext not permitted — refused before any connection) → FastFail
+ * 1. a `busy` server `error` frame before `ready` → [ConnectFailureClass.Retryable]
+ * 2. close `1013` (busy) → Retryable
+ * 3. any other server `error` frame before `ready` (including `internal-error`) →
+ *    [ConnectFailureClass.FastFail]
+ * 4. [UnknownHostException] (DNS / no network) → FastFail
+ * 5. [ConnectException] or [NoRouteToHostException] → FastFail
+ * 6. [UnknownServiceException] (cleartext not permitted — refused before any connection) → FastFail
  *
- *    Rules 3-5 match the TOP-LEVEL throwable only; rule 11 is their cause-chain counterpart.
- * 6. a TLS certificate or hostname verification failure → FastFail
- * 7. a 5xx upgrade answer → [ConnectFailureClass.Retryable]
- * 8. any other upgrade answer → FastFail
- * 9. [SocketTimeoutException] → Retryable (the dedicated D-14 rule below)
- * 10. an end of stream — an [EOFException], an [IOException] whose direct cause is one, or OkHttp's
+ *    Rules 4-6 match the TOP-LEVEL throwable only; rule 12 is their cause-chain counterpart.
+ * 7. a TLS certificate or hostname verification failure → FastFail
+ * 8. a 5xx upgrade answer → Retryable
+ * 9. any other upgrade answer → FastFail
+ * 10. [SocketTimeoutException] → Retryable (the dedicated D-14 rule below)
+ * 11. an end of stream — an [EOFException], an [IOException] whose direct cause is one, or OkHttp's
  *     `"unexpected end of stream"` [IOException] → Retryable (the cold-start rule below)
- * 11. any other throwable with a rule 3-5 type somewhere in its cause chain → FastFail (see "Why the
+ * 12. any other throwable with a rule 4-6 type somewhere in its cause chain → FastFail (see "Why the
  *     cause chain" below)
- * 12. any other [IOException] → Retryable
- * 13. no throwable, but a close before `ready` → Retryable
- * 14. anything else → FastFail
+ * 13. any other [IOException] → Retryable
+ * 14. no throwable, but a close before `ready` → Retryable
+ * 15. anything else → FastFail
  *
  * **Why the tailscale-serve cold start must stay Retryable.** Through `tailscale serve`, the proxy is
  * up before `stt-server` is: tailscaled completes TCP and TLS itself, then its loopback dial to the
  * service is refused, so the client sees an EOF before any response header (OkHttp:
  * `IOException("unexpected end of stream on …")` with an `EOFException` cause), or a handshake the
- * peer terminated. Both are post-TCP, both clear within seconds, and both are retried (rules 10
- * and 12). Without
+ * peer terminated. Both are post-TCP, both clear within seconds, and both are retried (rules 11
+ * and 13). Without
  * retry, the session is lost to a one-way native fallback while the server finishes loading. The
  * exact class the live path produces is confirmed by the opt-in `server-attempt` trace line on a
  * planned service restart.
  *
- * **Why a peer-terminated handshake retries but a certificate failure does not (rule 6).** A
+ * **Why a peer-terminated handshake retries but a certificate failure does not (rule 7).** A
  * verification failure is post-TCP too, but it is a deterministic client-side rejection of the same
- * kind as busy or a config reject: a certificate cannot change inside the window. It is detected as an
+ * kind as a config reject: a certificate cannot change inside the window. It is detected as an
  * [SSLPeerUnverifiedException] (OkHttp's hostname check) or as any throwable whose cause chain holds a
  * [CertificateException] (the JDK's untrusted, expired or mismatched certificate, including its
  * `ValidatorException`) or a [CertPathValidatorException] (Conscrypt's untrusted trust anchor). A
- * handshake the peer terminated has no certificate cause and falls through to rule 10 or 12. Rule 6
+ * handshake the peer terminated has no certificate cause and falls through to rule 11 or 13. Rule 7
  * runs before them because every `SSLException` is an [IOException].
  *
  * **The explicit [SocketTimeoutException] decision (D-14).** A connect or read timeout is the
@@ -99,19 +111,19 @@ internal class ConnectObservation(
  * phases. The exception type does: OkHttp's `ConnectPlan` wraps every connect-phase failure (refused,
  * reset during connect, unreachable) in a [ConnectException], and on Android libcore raises
  * `ConnectException` for an unreachable network too. So a `ConnectException` whose cause is a reset
- * fast-fails (rule 4), while a bare reset on an established connection retries (rule 12). `sawOpen`
+ * fast-fails (rule 5), while a bare reset on an established connection retries (rule 13). `sawOpen`
  * is still recorded for the trace line.
  *
- * **Why the cause chain (rule 11), and why it comes after rules 9 and 10.** A transport layer may
+ * **Why the cause chain (rule 12), and why it comes after rules 10 and 11.** A transport layer may
  * hand the failure over wrapped — an [IOException] whose cause is the [UnknownHostException] or
  * [ConnectException] — and that wrapper is still a host that never answered. Matching only the
- * top-level type would class it rule 12 and spend the whole window retrying a host that cannot
- * answer before falling back. So rule 11 walks the same bounded, cycle-checked chain rule 6 does. A
+ * top-level type would class it rule 13 and spend the whole window retrying a host that cannot
+ * answer before falling back. So rule 12 walks the same bounded, cycle-checked chain rule 7 does. A
  * reset is retried only when no connect-phase exception sits anywhere in its chain — a reset alone
- * (top-level or under a plain wrapper) is rule 12, a reset under a [ConnectException] is rule 4 or 11.
+ * (top-level or under a plain wrapper) is rule 13, a reset under a [ConnectException] is rule 5 or 12.
  *
  * The OUTER failure still decides when it names a transient shape on its own: a top-level
- * [SocketTimeoutException] (rule 9) or end of stream (rule 10) says what happened to THIS attempt —
+ * [SocketTimeoutException] (rule 10) or end of stream (rule 11) says what happened to THIS attempt —
  * a stall, or a proxy that answered and dropped the request while its upstream was not up yet — and
  * a connect-phase exception nested under it is history (a proxy's own failed upstream dial, say),
  * not a host that never answered. Classing those FastFail would turn the tailscale-serve cold start
@@ -126,8 +138,9 @@ internal fun classifyConnectFailure(observation: ConnectObservation): ConnectFai
     val t = observation.throwable
     val responseCode = observation.responseCode
     return when {
+        observation.serverErrorCode == BUSY_ERROR_CODE -> ConnectFailureClass.Retryable
+        observation.closeCode == BUSY_CLOSE_CODE -> ConnectFailureClass.Retryable
         observation.serverErrorCode != null -> ConnectFailureClass.FastFail
-        observation.closeCode == BUSY_CLOSE_CODE -> ConnectFailureClass.FastFail
         t != null && isConnectPhaseType(t) -> ConnectFailureClass.FastFail
         t != null && isTlsVerificationFailure(t) -> ConnectFailureClass.FastFail
         responseCode != null && responseCode in 500..599 -> ConnectFailureClass.Retryable
@@ -143,14 +156,14 @@ internal fun classifyConnectFailure(observation: ConnectObservation): ConnectFai
 
 /**
  * `true` for a connect-phase failure type — the host never answered — see [classifyConnectFailure]
- * rules 3-5 (this throwable) and rule 11 (any link of its cause chain).
+ * rules 4-6 (this throwable) and rule 12 (any link of its cause chain).
  */
 private fun isConnectPhaseType(t: Throwable): Boolean =
     t is UnknownHostException || t is ConnectException || t is NoRouteToHostException ||
         t is UnknownServiceException
 
 /**
- * `true` for an end of stream on this attempt — see [classifyConnectFailure] rule 10: an
+ * `true` for an end of stream on this attempt — see [classifyConnectFailure] rule 11: an
  * [EOFException], an [IOException] whose DIRECT cause is one (OkHttp's shape before the response
  * headers, and a handshake the peer terminated), or OkHttp's `"unexpected end of stream"` message.
  * The message is only matched, never logged.
@@ -161,7 +174,7 @@ private fun isEndOfStream(t: Throwable): Boolean =
         (t is IOException && t.message?.startsWith(OKHTTP_END_OF_STREAM) == true)
 
 /**
- * `true` for a certificate or hostname verification failure — see [classifyConnectFailure] rule 6.
+ * `true` for a certificate or hostname verification failure — see [classifyConnectFailure] rule 7.
  */
 private fun isTlsVerificationFailure(t: Throwable): Boolean =
     t is SSLPeerUnverifiedException ||
@@ -183,6 +196,9 @@ private inline fun causeChainContains(t: Throwable, match: (Throwable) -> Boolea
 }
 
 private const val BUSY_CLOSE_CODE = 1013
+
+/** The server's `busy` error-frame code (the shared `SttErrorCode.BUSY` string). */
+private const val BUSY_ERROR_CODE = "busy"
 private const val MAX_CAUSE_DEPTH = 8
 
 /** The prefix of OkHttp's `Http1ExchangeCodec` EOF-before-headers message ("…on <address>"). */
