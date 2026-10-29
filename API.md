@@ -18,7 +18,8 @@ file ever disagree, the file is right and this document is a bug.
 | `LanguageAvailability` | enum (5 entries) | one language's on-device pack state, as the preflight and a native `"auto"` start read it |
 | `submitCorrection(context, httpBaseUrl, sessionId, corrected, language)` | top-level `suspend` function | send the user's corrected text for a retained session or clip; returns a typed result and never throws on network errors — see [Corpus corrections](#corpus-corrections--submitcorrection) |
 | `CorrectionSubmitResult` | enum (4 entries) | what happened to one correction: `ACCEPTED`, `UNKNOWN_SESSION`, `UNREACHABLE`, `REJECTED` |
-| `SttEngine` | interface | seven flow properties, the `lastFinal` and `lastSessionId` snapshots, `start()` / `stop()` |
+| `SttEngine` | interface | seven flow properties, the `fallbackReason` flow, the `lastFinal` and `lastSessionId` snapshots, `start()` / `stop()` |
+| `FallbackReason` | value class + companion | why a session fell back to on-device recognition (`busy`, `timeout`, `unreachable`, `rejected`, `dropped`; open set) — see [`fallbackReason`](#fallbackreason---why-a-session-fell-back) |
 | `EngineState` | enum (5 entries + `wireName`) | the observable state machine |
 | `SttConfig` | class | recognition settings (`language`, backend preference, server URL, try window, corrections, vocabulary, the voice-corpus opt-in `retainForCorpus`) |
 | `FinalSegment` | class | a committed, immutable transcript segment |
@@ -41,6 +42,21 @@ _(This index covers `:stt`'s own surface plus the two symbols this release adds 
 rest of `:recorder`/`:voicenotes`/`:transcription`'s public surface is documented in their own
 sections below without a top-level index entry — a pre-existing gap in this table predating this
 release, not something this phase's growth introduced or is scoped to close.)_
+
+---
+
+## Migrating to the next release (unreleased)
+
+Every change a host can see since `v0.8.1`, one row each. No version number is claimed yet: the
+release that ships these changes renames this heading. The `v0.8.1` and `v0.8.0` sections below are
+unchanged and still describe those releases.
+
+| ID | Kind | Surface | Change | What hosts do |
+|---|---|---|---|---|
+| MIG-17 | additive | `SttEngine.fallbackReason`, `FallbackReason` | New non-abstract member, default `null`: a `StateFlow<FallbackReason?>` that says why the current session fell back from the server to on-device recognition (`busy`, `timeout`, `unreachable`, `rejected` or `dropped`). `FallbackReason` is a new value class holding those five constants; the set is open. Android-only metadata, like `backend`. | Nothing, unless you want to show or log why a session ran on-device. Read it together with `backend`, and keep an `else` branch for values this build does not name. Implementers and test fakes need no change. See "`fallbackReason` - why a session fell back". |
+| MIG-18 | behaviour | busy server at session start | A server that answers `busy` (it is still serving another session) is now retried inside the try window with the existing backoff, instead of falling back at once. Only a busy that lasts past `serverTryTimeoutMs` falls back, with `fallbackReason` `busy`; under `prefer = Server` the `busy` error arrives when the window ends. | Nothing. A start issued right after another session's `stop()` now waits the busy out and lands on the server when the slot frees inside the window. |
+| MIG-19 | behaviour | live server session liveness | Two separate outcomes. (a) A microphone stream that ends while the session is live and no stop was asked for, and a server that stops answering (WebSocket ping, detected within about 20 s), now hand the session off to on-device recognition silently, with `fallbackReason` `dropped`; the live partial is committed first, as on any handoff. (b) A server close 1000 after `ready`, including the server's idle close (reason `idle-timeout`, 300 s server default, no error frame), ends the session in `Idle` with no error, no handoff and `fallbackReason` `null`; a live partial is not committed. | Nothing for (a). For (b), call `start()` again to keep dictating. See "Idle close: 1000 with reason `idle-timeout`". |
+| MIG-20 | behaviour | `SttEngine.stop()` | On the server backend `stop()` can now wait up to about 5 s for the server's tail flush (was about 2.5 s). MIG-03 describes the `v0.8.0` behaviour and is unchanged. | Keep calling `stop()` from a coroutine, not from a blocking UI handler. See "`stop()` latency on the server backend". |
 
 ---
 
@@ -322,6 +338,24 @@ Nothing here is a new error code or a schema change; the `busy` frame bytes are 
   beside probes. A client that connects while a session is active still gets `busy` and 1013, as
   before. The batch clients (`:transcription`, `:voicenotes`) use HTTP and are unaffected.
 
+### Idle close: 1000 with reason `idle-timeout`
+
+The server ends a live session that has streamed audio but no speech for its idle window. The window
+defaults to 300 s (5 minutes) and is set by the server's operator; it is never a per-session field,
+and a host cannot change it from the client.
+
+- The close is a normal **1000** with the reason string `idle-timeout` and **no error frame**.
+  Nothing here is a new error code or a schema change.
+- What a host sees: `state` goes to `Idle`, nothing is emitted on `errors`, there is no handoff to
+  on-device recognition, and `fallbackReason` stays `null`. A live partial is not committed. Call
+  `start()` again to keep dictating. Every server close 1000 after `ready` ends the same way; the
+  reason string only tells the idle close apart in logs.
+- **Silenced capture is cut only by this timer.** An app whose microphone is silenced in the
+  background still delivers audio (silence), not a read error, so the client keeps streaming and the
+  session ends only when the server's idle window runs out: not before 5 minutes with the default.
+  A microphone stream that actually ends, or a server that stops answering, is handled on the
+  client instead (MIG-19).
+
 ### Privacy and exposure
 
 The correction route has **no authentication beyond the tailnet**, the same posture as `POST /jobs`.
@@ -333,7 +367,7 @@ not publish ids. The corpus itself lives on the server host and is never readabl
 
 ## `SttEngine` — the contract
 
-Seven flow properties, two read-only snapshots (`lastFinal` and `lastSessionId`) and two suspend functions. **The
+Seven flow properties, the `fallbackReason` flow, two read-only snapshots (`lastFinal` and `lastSessionId`) and two suspend functions. **The
 delivery semantics differ per property, and they are part of the contract, not an implementation
 detail** — choosing the wrong one silently loses dictated text.
 
@@ -348,6 +382,7 @@ detail** — choosing the wrong one silently loses dictated text.
 | `events` | `Flow<SttEvent>` | ordered mirror of all seven | the convenience union, for one shared `when` |
 | `lastFinal` | `FinalSegment?` | a plain read, **no flow** | the final the last `stop()` flushed, readable synchronously the moment `stop()` returns; see [`lastFinal`](#lastfinal--the-tail-after-stop) below |
 | `lastSessionId` | `String?` | a plain read, **no flow** | the corpus record id of the session that just ended, when it was retained; see [`lastSessionId`](#lastsessionid--the-corpus-id-after-stop) below |
+| `fallbackReason` | `StateFlow<FallbackReason?>` | **replays** the current value | Android-only additive metadata, like `backend`: why the current session fell back from the server to on-device recognition, or `null`. Not on `FinalSegment`, not an event, never on `errors`. See [`fallbackReason`](#fallbackreason---why-a-session-fell-back) below |
 
 ### `finals` is lossless, and that is why it has exactly one consumer
 
@@ -383,8 +418,9 @@ public suspend fun stop()
   `Unit`).
 
 **`stop()` latency on the server backend.** On the server path, `stop()` stops capture, sends the
-remaining audio, sends the protocol's `stop` token, and then **waits up to about 2.5 s** for the
-server to flush the tail of the utterance and close the connection normally. The flushed tail is
+remaining audio, sends the protocol's `stop` token, and then **waits up to about 5 s** for the
+server to flush the tail of the utterance and close the connection normally (about 2.5 s up to
+`v0.8.1`; see MIG-20). The flushed tail is
 delivered on `finals` as usual, and it is readable from `lastFinal` as soon as `stop()` returns. If
 the server does not finish within that bound, the engine commits the open partial locally as the
 final instead, so the tail is never dropped. A requested stop never emits on `errors`, even if the
@@ -441,7 +477,7 @@ pass to [`submitCorrection`](#corpus-corrections--submitcorrection).
   window, any native session, a server that sent no id, and a session that did not ask for retention.
   A `null` after a retained request therefore means "no record claimed" for one of several reasons the
   host cannot tell apart.
-- **A record can exist without a handle.** `stop()` waits about 2.5 s for the server's tail flush, and
+- **A record can exist without a handle.** `stop()` waits about 5 s for the server's tail flush (see MIG-20), and
   on a retained session the server commits the record inside that window. When a long recording or a
   slow corpus disk pushes the commit past the bound, `stop()` gives up and `lastSessionId` is `null`
   although the server may still finish storing the record. That record is never correctable from the
@@ -457,6 +493,58 @@ pass to [`submitCorrection`](#corpus-corrections--submitcorrection).
 **Migration:** `lastSessionId` is a new **non-abstract** interface member with a default of `null`,
 the same shape as `lastFinal`. Existing implementers and test fakes need no change and stay source-
 and binary-compatible; a fake may override it to drive host logic.
+
+### `fallbackReason` - why a session fell back
+
+```kotlin
+public val fallbackReason: StateFlow<FallbackReason?> get() = /* a shared null flow */
+
+@JvmInline
+public value class FallbackReason(public val value: String)
+```
+
+Why the current session fell back from the server to on-device recognition, or `null`. It is
+Android-only metadata, like `backend`, and it is new in the next release (MIG-17).
+
+| Constant | `value` | Produced when |
+|---|---|---|
+| `FallbackReason.BUSY` | `busy` | the server was still busy (serving its one session) when the try window ended; a busy answer is retried inside the window first (MIG-18) |
+| `FallbackReason.TIMEOUT` | `timeout` | the try window ended without a busy answer: the server never answered, kept failing in a retryable way, or the attempt still in flight had not been answered |
+| `FallbackReason.UNREACHABLE` | `unreachable` | the server could not be reached at all, so the engine gave up at once: no DNS answer, a refused or unroutable connection, cleartext refused, a certificate that does not verify, or a non-5xx answer to the WebSocket upgrade |
+| `FallbackReason.REJECTED` | `rejected` | the server answered and refused the session (any error other than busy, such as an unsupported language), or the session could not start for a local reason after the server accepted it (for example, the microphone would not open) |
+| `FallbackReason.DROPPED` | `dropped` | a session that was running on the server failed mid-session and was handed off to on-device recognition: the connection failed, the server stopped answering pings, or the microphone stream ended with no stop asked for (MIG-19) |
+
+The set is **open**, for the same reason `SttErrorCode` is a value class: more reasons may be added
+later, so a `when` over it keeps an `else` branch that reads "fell back for a reason this build does
+not name". The values are fixed lowercase words, never built from server text.
+
+**Snapshot semantics.** The value is set only when `backend` flips to `Backend.Native` because of a
+server failure, and it is written before that flip is visible, so a collector of `backend` that sees
+`Native` already reads the reason here. Read it together with `backend` as each final arrives, and
+expect both to change during a session.
+
+- **Reset on every `start()`**, so a reused engine never reports a previous session's reason.
+- **`null`** on a session running on the server, on an engine that chose on-device recognition from
+  its config (no `serverUrl`, or `prefer = OnDevice`), and when `prefer = Server` fails (that raises
+  an error on `errors` instead of falling back).
+- **`null` after a graceful server close.** A server close 1000 after `ready`, the idle close
+  included, ends the session in `Idle` with no handoff, so the reason stays `null` (MIG-19).
+- It is **not** on `FinalSegment`, **not** an `SttEvent`, and **never** sent on `errors`, so a
+  fallback under `Auto` stays silent on the shared contract.
+
+**Worked example.** A server session drops mid-session while the user is speaking. Its live partial
+is committed as a final **before** on-device recognition is constructed, so a host that reads the
+pair as that final arrives sees `(Server, null)`. Once on-device recognition is `Listening`, the
+pair reads `(Native, dropped)`. Read the reason for a handoff from the engine after the `backend`
+flip, not from the handoff final's own snapshot.
+
+**Migration:** `fallbackReason` is a new **non-abstract** interface member with a default of a shared
+`null` flow, the same shape as `lastFinal`. Existing implementers and test fakes need no change and
+stay source- and binary-compatible; Java implementers get the default body through
+`SttEngine$DefaultImpls`. A fake may override it to drive host logic.
+
+**Web client:** no equivalent. The TypeScript client is server-only, with no backend selection and
+no on-device fallback, so there is nothing for it to report and no mirror is planned.
 
 ---
 
@@ -537,10 +625,13 @@ up to 10 s before the on-device fallback under `Auto`. How a failed try is treat
 connection got:
 
 - **Fails fast — before the host answers.** A DNS failure, no network, a refused connection, a
-  server that reports itself busy, a rejected config or a TLS certificate failure gives up
-  immediately rather than waiting out the window: `Auto` falls back to on-device at once, `Server`
-  reports its error at once. This also holds when such a failure arrives wrapped inside another
-  exception.
+  rejected config or a TLS certificate failure gives up immediately rather than waiting out the
+  window: `Auto` falls back to on-device at once, `Server` reports its error at once. This also
+  holds when such a failure arrives wrapped inside another exception.
+- **A busy server is retried within the window (MIG-18).** A server that answers `busy` (it is still
+  serving another session) is retried with the same backoff as below until the slot frees or the
+  window ends. Only a busy that outlasts the window falls back (`fallbackReason` `busy`) or, under
+  `Server`, reports `busy`.
 - **Retried within the window — the host answered but is not ready yet.** For example a server that
   is still starting up behind its TLS proxy, which accepts the connection and then drops it. The
   engine retries with a short backoff (250 ms, 500 ms, then 1 s) until the server is ready or the
@@ -1393,7 +1484,8 @@ error string was copied across.
 | `on(event, cb)` returning an unsubscribe handle | seven `Flow` / `StateFlow` properties + `events` | mechanism differs, event set identical |
 | `SttEngineOptions { serverUrl?, language? }` | `SttConfig(language, prefer, serverUrl, corrections, vocabulary, serverTryTimeoutMs, retainForCorpus)` | `serverUrl` re-added (Phase 9, D-01) — `prefer`/`backend`/`serverTryTimeoutMs` are Android-only additive; `retainForCorpus` and `SttEngine.lastSessionId` exist on the Kotlin client only (the TypeScript client carries wire types for them, no corpus API); `sampleRate` stays **dropped, not stubbed** |
 | engine requests microphone access itself | **host** holds `RECORD_AUDIO` | divergence 3 |
-| `start(): Promise<void>` / `stop()` | `suspend fun start()` / `suspend fun stop()` | same settle semantics; on the server path Android's `stop()` waits up to ~2.5 s for the server's flush (see [`start()` and `stop()`](#start-and-stop)) |
+| `start(): Promise<void>` / `stop()` | `suspend fun start()` / `suspend fun stop()` | same settle semantics; on the server path Android's `stop()` waits up to ~5 s for the server's flush (see [`start()` and `stop()`](#start-and-stop) and MIG-20) |
+| — | `fallbackReason: StateFlow<FallbackReason?>` | **Android-only** metadata, exactly like `backend`: the TypeScript client is server-only, with no backend selection and no on-device fallback, so it has no equivalent and none is planned |
 
 A three-way guard (`scripts/check-error-code-parity.sh` in the development mono-repo, plus a Kotlin
 test that runs in the release path) fails the build if the Python, TypeScript and Kotlin error sets

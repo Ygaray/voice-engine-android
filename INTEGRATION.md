@@ -196,14 +196,15 @@ What to know before shipping this:
   `"en-US"` is rejected by the server: under `Auto` the session quietly runs on-device instead,
   under `Server` you get `unsupported-language`.
 - **Tuning `serverTryTimeoutMs`.** This is how long session start keeps trying the server. A host
-  that is down hard (DNS failure, no network, connection refused, busy) fails fast whatever the
-  window is, and a server that answers but is still starting up is retried within it. Only a
+  that is down hard (DNS failure, no network, connection refused) fails fast whatever the window
+  is, and a server that answers but is still starting up, or answers `busy` because it is still
+  serving another session, is retried within it. Only a
   black-holed host (one that never answers) waits the full window, and no audio is captured
   meanwhile. The default already sits at the 10 000 ms ceiling, so a session started while the
   server is cold-starting can wait up to 10 s before the on-device fallback. **Lower it** (down to
   1 000 ms) if a dead network should hand the user to on-device dictation quickly. Values outside
   the range are clamped, never rejected.
-- **`stop()` can take up to ~2.5 s on the server path.** It sends the protocol's `stop` token and
+- **`stop()` can take up to ~5 s on the server path.** It sends the protocol's `stop` token and
   waits for the server to flush the tail of the utterance, so the last words the user spoke are not
   lost. On-device `stop()` is unchanged. Call it from a coroutine, not a blocking UI path.
 - **A second `start()` while a session is starting or live is ignored**, on both backends. Call
@@ -217,7 +218,7 @@ no note to insert into, and it starts on-device by default):
 
 ```kotlin
 scope.launch {
-    engine.stop()                       // server path: waits up to ~2.5 s for the flush
+    engine.stop()                       // server path: waits up to ~5 s for the flush
     val tail: FinalSegment? = engine.lastFinal
     tail?.let { note.append(it.text) }  // null if the session produced no final
 }
@@ -265,7 +266,7 @@ val engine = createSttEngine(
 )
 
 scope.launch {
-    engine.stop()                               // server path: waits up to ~2.5 s for the flush
+    engine.stop()                               // server path: waits up to ~5 s for the flush
     val id = engine.lastSessionId ?: return@launch   // null: nothing was retained
     val result = submitCorrection(
         context = getApplication(),
@@ -301,7 +302,7 @@ Things to know:
 - **A `null` `lastSessionId` means "no record claimed".** The session was not retained, did not end
   cleanly, was handed off to on-device recognition, or the server has retention off or predates it.
   The host cannot tell these apart, and none of them is an error. One more case: when `stop()` hits
-  its 2.5 s flush bound on a long recording or a slow corpus disk, the server may still store the
+  its ~5 s flush bound on a long recording or a slow corpus disk, the server may still store the
   record, so a record can exist that the client holds no id for (and so cannot correct).
 - **Read the id after `stop()`, not before.** If your `stop()` is asynchronous, wait for
   `EngineState.Idle` and then read it; the id is published before the engine reports `Idle`.
