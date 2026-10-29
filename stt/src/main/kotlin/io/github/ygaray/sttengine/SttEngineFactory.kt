@@ -106,6 +106,12 @@ public fun createSttEngine(
     )
 }
 
+/** The ping interval of a server session's socket, in seconds (Phase 28, LIVE-03). */
+internal const val SERVER_PING_INTERVAL_SECONDS: Long = 10L
+
+/** The OkHttp client behind a server session (Phase 28, LIVE-03). RED skeleton: not yet wired. */
+internal fun buildServerHttpClient(): OkHttpClient = OkHttpClient()
+
 /**
  * Ask this device's recognition service whether the on-device language packs for [langs] are
  * usable — without starting a dictation session and without the host holding a `SpeechRecognizer`
