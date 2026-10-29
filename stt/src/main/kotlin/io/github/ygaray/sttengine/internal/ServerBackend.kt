@@ -55,9 +55,16 @@ internal fun interface WebSocketFactory {
  *
  * Reads [source] while [running] holds, accumulating exactly [frameBytes] bytes per frame (a read
  * may be short — a paced debug feed returns whatever its clock released) and hands each whole frame
- * to [onFrame] as a fresh copy. A `read()` result `<= 0` is end of stream and ends the loop quietly,
- * exactly as `AudioSourcePipe.pumpInto` treats it; a partial frame left over at that point is
- * dropped (less than 32 ms of audio, and the server's frame contract is whole 512-sample frames).
+ * to [onFrame] as a fresh copy. A `read()` result `<= 0` is end of stream and ends the loop; a
+ * partial frame left over at that point is dropped (less than 32 ms of audio, and the server's
+ * frame contract is whole 512-sample frames).
+ *
+ * **The return value says WHY the loop ended (Phase 28, LIVE-01, D-13).** `true` = it ended
+ * UNASKED: a read returned `<= 0`, or threw, while [running] was still set — the microphone died
+ * under a live session, and the caller must fail it rather than sit in Listening on a dead pump.
+ * `false` = it ended because it was asked to: [running] was already cleared (including a read that
+ * returned, or threw, after teardown cleared the flag). The value is decided BEFORE the `finally`
+ * clears [running], so the flag this function clears itself never reads as a request.
  *
  * [running] is rechecked the moment each `read()` returns, before the bytes are accumulated: a read
  * that was still in flight when teardown cleared the flag (a vendor `AudioRecord.read()` that does
@@ -65,9 +72,9 @@ internal fun interface WebSocketFactory {
  * teardown asked the pump to stop.
  *
  * `catch (Exception)` only, never `Throwable` (mirrors `AudioSourcePipe` CR-03): a read failure —
- * typically an `IllegalStateException` from a recorder released under a wedged read — is the ordinary
- * end of capture, but an `Error` such as `OutOfMemoryError` must not be swallowed. [running] is
- * cleared on every exit path.
+ * typically an `IllegalStateException` from a recorder released under a wedged read — ends capture,
+ * but an `Error` such as `OutOfMemoryError` must not be swallowed. [running] is cleared on every
+ * exit path.
  */
 internal fun pumpFrames(
     source: PcmSource,
@@ -77,6 +84,7 @@ internal fun pumpFrames(
 ): Boolean {
     val frame = ByteArray(frameBytes)
     var filled = 0
+    var endedUnasked = false
     try {
         while (running.get()) {
             val chunk = ByteArray(frameBytes - filled)
@@ -84,7 +92,11 @@ internal fun pumpFrames(
             // Teardown may have cleared the flag while this read was blocked: whatever it returned
             // is post-stop capture and must not reach the level meter or the socket.
             if (!running.get()) break
-            if (read <= 0) break
+            if (read <= 0) {
+                // End of stream while nobody asked the pump to stop: the mic died.
+                endedUnasked = true
+                break
+            }
             val count = minOf(read, chunk.size)
             System.arraycopy(chunk, 0, frame, filled, count)
             filled += count
@@ -94,11 +106,13 @@ internal fun pumpFrames(
             }
         }
     } catch (ended: Exception) {
-        // The ordinary end of a capture session, never a fault — see the KDoc above.
+        // Unasked only if nobody had cleared the flag yet (a recorder released under a read by a
+        // teardown throws AFTER the flag was cleared — that is a requested end).
+        endedUnasked = running.get()
     } finally {
         running.set(false)
     }
-    return false // RED skeleton (28-05): the real end-reason lands with the implementation.
+    return endedUnasked
 }
 
 /**
@@ -193,6 +207,12 @@ internal class OkHttpWebSocketFactory(
  * ownership passes to the pump thread instead ([PumpReleaseHandoff]): it releases the source itself
  * once the read returns, so the source is released exactly once and never under a live reader.
  * Every teardown path ([stop], [abandon], [fail], [releaseAudioSource]) runs it.
+ *
+ * A pump that ends UNASKED — a read returning `<= 0` or throwing while nobody cleared the run flag
+ * — is a dead microphone, not the end of a session (Phase 28, LIVE-01, D-13). The pump thread posts
+ * that end onto [mainDispatcher], and [onPumpEndedUnasked] fails the session with
+ * [SttErrorCode.AUDIO_ERROR] unless a requested teardown got there first, so a session never sits
+ * in Listening on a pump that stopped streaming.
  *
  * ## Outbound backpressure (Phase 9 Task 2, T-09-05)
  *
@@ -597,10 +617,11 @@ internal class ServerBackend(
         pumping.set(true)
         val handoff = PumpReleaseHandoff()
         pumpHandoff = handoff
-        pumpThread = Thread(
+        val thread = Thread(
             {
+                var endedUnasked = false
                 try {
-                    pumpFrames(source, pumping, FRAME_BYTES) { frame ->
+                    endedUnasked = pumpFrames(source, pumping, FRAME_BYTES) { frame ->
                         // D-03: level from the pump thread (tryEmit is thread-safe; the meter is
                         // touched by this thread only), then hand the frame to main.
                         levelMeter.accept(frame)?.let { _level.tryEmit(it) }
@@ -610,13 +631,41 @@ internal class ServerBackend(
                     // Reading is over. If teardown gave up waiting and handed the release over,
                     // this thread is now the only one that may release the source.
                     if (handoff.pumpExited()) runCatching { source.release() }
+                    // LIVE-01 (D-13): nobody asked this pump to stop — tell main, which decides.
+                    if (endedUnasked) {
+                        val self = Thread.currentThread()
+                        scope.launch { onPumpEndedUnasked(self) }
+                    }
                 }
             },
             PUMP_THREAD_NAME,
-        ).apply {
-            isDaemon = true
-            start()
-        }
+        )
+        thread.isDaemon = true
+        // BEFORE start(): a pump that dies at once must already be the recorded pumpThread, or its
+        // end would fail the identity check in onPumpEndedUnasked and read as a requested teardown.
+        pumpThread = thread
+        thread.start()
+    }
+
+    /**
+     * The pump thread [t] ended UNASKED (LIVE-01, D-13) — runs on [mainDispatcher].
+     *
+     * A requested teardown can race this signal, so it is discriminated three ways, and the first
+     * terminal transition wins: [terminal] (a [stop] that finished, an [abandon], a [fail] that
+     * already ran, a server close), [stopping] (a [stop] in flight), or `pumpThread !== t`
+     * ([releaseAudioSource] — on its own, as the selector's handoff calls it, or inside any teardown
+     * — already took the reference). Any of them makes this a no-op: no error, no handoff.
+     *
+     * Otherwise the session fails through the ONE [fail] funnel with [SttErrorCode.AUDIO_ERROR]
+     * (not MIC_DENIED, which would tell a host branching on it that a permission is missing). That
+     * releases the mic, drops pending frames, cancels the socket, emits on [errors] and sets Error;
+     * [BackendSelector]'s errors collector then hands off to native with `fallbackReason = DROPPED`.
+     * Once this has failed the session, a later [fail] (a socket failure queued behind it) is a
+     * no-op, so either order yields exactly one error and one handoff.
+     */
+    private fun onPumpEndedUnasked(t: Thread) {
+        if (terminal || stopping || pumpThread !== t) return
+        fail(SttError(SttErrorCode.AUDIO_ERROR, "microphone capture ended unexpectedly"))
     }
 
     /** Drops every captured-but-unsent frame: cancels the frame channel and its consumer. */
@@ -896,8 +945,9 @@ internal class ServerBackend(
                 // Carries the server's taxonomy code verbatim (mirrors protocol.ts) — this client
                 // does not reject an unknown code, it just wraps it.
                 is ServerFrame.Error -> {
-                    // TRY-02: a config reject (or any error frame) before ready is classified
-                    // FastFail by the selector.
+                    // TRY-02: an error frame before ready is recorded for the selector's
+                    // classifier — FastFail for a config reject or any other code, except `busy`,
+                    // which is Retryable inside the try window (Phase 28 D-05).
                     if (connecting) preReadyServerErrorCode = frame.code
                     fail(SttError(SttErrorCode(frame.code), frame.message))
                 }
