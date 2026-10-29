@@ -46,8 +46,9 @@ import org.robolectric.annotation.Config
  * TRY-02's selector policy in virtual time (D-06, D-14): a fast-fail falls back (Auto) or surfaces
  * one error (Server) at the moment of the failure; a retryable failure is retried with backoff
  * 250 → 500 → 1 000 ms under ONE deadline equal to the window; a black-holed host waits the whole
- * window; `stop()` during a backoff or an in-flight retry ends everything; and every attempt leaves
- * one privacy-safe `server-attempt` trace line.
+ * window; `busy` (frame or close 1013) is retried like any other retryable failure (Phase 28 D-05);
+ * `stop()` during a backoff or an in-flight retry ends everything; and every attempt leaves one
+ * privacy-safe `server-attempt` trace line.
  *
  * Harness copied from [BackendSelectorTest]: [FakeWebSocketFactory] for the server path,
  * [FakeRecognizerHandle] for the native fallback, `UnconfinedTestDispatcher(testScheduler)` as
@@ -123,19 +124,38 @@ class BackendSelectorTryWindowTest {
         return Harness(dispatcher, fakeWs, fakeHandle, selector, errors, log, started)
     }
 
-    /** Fails every socket created since the last call with [failure()] — one per attempt. */
-    private class FailEveryAttempt(private val h: Harness, private val failure: () -> Throwable) {
+    /** Answers every socket created since the last call with [answer] — one per attempt. */
+    private open class AnswerEveryAttempt(private val h: Harness, private val answer: (FakeWebSocket) -> Unit) {
         private var fired = 0
         fun fireNew() {
             while (fired < h.fakeWs.createCount) {
-                h.fakeWs.fireFailure(failure(), socket = h.socket(fired))
+                answer(h.socket(fired))
                 fired++
             }
         }
     }
 
-    /** Steps virtual time to [until] in 50 ms slices, failing each new attempt as it appears. */
-    private fun TestScope.failAttemptsUntil(failer: FailEveryAttempt, until: Long) {
+    /** Fails every socket created since the last call with [failure()] — one per attempt. */
+    private class FailEveryAttempt(h: Harness, failure: () -> Throwable) :
+        AnswerEveryAttempt(h, { socket -> h.fakeWs.fireFailure(failure(), socket = socket) })
+
+    /** Answers every new attempt the way a busy server does over the wire, as a busy error frame
+     *  after the open (the frame's fail() is the first terminal signal the backend records). */
+    private fun busyFrameEveryAttempt(h: Harness): AnswerEveryAttempt =
+        AnswerEveryAttempt(h) { socket ->
+            h.fakeWs.fireOpen(socket)
+            h.fakeWs.fireMessage(BUSY_FRAME, socket = socket)
+        }
+
+    /** Answers every new attempt with a close 1013 only (no error frame) after the open. */
+    private fun busyCloseEveryAttempt(h: Harness): AnswerEveryAttempt =
+        AnswerEveryAttempt(h) { socket ->
+            h.fakeWs.fireOpen(socket)
+            h.fakeWs.fireClosing(1013, "busy", socket = socket)
+        }
+
+    /** Steps virtual time to [until] in 50 ms slices, answering each new attempt as it appears. */
+    private fun TestScope.failAttemptsUntil(failer: AnswerEveryAttempt, until: Long) {
         failer.fireNew()
         while (testScheduler.currentTime < until) {
             advanceTimeBy(minOf(STEP_MS, until - testScheduler.currentTime))
@@ -203,19 +223,118 @@ class BackendSelectorTryWindowTest {
     }
 
     @Test
-    fun `a busy close 1013 fast-fails to native at once`() = runTest {
-        val h = startSelector()
-        h.fakeWs.fireOpen(h.socket(0))
-        h.fakeWs.fireClosing(1013, "busy", socket = h.socket(0))
-        assertFastFailToNative(h)
-    }
-
-    @Test
     fun `a TLS certificate failure fast-fails to native at once`() = runTest {
         val h = startSelector()
         h.fakeWs.fireFailure(tlsUntrusted(), socket = h.socket(0))
         assertFastFailToNative(h)
     }
+
+    // --- busy is retried inside the window (Phase 28 D-05, LIVE-04) ---------------------------------
+    //
+    // The real server sends a busy error frame AND a close 1013, but the backend records only the
+    // first terminal signal: the frame's fail() fences the close out. So the frame-only and the
+    // close-only shapes are pinned separately, and the frame-then-close shape asserts the retry only.
+
+    /** Asserts attempt 1 was retried at exactly 250 ms and a ready on attempt 2 commits to the
+     *  server with no native recognizer started. */
+    private fun TestScope.assertRetriedAt250AndCommits(h: Harness) {
+        runCurrent()
+        assertEquals("busy must not fall back at once", 0, h.fakeHandle.startCount)
+        advanceTimeBy(249)
+        runCurrent()
+        assertEquals("no retry before the first backoff elapses", 1, h.fakeWs.createCount)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals("the busy retry opens a fresh socket at 250 ms", 2, h.fakeWs.createCount)
+
+        h.fakeWs.fireOpen(h.socket(1))
+        h.fakeWs.fireMessage("""{"type":"ready"}""", socket = h.socket(1))
+        runCurrent()
+
+        assertTrue(h.started.isCompleted)
+        assertEquals(Backend.Server, h.selector.backend.value)
+        assertEquals(EngineState.Listening, h.selector.state.value)
+        assertEquals("native never starts once the retry is accepted", 0, h.fakeHandle.startCount)
+        assertTrue("the busy attempt's socket was abandoned", h.socket(0).cancelCount >= 1)
+        assertTrue(h.errors.isEmpty())
+    }
+
+    @Test
+    fun `a busy close 1013 is retried after 250 ms and a ready on the retry commits to the server`() = runTest {
+        val h = startSelector()
+        h.fakeWs.fireOpen(h.socket(0))
+        h.fakeWs.fireClosing(1013, "busy", socket = h.socket(0))
+        assertRetriedAt250AndCommits(h)
+    }
+
+    @Test
+    fun `a busy error frame is retried after 250 ms and a ready on the retry commits to the server`() = runTest {
+        val h = startSelector()
+        h.fakeWs.fireOpen(h.socket(0))
+        h.fakeWs.fireMessage(BUSY_FRAME, socket = h.socket(0))
+        assertRetriedAt250AndCommits(h)
+
+        val first = h.attemptLines().first()
+        assertEquals(1, first.getInt("attempt"))
+        assertEquals("Retryable", first.getString("class"))
+        assertTrue(first.getBoolean("sawOpen"))
+        assertTrue("a frame-only busy has no close code", first.isNull("closeCode"))
+    }
+
+    @Test
+    fun `the real server's busy frame then close 1013 is retried and a ready on the retry commits`() = runTest {
+        val h = startSelector()
+        h.fakeWs.fireOpen(h.socket(0))
+        h.fakeWs.fireMessage(BUSY_FRAME, socket = h.socket(0))
+        h.fakeWs.fireClosing(1013, "busy", socket = h.socket(0))
+        assertRetriedAt250AndCommits(h)
+        // Only the class is pinned: the frame's fail() fences the close out, so the close code is
+        // deliberately not asserted here.
+        assertEquals("Retryable", h.attemptLines().first().getString("class"))
+    }
+
+    @Test
+    fun `a busy error frame for the whole window falls back to native silently at the window`() = runTest {
+        val window = 2_500L
+        val h = startSelector(windowMs = window)
+        failAttemptsUntil(busyFrameEveryAttempt(h), until = window - 1)
+        assertNativeExactlyAtWindow(h, window)
+        assertTrue("busy is retried, got ${h.fakeWs.createCount}", h.fakeWs.createCount >= 3)
+        val classes = h.attemptLines().map { it.getString("class") }
+        assertEquals("WindowExpired", classes.last())
+        assertTrue(classes.dropLast(1).all { it == "Retryable" })
+    }
+
+    @Test
+    fun `a busy close 1013 for the whole window falls back to native silently at the window`() = runTest {
+        val window = 2_500L
+        val h = startSelector(windowMs = window)
+        failAttemptsUntil(busyCloseEveryAttempt(h), until = window - 1)
+        assertNativeExactlyAtWindow(h, window)
+        assertTrue("busy is retried, got ${h.fakeWs.createCount}", h.fakeWs.createCount >= 3)
+    }
+
+    @Test
+    fun `prefer=Server with busy for the whole window surfaces exactly one busy error at the window`() =
+        runTest {
+            val window = 2_500L
+            val h = startSelector(prefer = BackendPreference.Server, windowMs = window)
+            failAttemptsUntil(busyFrameEveryAttempt(h), until = window - 1)
+            assertTrue("no error before the window ends", h.errors.isEmpty())
+            assertEquals(EngineState.Connecting, h.selector.state.value)
+
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(window, testScheduler.currentTime)
+            advanceUntilIdle()
+
+            assertTrue(h.started.isCompleted)
+            assertEquals(1, h.errors.size)
+            assertEquals(SttErrorCode.BUSY, h.errors.single().code)
+            assertEquals(EngineState.Error, h.selector.state.value)
+            assertEquals(0, h.fakeHandle.startCount)
+            assertTrue("busy is retried, got ${h.fakeWs.createCount}", h.fakeWs.createCount >= 3)
+        }
 
     // --- retry inside the window (D-06) -------------------------------------------------------------
 
@@ -502,19 +621,20 @@ class BackendSelectorTryWindowTest {
     }
 
     @Test
-    fun `a busy fast-fail line records the close code and the open`() = runTest {
+    fun `a busy close retry line records the close code and the open`() = runTest {
         val h = startSelector()
         h.fakeWs.fireOpen(h.socket(0))
         h.fakeWs.fireClosing(1013, "busy", socket = h.socket(0))
         runCurrent()
 
         val line = h.attemptLines().single()
-        assertEquals("FastFail", line.getString("class"))
+        assertEquals("Retryable", line.getString("class"))
         assertEquals(1013, line.getInt("closeCode"))
         assertTrue(line.getBoolean("sawOpen"))
         assertTrue(line.isNull("exception"))
-        // Let the native fallback's start() complete.
-        h.fakeHandle.reachListening()
+        assertEquals("busy never falls back at once", 0, h.fakeHandle.startCount)
+        // The loop is now in its backoff — end the session so start() completes.
+        launch(h.dispatcher) { h.selector.stop() }.join()
         h.started.join()
     }
 
@@ -554,5 +674,6 @@ class BackendSelectorTryWindowTest {
         const val SERVER_URL = "wss://example.ts.net:8444/"
         const val WINDOW_MS = 5_000L
         const val STEP_MS = 50L
+        const val BUSY_FRAME = """{"type":"error","code":"busy","message":"server busy"}"""
     }
 }

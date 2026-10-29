@@ -179,14 +179,41 @@ class ServerConnectFailureTest {
         assertEquals(ConnectFailureClass.FastFail, classify(t))
     }
 
+    // --- busy: retried inside the window (Phase 28 D-05, reverses Phase 21 D-06 for busy only) -------
+    //
+    // The real server sends BOTH a busy error frame and a 1013 close, but a ServerBackend records only
+    // the first terminal signal (the frame's fail() fences the close out). So this pure classifier
+    // table is the only place an observation carries both fields at once; the selector tests cover
+    // the frame-only and close-only shapes separately.
+
     @Test
-    fun `server busy close 1013 fast-fails`() {
-        assertEquals(ConnectFailureClass.FastFail, classify(closeCode = 1013, sawOpen = true))
+    fun `server busy close 1013 is retryable`() {
+        assertEquals(ConnectFailureClass.Retryable, classify(closeCode = 1013, sawOpen = true))
     }
 
     @Test
-    fun `every server error frame before ready fast-fails`() {
-        listOf("unsupported-language", "invalid-config", "protocol-violation", "internal-error").forEach {
+    fun `a busy error frame before ready is retryable`() {
+        assertEquals(ConnectFailureClass.Retryable, classify(serverErrorCode = "busy", sawOpen = true))
+    }
+
+    @Test
+    fun `a busy error frame together with close 1013 is retryable`() {
+        assertEquals(
+            ConnectFailureClass.Retryable,
+            classify(closeCode = 1013, serverErrorCode = "busy", sawOpen = true),
+        )
+    }
+
+    @Test
+    fun `every other server error frame before ready fast-fails`() {
+        listOf(
+            "unsupported-language",
+            "invalid-config",
+            "unsupported-sample-rate",
+            "version-mismatch",
+            "protocol-violation",
+            "internal-error",
+        ).forEach {
             assertEquals(
                 "error frame $it",
                 ConnectFailureClass.FastFail,
