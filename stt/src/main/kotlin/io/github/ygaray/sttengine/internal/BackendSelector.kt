@@ -294,6 +294,14 @@ internal class BackendSelector(
     private var lastRetryWasBusy = false
 
     /**
+     * The reason a mid-session handoff will publish ([FallbackReason.DROPPED]), set by
+     * [handleServerDrop] and written to [fallbackReason] by [startNative] just before it flips
+     * [backend] to Native on native's Listening (research A8: published with the flip, not at drop
+     * time). Reset per [runStart]. Main-confined.
+     */
+    private var pendingFallbackReason: FallbackReason? = null
+
+    /**
      * The job actually running [runStart] — launched on [scope] rather than executed inline in the
      * caller's own coroutine, specifically so [stop] has something it can cancel regardless of which
      * phase `start()` is currently in (CR-03's other half: [pendingServer] stops a leaked mic/socket,
@@ -392,6 +400,7 @@ internal class BackendSelector(
         _fallbackReason.value = null
         lastTryReason = null
         lastRetryWasBusy = false
+        pendingFallbackReason = null
         // Already cancelled as a child of the sessionForwarders cancelled above; the reset keeps
         // the accessor honest for this session.
         handoffHoldJob = null
@@ -481,6 +490,7 @@ internal class BackendSelector(
                     releasePending(backend)
                     logAttempt(attempt, cls.name, observation)
                     if (cls == ConnectFailureClass.FastFail) {
+                        lastTryReason = fallbackReasonForFastFail(observation)
                         gaveUp = true
                         return@withTimeoutOrNull null
                     }
@@ -741,6 +751,10 @@ internal class BackendSelector(
         handoffStarted = true
         activeServer = null
         lastServer = serverBackend
+        // LIVE-04 (D-03): every post-commit server failure, whatever its cause, is a mid-session
+        // drop. Published only with the backend flip (startNative), so the handoff final below
+        // still reads (Server, null).
+        pendingFallbackReason = FallbackReason.DROPPED
 
         // 1. commit the live partial BEFORE any teardown.
         val partialText = serverBackend.partial.value
@@ -817,7 +831,11 @@ internal class BackendSelector(
         // observes Native ahead of native audio. A no-op on the plain v1.0/native-only path, where
         // `backend` is already Native from construction.
         fun forwardNativeState(next: EngineState) {
-            if (next == EngineState.Listening) setBackend(Backend.Native)
+            if (next == EngineState.Listening) {
+                // LIVE-04 (D-01): a handoff's reason is written BEFORE the flip it explains.
+                pendingFallbackReason?.let { _fallbackReason.value = it }
+                setBackend(Backend.Native)
+            }
             setState(next)
         }
 

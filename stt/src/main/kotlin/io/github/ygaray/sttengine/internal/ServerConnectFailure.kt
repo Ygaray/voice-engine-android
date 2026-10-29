@@ -163,9 +163,26 @@ internal fun classifyConnectFailure(observation: ConnectObservation): ConnectFai
 internal fun isBusyRejection(observation: ConnectObservation): Boolean =
     observation.serverErrorCode == BUSY_ERROR_CODE || observation.closeCode == BUSY_CLOSE_CODE
 
-// RED skeleton (28-04): the real body lands with the Task 2 GREEN commit.
-internal fun fallbackReasonForFastFail(observation: ConnectObservation): FallbackReason =
-    FallbackReason.REJECTED
+/**
+ * The [FallbackReason] for an attempt [classifyConnectFailure] classed
+ * [ConnectFailureClass.FastFail] (LIVE-04, D-03):
+ *
+ * - a server `error` frame other than busy → [FallbackReason.REJECTED] (the server refused the
+ *   session, e.g. an unsupported language);
+ * - otherwise a throwable or an upgrade answer → [FallbackReason.UNREACHABLE] (no DNS answer, a
+ *   refused or unroutable connect, cleartext refused, TLS verification, a non-5xx upgrade answer);
+ * - otherwise, the residual case with nothing observed (for example the server-path microphone
+ *   would not open after `ready`) → [FallbackReason.REJECTED] (research A7; the set is open, so it
+ *   can be re-labelled later without a break).
+ *
+ * Never reads a message, URL or server text: the reason is a fixed constant.
+ */
+internal fun fallbackReasonForFastFail(observation: ConnectObservation): FallbackReason = when {
+    observation.serverErrorCode != null && observation.serverErrorCode != BUSY_ERROR_CODE ->
+        FallbackReason.REJECTED
+    observation.throwable != null || observation.responseCode != null -> FallbackReason.UNREACHABLE
+    else -> FallbackReason.REJECTED
+}
 
 /**
  * `true` for a connect-phase failure type — the host never answered — see [classifyConnectFailure]
