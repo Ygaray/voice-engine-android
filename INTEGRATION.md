@@ -308,7 +308,8 @@ Things to know:
 - **Read the id after `stop()`, not before.** If your `stop()` is asynchronous, wait for
   `EngineState.Idle` and then read it; the id is published before the engine reports `Idle`. A
   session the server ended itself with a graceful close (its idle close) also carries its id once
-  the engine reports `Idle`, because the server commits the record before that close.
+  the engine reports `Idle`, because the server commits the record before that close (unless the
+  idle-closed session produced no final: then the server stores nothing).
 - **`UNREACHABLE` does not prove nothing was stored.** There is no idempotency key, so a retry can
   append a duplicate revision, which the append-only corpus tolerates.
 - **A non-null id is not proof the record exists.** A retention failure on a live session sends no

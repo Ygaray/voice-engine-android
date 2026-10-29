@@ -353,7 +353,8 @@ and a host cannot change it from the client.
   opt-in `diagnosticLogging` trace, which writes one `server-close` line with reason `idle-timeout`
   or `normal`. On a session that asked for
   `retainForCorpus`, the server commits the record before it closes, so `lastSessionId` carries its
-  id after the close, exactly as after `stop()`.
+  id after the close, exactly as after `stop()`. An idle-closed session that produced no final is
+  the exception: the server stores nothing for it, since it holds only idle audio.
 - **Silenced capture is cut only by this timer.** An app whose microphone is silenced in the
   background still delivers audio (silence), not a read error, so the client keeps streaming and the
   session ends only when the server's idle window runs out: not before 5 minutes with the default.
@@ -477,7 +478,9 @@ pass to [`submitCorrection`](#corpus-corrections--submitcorrection).
   commit before that close, so the observed clean close is the earliest moment the record can exist.
 - **Also non-null after the server's own graceful close** of such a session (a close 1000 after
   `ready`, the idle close included). The server commits the record before that close as well, so the
-  id is published the same way, before the engine reports `Idle`.
+  id is published the same way, before the engine reports `Idle`. One exception on the server side:
+  an idle close of a session that produced no final stores nothing (it would only be idle audio), so
+  that id names no record and a correction for it returns `UNKNOWN_SESSION`.
 - **Reset by `start()`**, so a reused engine never reports a previous session's id.
 - **`null` on every other path:** while a session is live, after a flush that timed out, an error, an
   abnormal close, a mid-session fallback to the on-device recognizer, a stop during the try-server

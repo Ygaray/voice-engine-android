@@ -182,9 +182,10 @@ public interface SttEngine {
      * the server backend, never failed and was never handed off to the on-device recognizer, and whose
      * server finished its stop path by closing cleanly. The same holds when the server ends such a
      * session itself with a graceful close after it started (its idle close): the server commits the
-     * record before that close too, so the id is published the same way. The server attempts the
-     * corpus commit before that close, so the observed clean close is the earliest moment the record
-     * can exist. This does NOT guarantee the record was stored: a server-side retention failure is
+     * record before that close too, so the id is published the same way (an idle-closed session that
+     * produced no final is the exception: the server stores nothing for it, so that id names no
+     * record). The server attempts the corpus commit before that close, so the observed clean close
+     * is the earliest moment the record can exist. This does NOT guarantee the record was stored: a server-side retention failure is
      * not signalled to the client, and a later `submitCorrection` for such an id returns
      * `UNKNOWN_SESSION`.
      *
