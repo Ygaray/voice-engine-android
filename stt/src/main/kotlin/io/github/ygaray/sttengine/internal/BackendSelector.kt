@@ -258,9 +258,11 @@ internal class BackendSelector(
     /**
      * CORR-07 (D-09, D-04 refined by D-17(c)): read synchronously from the detached or active
      * server backend, the same way [lastFinal] is. [ServerBackend.endedSessionId] is non-null only
-     * after that backend finished a flushed `stop()`, so a live session, a failed or handed-off one
-     * (whose backend never ran a stop) and a native session all read null. [runStart] clearing
-     * [lastServer] at the top of a new session is the reset.
+     * after that backend finished a flushed `stop()` or was ended by a graceful server close 1000
+     * after `ready` (Phase 28 review WR-01; set before the backend's Idle, so it is readable before
+     * [detachEndedServer] publishes the selector's Idle), so a live session, a failed or handed-off
+     * one and a native session all read null. [runStart] clearing [lastServer] at the top of a new
+     * session is the reset.
      */
     override val lastSessionId: String?
         get() = (activeServer ?: lastServer)?.endedSessionId

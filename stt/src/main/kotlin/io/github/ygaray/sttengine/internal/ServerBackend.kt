@@ -293,7 +293,8 @@ internal class ServerBackend(
     /**
      * The corpus session id the server sent on its first accepted `ready`, kept only when this
      * instance asked for retention (CORR-06). Never exposed directly: the host-visible read is
-     * [endedSessionId], which is set only at the end of a flushed [stop]. Main-confined write,
+     * [endedSessionId], which is set only at the end of a flushed [stop] or of a graceful
+     * server-initiated close 1000 after `ready` ([endSessionFromServerClose]). Main-confined write,
      * `@Volatile` for symmetry with [_lastFinal].
      */
     @Volatile
@@ -301,15 +302,17 @@ internal class ServerBackend(
 
     /**
      * The retained session's id, published only once this instance finished a flushed [stop]
-     * (CORR-07, D-04 refined by D-17(c)). The server attempts the corpus commit strictly BEFORE it
-     * closes with 1000, so the observed clean close after the flush is the earliest moment the
-     * record can exist. It is NOT proof the commit succeeded: a failed commit still ends in a
-     * normal close and signals nothing to the client. Null on every other path: while the session is
-     * live, after a flush timeout, an error frame, an abnormal close, a [fail], an [abandon], for a
-     * session that never requested retention, and for a `ready` that carried no id.
+     * (CORR-07, D-04 refined by D-17(c)), or once the server ended the session itself with a
+     * graceful close 1000 after `ready` (its idle timeout, LIVE-02 / D-14 — Phase 28 review WR-01).
+     * On both paths the server attempts the corpus commit strictly BEFORE it closes with 1000, so
+     * the observed clean close is the earliest moment the record can exist. It is NOT proof the
+     * commit succeeded: a failed commit still ends in a normal close and signals nothing to the
+     * client. Null on every other path: while the session is live, after a flush timeout, an error
+     * frame, an abnormal close, a [fail], an [abandon], for a session that never requested
+     * retention, and for a `ready` that carried no id.
      *
-     * Assigned BEFORE [stop] reports [EngineState.Idle], so an observer that waits for Idle and then
-     * reads this already sees the id and cannot race the stop. `@Volatile` like [_lastFinal]: a host
+     * Assigned BEFORE [stop] or [endSessionFromServerClose] reports [EngineState.Idle], so an
+     * observer that waits for Idle and then reads this already sees the id and cannot race the end. `@Volatile` like [_lastFinal]: a host
      * may read it off the main thread, and one instance per session means no reset is needed.
      */
     @Volatile
@@ -1023,6 +1026,10 @@ internal class ServerBackend(
      *   FIFO dispatcher, so they were handled before this one);
      * - a live partial is DROPPED, never committed: the web client commits no partial on a graceful
      *   close, and the server's idle close already flushes an open tail as a final before closing;
+     * - the server committed a retained record before its 1000 (its `_end_session` commits on a
+     *   stop and on an idle close alike), so [endedSessionId] is published exactly as after a
+     *   flushed [stop], BEFORE Idle (Phase 28 review WR-01); null when retention was not requested
+     *   or `ready` carried no id;
      * - then the same terminal sequence [stop] runs in its `finally`, ending in
      *   [EngineState.Idle] — nothing on [errors], no [EngineState.Error], so [BackendSelector]
      *   never hands off. With [terminal] set, the later `onClosed` is a no-op.
@@ -1035,6 +1042,9 @@ internal class ServerBackend(
         livePartialSegmentId = null
         terminal = true
         epoch.advance()
+        // CORR-07 / WR-01: the server committed before its 1000, like a flushed stop — publish the
+        // id BEFORE Idle so a waiter on Idle never races the read.
+        endedSessionId = readySessionId
         releaseAudioSource()
         dropPendingFrames()
         frames = null

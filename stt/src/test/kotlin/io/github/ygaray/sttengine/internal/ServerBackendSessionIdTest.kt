@@ -391,6 +391,64 @@ class ServerBackendSessionIdTest {
         assertEquals(ID, h.backend.endedSessionId)
     }
 
+    // --- Phase 28 review WR-01: a graceful server close after ready publishes the id -----------
+    //
+    // The server's `_end_session` commits a retained record before its 1000 on a stop AND on an
+    // idle close, so the server-initiated close is the same "earliest moment the record can exist"
+    // as a flushed stop. A graceful close commits nothing locally (web mirror).
+
+    @Test
+    fun `a server idle close of a retained session publishes the id before Idle`() = runTest {
+        val h = harness()
+        h.idle.arm()
+
+        h.fakeWs.fireClosing(1000, ServerBackend.IDLE_TIMEOUT_CLOSE_REASON)
+        runCurrent()
+
+        assertEquals(EngineState.Idle, h.backend.state.value)
+        assertTrue(h.backend.closedByIdleTimeout)
+        assertEquals(
+            "the id must already be there at the first moment Idle is observed",
+            listOf<String?>(ID),
+            h.idle.seen,
+        )
+        assertEquals(ID, h.backend.endedSessionId)
+    }
+
+    @Test
+    fun `any graceful server close 1000 after ready of a retained session publishes the id`() = runTest {
+        val h = harness()
+
+        h.fakeWs.fireClosing(1000, "")
+        runCurrent()
+
+        assertEquals(EngineState.Idle, h.backend.state.value)
+        assertEquals(ID, h.backend.endedSessionId)
+    }
+
+    @Test
+    fun `a graceful server close of a non-retained session publishes no id`() = runTest {
+        val h = harness(retain = false)
+        h.idle.arm()
+
+        h.fakeWs.fireClosing(1000, ServerBackend.IDLE_TIMEOUT_CLOSE_REASON)
+        runCurrent()
+
+        assertEquals(EngineState.Idle, h.backend.state.value)
+        assertNull(h.backend.endedSessionId)
+        assertEquals(listOf<String?>(null), h.idle.seen)
+    }
+
+    @Test
+    fun `an abnormal server close after ready publishes no id`() = runTest {
+        val h = harness()
+
+        h.fakeWs.fireClosing(1011, "internal")
+        runCurrent()
+
+        assertNull(h.backend.endedSessionId)
+    }
+
     private companion object {
         /** The fixed 32-lowercase-hex id used by every row. */
         const val ID = "0123456789abcdef0123456789abcdef"

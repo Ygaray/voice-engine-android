@@ -285,7 +285,7 @@ class BackendSelectorRetainTest {
         assertEquals("only the Idle after the stop began is recorded", listOf<String?>(ID), h.idle.seen)
     }
 
-    // --- the lifecycle matrix: null on every path except a flushed stop of a retained session ------
+    // --- the lifecycle matrix: null on every path except a clean end of a retained session --------
 
     private val errorFrame = """{"type":"error","code":"internal-error","message":"boom"}"""
 
@@ -468,6 +468,51 @@ class BackendSelectorRetainTest {
         assertEquals("prefer = Server never falls back to native", 0, h.fakeHandle.startCount)
         assertEquals(EngineState.Error, h.selector.state.value)
         assertNull(h.selector.lastSessionId)
+    }
+
+    // --- Phase 28 review WR-01: the server's own graceful close publishes the id -----------------
+
+    @Test
+    fun `a server idle close of a retained session makes the selector report Idle with the id`() = runTest {
+        val h = committedServerSession()
+        h.idle.arm()
+
+        h.fakeWs.fireClosing(1000, ServerBackend.IDLE_TIMEOUT_CLOSE_REASON)
+        runCurrent()
+
+        assertEquals(EngineState.Idle, h.selector.state.value)
+        assertEquals("no handoff on a graceful close", 0, h.fakeHandle.startCount)
+        assertEquals("Idle is reported once, with the id", listOf<String?>(ID), h.idle.seen)
+        assertEquals(ID, h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `a server idle close of a non-retained session leaves lastSessionId null`() = runTest {
+        val h = committedServerSession(retain = false)
+
+        h.fakeWs.fireClosing(1000, ServerBackend.IDLE_TIMEOUT_CLOSE_REASON)
+        runCurrent()
+
+        assertEquals(EngineState.Idle, h.selector.state.value)
+        assertNull(h.selector.lastSessionId)
+    }
+
+    @Test
+    fun `a start after a server idle close clears the id`() = runTest {
+        val h = committedServerSession()
+        h.fakeWs.fireClosing(1000, ServerBackend.IDLE_TIMEOUT_CLOSE_REASON)
+        runCurrent()
+        assertEquals(ID, h.selector.lastSessionId)
+
+        launch(h.main) { h.selector.start() }
+        runCurrent()
+        assertEquals("the next start opens a fresh attempt", 2, h.fakeWs.createCount)
+        assertNull("the new session must not inherit the previous id", h.selector.lastSessionId)
+
+        // End the try window so the test leaves nothing suspended.
+        val stopJob = launch(h.main) { h.selector.stop() }
+        runCurrent()
+        assertTrue(stopJob.isCompleted)
     }
 
     private companion object {

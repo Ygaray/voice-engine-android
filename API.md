@@ -349,7 +349,9 @@ and a host cannot change it from the client.
 - What a host sees: `state` goes to `Idle`, nothing is emitted on `errors`, there is no handoff to
   on-device recognition, and `fallbackReason` stays `null`. A live partial is not committed. Call
   `start()` again to keep dictating. Every server close 1000 after `ready` ends the same way; the
-  reason string only tells the idle close apart in logs.
+  reason string only tells the idle close apart in logs. On a session that asked for
+  `retainForCorpus`, the server commits the record before it closes, so `lastSessionId` carries its
+  id after the close, exactly as after `stop()`.
 - **Silenced capture is cut only by this timer.** An app whose microphone is silenced in the
   background still delivers audio (silence), not a read error, so the client keeps streaming and the
   session ends only when the server's idle window runs out: not before 5 minutes with the default.
@@ -471,6 +473,9 @@ pass to [`submitCorrection`](#corpus-corrections--submitcorrection).
   on the server backend, never failed, was never handed off to the on-device recognizer, and whose
   server finished its stop path by closing the connection cleanly. The server attempts the corpus
   commit before that close, so the observed clean close is the earliest moment the record can exist.
+- **Also non-null after the server's own graceful close** of such a session (a close 1000 after
+  `ready`, the idle close included). The server commits the record before that close as well, so the
+  id is published the same way, before the engine reports `Idle`.
 - **Reset by `start()`**, so a reused engine never reports a previous session's id.
 - **`null` on every other path:** while a session is live, after a flush that timed out, an error, an
   abnormal close, a mid-session fallback to the on-device recognizer, a stop during the try-server
