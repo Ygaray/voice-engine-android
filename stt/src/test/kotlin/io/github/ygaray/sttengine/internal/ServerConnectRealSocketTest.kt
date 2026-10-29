@@ -187,7 +187,7 @@ class ServerConnectRealSocketTest {
     }
 
     @Test
-    fun `a busy close 1013 after open fast-fails`() = runBlocking {
+    fun `a busy close 1013 after open is retryable`() = runBlocking {
         withTimeout(10_000) {
             enqueueUpgrade(
                 object : WebSocketListener() {
@@ -202,7 +202,31 @@ class ServerConnectRealSocketTest {
             val observation = observe(backend)
             assertEquals(1013, observation.closeCode)
             assertTrue(observation.sawOpen)
-            assertEquals(ConnectFailureClass.FastFail, classifyConnectFailure(observation))
+            // Phase 28 D-05: busy is retried inside the try window (reverses Phase 21 D-06 for busy).
+            assertEquals(ConnectFailureClass.Retryable, classifyConnectFailure(observation))
+        }
+    }
+
+    @Test
+    fun `the real server's busy error frame then close 1013 is retryable`() = runBlocking {
+        withTimeout(10_000) {
+            enqueueUpgrade(
+                object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        webSocket.send("""{"type":"error","code":"busy","message":"server busy"}""")
+                        webSocket.close(1013, "busy")
+                    }
+                },
+            )
+            val backend = newBackend(serverUrl())
+
+            assertEquals(false, connect(backend))
+            val observation = observe(backend)
+            assertEquals("busy", observation.serverErrorCode)
+            assertTrue(observation.sawOpen)
+            // closeCode is deliberately NOT asserted: the frame's fail() is the first terminal signal
+            // and fences the follow-on close out (first-terminal-wins), so it may be null.
+            assertEquals(ConnectFailureClass.Retryable, classifyConnectFailure(observation))
         }
     }
 

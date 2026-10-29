@@ -12,6 +12,7 @@ import io.github.ygaray.sttengine.SttError
 import io.github.ygaray.sttengine.SttErrorCode
 import io.github.ygaray.sttengine.SttEvent
 import java.io.IOException
+import java.net.UnknownHostException
 import kotlin.concurrent.thread
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -298,8 +299,8 @@ class BackendSelectorHandoffHoldTest {
         val h = harness()
         val dispatcher = UnconfinedTestDispatcher(testScheduler)
         val started = launch(dispatcher) { h.selector.start() }
-        h.fakeWs.fireOpen()
-        h.fakeWs.fireClosing(1013, "busy")
+        // Phase 28 D-05: busy is now Retryable, so the fast-fail comes from an unknown host.
+        h.fakeWs.fireFailure(UnknownHostException("x"))
         runCurrent()
         assertEquals(1, h.fakeHandle.startCount)
 
@@ -317,8 +318,8 @@ class BackendSelectorHandoffHoldTest {
         val h = harness()
         val dispatcher = UnconfinedTestDispatcher(testScheduler)
         val started = launch(dispatcher) { h.selector.start() }
-        h.fakeWs.fireOpen()
-        h.fakeWs.fireClosing(1013, "busy")
+        // Phase 28 D-05: busy is now Retryable, so the fast-fail comes from an unknown host.
+        h.fakeWs.fireFailure(UnknownHostException("x"))
         runCurrent()
         assertEquals(1, h.fakeHandle.startCount)
         assertEquals(listOf(EngineState.Connecting), h.states.toList())

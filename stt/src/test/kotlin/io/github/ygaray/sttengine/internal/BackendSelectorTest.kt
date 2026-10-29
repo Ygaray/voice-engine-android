@@ -139,8 +139,9 @@ class BackendSelectorTest {
     }
 
     @Test
-    fun `a fake server that closes with code 1013 busy during try-server falls back to native silently`() =
+    fun `a fake server that closes with code 1013 busy for the whole window falls back to native silently`() =
         runTest {
+            val window = 2_500L
             val fakeWs = FakeWebSocketFactory()
             val fakeHandle = FakeRecognizerHandle()
             val dispatcher = UnconfinedTestDispatcher(testScheduler)
@@ -153,13 +154,33 @@ class BackendSelectorTest {
                 permissions = PermissionChecker { true },
                 webSocketFactory = fakeWs,
                 mainDispatcher = dispatcher,
+                tryServerTimeoutMs = window,
             )
             val errors = mutableListOf<SttError>()
             backgroundScope.launch(dispatcher) { selector.errors.collect { errors += it } }
 
             val started = launch(dispatcher) { selector.start() }
-            fakeWs.fireOpen()
-            fakeWs.fireClosing(1013, "busy")
+            // Phase 28 D-05: busy is retried inside the window, so answer EVERY new attempt busy.
+            var answered = 0
+            fun answerNewAttemptsBusy() {
+                while (answered < fakeWs.createCount) {
+                    val socket = fakeWs.sockets[answered++]
+                    fakeWs.fireOpen(socket)
+                    fakeWs.fireClosing(1013, "busy", socket = socket)
+                }
+            }
+            answerNewAttemptsBusy()
+            while (testScheduler.currentTime < window - 1) {
+                testScheduler.advanceTimeBy(minOf(50L, window - 1 - testScheduler.currentTime))
+                testScheduler.runCurrent()
+                answerNewAttemptsBusy()
+            }
+            assertEquals("busy must not fall back before the window ends", 0, fakeHandle.startCount)
+            assertTrue("busy is retried, got ${fakeWs.createCount}", fakeWs.createCount >= 3)
+
+            testScheduler.advanceTimeBy(1)
+            testScheduler.runCurrent()
+            assertEquals("native starts when the window ends", 1, fakeHandle.startCount)
             fakeHandle.reachListening()
             started.join()
 

@@ -56,13 +56,14 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    is a fresh single-attempt [ServerBackend]; a failed attempt is classified by connection phase
  *    with [classifyConnectFailure] (D-06):
  *    - **FastFail** — the host never answered (DNS, refused, unreachable, cleartext refused) or
- *      rejected the session deterministically (busy close 1013, an `error` frame, a non-5xx upgrade
- *      answer, a TLS certificate/hostname failure): the loop ends at once.
+ *      rejected the session deterministically (any `error` frame other than `busy`, a non-5xx
+ *      upgrade answer, a TLS certificate/hostname failure): the loop ends at once.
  *    - **Retryable** — the host answered but was not ready yet (an EOF before the response
  *      headers, a handshake the peer terminated, a reset, a 5xx upgrade, a close before `ready`,
- *      a socket timeout): retried after [RETRY_BACKOFF_MS] (250 → 500 → 1 000 ms, then 1 000 ms).
- *      This is the tailscale-serve cold start, which fails FAST, so a bigger window alone would not
- *      help.
+ *      a socket timeout), or it is `busy` (the busy `error` frame or close 1013 — Phase 28 D-05; a
+ *      busy server frees its single slot within seconds): retried after [RETRY_BACKOFF_MS]
+ *      (250 → 500 → 1 000 ms, then 1 000 ms). This is the tailscale-serve cold start, which fails
+ *      FAST, so a bigger window alone would not help.
  *    - **A black-holed host** (no callback at all) waits the full window (D-14): the window, not a
  *      short `connectTimeout`, is the only bound, and a socket timeout is retried rather than
  *      treated as a reason to fall back early.
@@ -79,8 +80,12 @@ import kotlinx.coroutines.withTimeoutOrNull
  *      (SEL-01's silent swallow — no typed error reaches the host on this branch).
  *
  * Documented edge: a `start()` right after a previous session's flushing `stop()` can meet `busy`
- * (close 1013) while the server's single session slot is still being released; busy fast-fails, so
- * that session falls back to native instead of retrying.
+ * (an `error` frame and close 1013) while the server's single session slot is still being released.
+ * Busy is Retryable (Phase 28 D-05, reversing Phase 21 D-06 for busy only), so that start now waits
+ * the busy out inside the same window and commits to the server once the slot frees; only a busy
+ * that outlasts the whole window falls back (Auto, silently) or surfaces one `busy` error
+ * (`prefer == Server`). Busy adds no retry budget and no backoff table of its own: the single window
+ * deadline and [RETRY_BACKOFF_MS] are the only bounds.
  *
  * Each attempt writes one opt-in `server-attempt` trace line through [log] (class simple names,
  * counts, codes and booleans only — never a message, the URL or text).

@@ -135,14 +135,16 @@ class CorpusLoopbackE2ETest {
     /**
      * Starts [selector] on the Server backend and waits for it to listen. The server holds a single
      * session slot that it frees only after its corpus commit and close, so a start right after the
-     * previous session's stop can meet close 1013 (`busy`), which `Prefer.Server` reports as Error.
-     * That is load dependent, so retry the whole start a bounded number of times instead of sleeping
-     * a fixed time.
+     * previous session's stop can meet `busy` (an error frame and close 1013). Since Phase 28 (D-05)
+     * busy is Retryable, so the selector itself waits it out inside the try window, and only a busy
+     * that outlasts the window reaches `Prefer.Server`'s Error. The wait below therefore covers the
+     * whole window (default 10 000 ms, clamped) rather than a shorter slice of it. The bounded
+     * whole-start retry stays as belt and braces for a slot that takes longer than one window.
      */
     private suspend fun startWhenSlotFree(selector: BackendSelector) {
         repeat(SLOT_ATTEMPTS) {
             selector.start()
-            awaitUntil("the Server backend to listen or fail", timeoutMs = 5_000L) {
+            awaitUntil("the Server backend to listen or fail", timeoutMs = 15_000L) {
                 selector.state.value == EngineState.Listening || selector.state.value == EngineState.Error
             }
             if (selector.backend.value == Backend.Server && selector.state.value == EngineState.Listening) return
