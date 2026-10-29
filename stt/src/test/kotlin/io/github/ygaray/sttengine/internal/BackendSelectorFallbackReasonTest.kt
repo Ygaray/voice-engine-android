@@ -46,8 +46,10 @@ import org.robolectric.annotation.Config
  * from [BackendSelector.fallbackReason].
  *
  * - Window-end reasons: the window ran out during a backoff → the last RESOLVED attempt decides
- *   (busy → BUSY, anything else → TIMEOUT); the window ran out with an attempt still in flight →
- *   THAT attempt decides, never an earlier busy (review 28-04).
+ *   (busy → BUSY, anything else → TIMEOUT); the window ran out with an attempt still in flight for
+ *   less than [BackendSelector]'s 1 s inherit bound → it inherits the last resolved answer (Phase 28
+ *   review WR-02: a server busy all window reads BUSY wherever the deadline lands); in flight for
+ *   longer → THAT attempt decides, never an earlier busy (review 28-04).
  * - Fast-fail reasons: a host that cannot be reached → UNREACHABLE; a server that refuses the
  *   session, or the residual local failure after `ready` → REJECTED.
  * - A post-commit server failure that hands off to native → DROPPED, published together with the
@@ -146,18 +148,46 @@ class BackendSelectorFallbackReasonTest {
         }
     }
 
+    /**
+     * Answers every attempt with a busy frame [latencyMs] after it appeared, like a real busy server
+     * a few round trips away (WR-02). Polled on the 50 ms slices of [answerUntil], so every attempt
+     * time and answer time in the rows that use it is a multiple of 50 ms.
+     */
+    private class SlowBusy(
+        private val h: Harness,
+        private val now: () -> Long,
+        private val latencyMs: Long,
+    ) {
+        private val seenAt = mutableListOf<Long>()
+        private var answered = 0
+        fun fireNew() {
+            while (seenAt.size < h.fakeWs.createCount) seenAt += now()
+            while (answered < seenAt.size && now() >= seenAt[answered] + latencyMs) {
+                val socket = h.socket(answered)
+                h.fakeWs.fireOpen(socket)
+                h.fakeWs.fireMessage(BUSY_FRAME, socket = socket)
+                answered++
+            }
+        }
+    }
+
     /** Steps virtual time to [until] in 50 ms slices, answering each new attempt as it appears. */
-    private fun TestScope.answerUntil(answers: Scripted, until: Long) {
-        answers.fireNew()
+    private fun TestScope.answerUntil(answers: Scripted, until: Long) = answerUntil(answers::fireNew, until)
+
+    private fun TestScope.answerUntil(fireNew: () -> Unit, until: Long) {
+        fireNew()
         while (testScheduler.currentTime < until) {
             advanceTimeBy(minOf(STEP_MS, until - testScheduler.currentTime))
             runCurrent()
-            answers.fireNew()
+            fireNew()
         }
     }
 
     /** Runs the window out, lets native reach Listening, and returns the reason it reads. */
-    private fun TestScope.windowEndReason(h: Harness, answers: Scripted, window: Long): FallbackReason? {
+    private fun TestScope.windowEndReason(h: Harness, answers: Scripted, window: Long): FallbackReason? =
+        windowEndReason(h, answers::fireNew, window)
+
+    private fun TestScope.windowEndReason(h: Harness, answers: () -> Unit, window: Long): FallbackReason? {
         answerUntil(answers, until = window - 1)
         assertEquals("native must not start before the window", 0, h.fakeHandle.startCount)
         assertNull("no reason while the window is still open", h.reason)
@@ -253,6 +283,41 @@ class BackendSelectorFallbackReasonTest {
         val answers = Scripted(h, listOf(busyFrame(h), busyFrame(h)), rest = blackHole)
         assertEquals(FallbackReason.TIMEOUT, windowEndReason(h, answers, window))
         assertEquals(3, h.fakeWs.createCount)
+    }
+
+    @Test
+    fun `a server busy all window reads BUSY even when the window ends inside an attempt`() = runTest {
+        // WR-02. Every attempt is answered busy 100 ms after it starts: attempts at 0, 350, 950 and
+        // 2 050 (busy at 100, 450, 1 050; backoffs 250, 500, 1 000). The 2 100 ms window ends 50 ms
+        // into attempt 4, before its busy arrives. The young in-flight attempt inherits the last
+        // answer (busy); the review 28-04 rule alone read TIMEOUT here.
+        val window = 2_100L
+        val h = startSelector(windowMs = window)
+        val answers = SlowBusy(h, { testScheduler.currentTime }, latencyMs = 100L)
+        assertEquals(FallbackReason.BUSY, windowEndReason(h, answers::fireNew, window))
+        assertEquals("the window ended during attempt 4", 4, h.fakeWs.createCount)
+    }
+
+    @Test
+    fun `busy then an attempt unanswered for under the inherit bound reads BUSY`() = runTest {
+        // Attempt 1 busy at 0; attempt 2 at 250 black-holes. The window ends at 1 200 ms, when
+        // attempt 2 has been unanswered for 950 ms (< 1 000 ms): it inherits busy.
+        val window = 1_200L
+        val h = startSelector(windowMs = window)
+        val answers = Scripted(h, listOf(busyFrame(h)), rest = blackHole)
+        assertEquals(FallbackReason.BUSY, windowEndReason(h, answers, window))
+        assertEquals(2, h.fakeWs.createCount)
+    }
+
+    @Test
+    fun `busy then an attempt unanswered for over the inherit bound reads TIMEOUT`() = runTest {
+        // Same script; the window ends at 1 300 ms, when attempt 2 has been unanswered for 1 050 ms
+        // (> 1 000 ms): it counts as black-holed and decides from its own (empty) observation.
+        val window = 1_300L
+        val h = startSelector(windowMs = window)
+        val answers = Scripted(h, listOf(busyFrame(h)), rest = blackHole)
+        assertEquals(FallbackReason.TIMEOUT, windowEndReason(h, answers, window))
+        assertEquals(2, h.fakeWs.createCount)
     }
 
     // --- fast-fail reasons -------------------------------------------------------------------------

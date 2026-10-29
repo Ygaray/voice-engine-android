@@ -290,9 +290,11 @@ internal class BackendSelector(
 
     /**
      * Whether the newest RESOLVED attempt of the current [tryServer] loop was a busy rejection.
-     * Decides BUSY vs TIMEOUT only when the window runs out during a backoff (no attempt in flight);
-     * an attempt still in flight at expiry is decided by its own observation instead (review 28-04).
-     * Reset per [tryServer] and per [runStart]. Main-confined.
+     * Decides BUSY vs TIMEOUT when the window runs out during a backoff (no attempt in flight), and
+     * when the attempt still in flight at expiry is younger than [BUSY_INHERIT_MS] (it is most likely
+     * still being answered, so it inherits the last answer — Phase 28 review WR-02). An in-flight
+     * attempt older than that is treated as black-holed and decided by its own observation (review
+     * 28-04). Reset per [tryServer] and per [runStart]. Main-confined.
      */
     private var lastRetryWasBusy = false
 
@@ -465,6 +467,8 @@ internal class BackendSelector(
         lastRetryWasBusy = false
         var attempt = 0
         var gaveUp = false
+        // WR-02: true while the in-flight attempt has gone unanswered for less than BUSY_INHERIT_MS.
+        var inFlightYoung = false
         // This loop's OWN in-flight attempt. [pendingServer] is the shared handle [stop] reads; every
         // clear below goes through [releasePending], which only clears it while it still names this
         // loop's attempt, and the `finally` abandons only this local — so a loop that is still
@@ -478,7 +482,20 @@ internal class BackendSelector(
                     val backend = serverBackendFactory(url)
                     inFlight = backend
                     pendingServer = backend
-                    if (backend.connect()) {
+                    // WR-02: age the attempt on a timer of its own (virtual-time friendly; launched
+                    // on [scope], so the window's own scope never waits on it) and stop it the
+                    // moment connect() returns or is cancelled.
+                    inFlightYoung = true
+                    val ageMark = scope.launch {
+                        delay(BUSY_INHERIT_MS)
+                        inFlightYoung = false
+                    }
+                    val ok = try {
+                        backend.connect()
+                    } finally {
+                        ageMark.cancel()
+                    }
+                    if (ok) {
                         inFlight = null
                         releasePending(backend)
                         logAttempt(attempt, "Connected", backend.connectObservation)
@@ -514,10 +531,22 @@ internal class BackendSelector(
                 expired?.abandon()
                 logAttempt(attempt, WINDOW_EXPIRED, observation)
                 // LIVE-04 (D-03): BUSY only when the server was still busy as the window ended.
-                // An attempt still in flight decides from its OWN observation (an unanswered one
-                // reads TIMEOUT, even after an earlier busy); with none in flight the window ran
-                // out during a backoff, and the newest resolved attempt decides.
-                val stillBusy = if (expired != null) isBusyRejection(observation) else lastRetryWasBusy
+                // - None in flight: the window ran out during a backoff, and the newest resolved
+                //   attempt decides.
+                // - In flight for less than BUSY_INHERIT_MS (Phase 28 review WR-02): a server that
+                //   answers does so within a few round trips, so this attempt is most likely still
+                //   being answered; it inherits the newest resolved answer. Without this, a server
+                //   busy for the whole window read TIMEOUT whenever the deadline landed inside an
+                //   attempt rather than a backoff.
+                // - In flight for longer: treated as black-holed, so it decides from its OWN
+                //   observation (an unanswered one reads TIMEOUT even after an earlier busy —
+                //   review 28-04).
+                val stillBusy = when {
+                    expired == null -> lastRetryWasBusy
+                    isBusyRejection(observation) -> true
+                    inFlightYoung -> lastRetryWasBusy
+                    else -> false
+                }
                 lastTryReason = if (stillBusy) FallbackReason.BUSY else FallbackReason.TIMEOUT
             }
             return connected
@@ -968,6 +997,12 @@ internal class BackendSelector(
          *  discretion): 250 → 500 → 1 000 ms, then 1 000 ms for every later retry. All of them sit
          *  inside the ONE window [tryServerTimeoutMs], which cancels a backoff that outlives it. */
         val RETRY_BACKOFF_MS: LongArray = longArrayOf(250L, 500L, 1_000L)
+
+        /** WR-02 (Phase 28 review): how long an unanswered in-flight attempt still inherits the
+         *  newest resolved answer at window expiry. A server that answers (busy included) does so
+         *  within a few tailnet round trips, well under this; an attempt unanswered for longer than
+         *  the longest backoff step is treated as black-holed and reads TIMEOUT. */
+        const val BUSY_INHERIT_MS: Long = 1_000L
 
         /** The `server-attempt` trace class written once when the window ends the loop (D-14). */
         const val WINDOW_EXPIRED = "WindowExpired"

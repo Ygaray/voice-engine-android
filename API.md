@@ -513,8 +513,8 @@ Android-only metadata, like `backend`, and it is new in the next release (MIG-17
 
 | Constant | `value` | Produced when |
 |---|---|---|
-| `FallbackReason.BUSY` | `busy` | the server was still busy (serving its one session) when the try window ended; a busy answer is retried inside the window first (MIG-18) |
-| `FallbackReason.TIMEOUT` | `timeout` | the try window ended without a busy answer: the server never answered, kept failing in a retryable way, or the attempt still in flight had not been answered |
+| `FallbackReason.BUSY` | `busy` | the server was still busy (serving its one session) when the try window ended; a busy answer is retried inside the window first (MIG-18). An attempt still in flight at the end, unanswered for less than about a second, counts as still busy |
+| `FallbackReason.TIMEOUT` | `timeout` | the try window ended without a busy answer: the server never answered, kept failing in a retryable way, or the attempt still in flight had gone unanswered for longer than about a second (even after an earlier busy) |
 | `FallbackReason.UNREACHABLE` | `unreachable` | the server could not be reached at all, so the engine gave up at once: no DNS answer, a refused or unroutable connection, cleartext refused, a certificate that does not verify, or a non-5xx answer to the WebSocket upgrade |
 | `FallbackReason.REJECTED` | `rejected` | the server answered and refused the session (any error other than busy, such as an unsupported language), or the session could not start for a local reason after the server accepted it (for example, the microphone would not open) |
 | `FallbackReason.DROPPED` | `dropped` | a session that was running on the server failed mid-session and was handed off to on-device recognition: the connection failed, the server stopped answering pings, or the microphone stream ended with no stop asked for (MIG-19) |

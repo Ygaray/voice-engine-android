@@ -27,12 +27,17 @@ public value class FallbackReason(public val value: String) {
 
     public companion object {
 
-        /** The server was still busy (serving its one session) when the try window ended. */
+        /**
+         * The server was still busy (serving its one session) when the try window ended: its newest
+         * answer was busy, and no attempt still in flight at the end had gone unanswered for longer
+         * than about a second (which would count as a host that stopped answering).
+         */
         public val BUSY: FallbackReason = FallbackReason("busy")
 
         /**
          * The try window ended without a busy answer: the server never answered, kept failing in a
-         * retryable way, or the attempt still in flight when the window ended had not been answered.
+         * retryable way, or the attempt still in flight when the window ended had gone unanswered
+         * for longer than about a second (even after an earlier busy answer).
          */
         public val TIMEOUT: FallbackReason = FallbackReason("timeout")
 
