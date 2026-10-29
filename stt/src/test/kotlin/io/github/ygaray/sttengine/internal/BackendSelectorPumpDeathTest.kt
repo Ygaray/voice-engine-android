@@ -128,8 +128,12 @@ class BackendSelectorPumpDeathTest {
         h.fakeWs.fireOpen()
         h.fakeWs.fireMessage("""{"type":"ready"}""")
         started.await()
+        // start() returns once the server is committed; its forwarded Listening still has to hop
+        // through the state collector on the executor.
+        awaitOnMain("the selector to forward the server's Listening") {
+            h.selector.state.value == EngineState.Listening
+        }
         assertEquals(Backend.Server, h.selector.backend.value)
-        assertEquals(EngineState.Listening, h.selector.state.value)
     }
 
     /** `stop()` bounded by a future: it is non-cancellable by design, so a coroutine timeout cannot. */
