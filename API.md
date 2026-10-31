@@ -702,9 +702,11 @@ on-device models before any audio is captured (native path only). It exists from
 multilingual is **additive** rather than a breaking contract change.
 
 **Bilingual EN/ES `"auto"` works on BOTH backends.** On the **server** backend (LANG-01), `language`
-accepts `"en"` or `"auto"` — `"auto"` opts into a server-detected-per-segment bilingual EN<->ES
-session; the server does not currently accept a bare `"es"` here. **The server path accepts only
-`"en"` or `"auto"`.** Any other tag — including a region-qualified one such as `"en-US"` — is
+takes `"en"`, `"es"` or `"auto"`, matched exactly and case-sensitively. `"es"` decodes as Spanish
+and, like `"en"`, its finals carry no language label
+(source admits es; the live service gets it only after the approved stt-server deploy).
+`"auto"` opts into a server-detected-per-segment bilingual EN<->ES session. Any other tag — including
+a region-qualified one such as `"en-US"` or `"es-MX"`, or a miscased `"ES"` — is
 rejected by the server during the try window: under `Auto` the session fails fast and runs on
 native instead, and under `Server` it surfaces `unsupported-language`. On the **native on-device** backend
 (v3.1 / `v0.7.0`, NBIL-01..11), `SttConfig(language = "auto")` is now a first-class **offline** EN<->ES

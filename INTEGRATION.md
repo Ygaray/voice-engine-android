@@ -179,7 +179,7 @@ Supply your server's WebSocket URL and, if you like, a preference and a try wind
 val engine = createSttEngine(
     context = getApplication(),
     config = SttConfig(
-        language = "auto",                      // the server path accepts only "en" or "auto"
+        language = "auto",                      // the server path takes "en", "es" or "auto" (source admits es; the live service gets it only after the approved stt-server deploy)
         prefer = BackendPreference.Auto,        // server first, silent on-device fallback
         serverUrl = "wss://host.ts.net:8444/",
         serverTryTimeoutMs = 10_000L,           // the default and the ceiling; clamped into 1 000..10 000 ms
@@ -192,7 +192,9 @@ What to know before shipping this:
 - **The server path streams the microphone.** Once the server reports ready, the engine captures
   audio itself and streams it over the socket; `partial`, `finals` and `level` all flow exactly as
   on-device. `backend` tells you which path is live.
-- **Language.** The server accepts only `"en"` or `"auto"`. A region-qualified tag such as
+- **Language.** The server takes `"en"`, `"es"` or `"auto"`, matched exactly and case-sensitively
+  (source admits es; the live service gets it only after the approved stt-server deploy).
+  A region-qualified tag such as
   `"en-US"` is rejected by the server: under `Auto` the session quietly runs on-device instead,
   under `Server` you get `unsupported-language`.
 - **Tuning `serverTryTimeoutMs`.** This is how long session start keeps trying the server. A host

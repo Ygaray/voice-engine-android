@@ -23,10 +23,12 @@ import io.github.ygaray.sttengine.internal.ServerTryWindow
  * (`internal.WsProtocol.SAMPLE_RATE`) and is never a host-settable knob on either backend.
  *
  * @property language Passed straight through to `RecognizerIntent.EXTRA_LANGUAGE` on the native
- *   backend, and into the server's config frame on the server backend. Accepts `"en"` or `"auto"`
- *   (LANG-01, bilingual EN<->ES code-switch) on the server backend — `"auto"` opts into a
- *   server-detected-per-segment bilingual session (see [FinalSegment.language]); the server does not
- *   currently accept a bare `"es"` here. On the native backend, `"auto"` on an **API 34+** device
+ *   backend, and into the server's config frame on the server backend. On the server backend it
+ *   accepts `"en"`, `"es"` or `"auto"` (LANG-01, bilingual EN<->ES code-switch), matched exactly;
+ *   like `"en"`, an explicit `"es"` session's finals carry no language label.
+ *   source admits es; the live service gets it only after the approved stt-server deploy.
+ *   `"auto"` opts into a server-detected-per-segment bilingual session (see [FinalSegment.language]).
+ *   On the native backend, `"auto"` on an **API 34+** device
  *   triggers native on-device EN/ES language-switch detection: the per-segment detected language is
  *   stamped onto [FinalSegment.language] as bare `"en"`/`"es"` (from a `HIGHLY_CONFIDENT` detection
  *   event only, else `null` — unknown, not a guess). On a runtime **below API 34**, `"auto"` falls
