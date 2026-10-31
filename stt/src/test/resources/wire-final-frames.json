@@ -344,6 +344,20 @@
       "frame": "{\"version\":1,\"language\":\"en\",\"sampleRate\":16000,\"retainForCorpus\":\"true\"}",
       "serverAccepts": false,
       "serverError": "invalid-config"
+    },
+    {
+      "name": "config-language-es",
+      "frame": "{\"version\":1,\"language\":\"es\",\"sampleRate\":16000}",
+      "build": {
+        "language": "es"
+      },
+      "serverAccepts": true
+    },
+    {
+      "name": "config-language-ES",
+      "frame": "{\"version\":1,\"language\":\"ES\",\"sampleRate\":16000}",
+      "serverAccepts": false,
+      "serverError": "unsupported-language"
     }
   ],
   "revisionCases": [
