@@ -3,8 +3,10 @@ package io.github.ygaray.sttengine.demo
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import io.github.ygaray.sttengine.Backend
 import io.github.ygaray.sttengine.BackendPreference
 import io.github.ygaray.sttengine.EngineState
+import io.github.ygaray.sttengine.FallbackReason
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.SttConfig
 import io.github.ygaray.sttengine.SttEngine
@@ -72,6 +74,17 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Every committed segment, oldest first. Immutable once appended — a final is never rewritten. */
     val committed: StateFlow<List<FinalSegment>> = _committed.asStateFlow()
+
+    private val _rowMeta = MutableStateFlow<List<RowMeta>>(emptyList())
+
+    /**
+     * The demo-side snapshot beside each committed segment (Phase 31, DEMO-01, D-08): the engine's
+     * backend and fallback reason at the moment that final arrived. Index-aligned with [committed]
+     * (row `i`'s metadata belongs to final `i` in commit order) and cleared together with it by
+     * [start]. Read it with `getOrNull(index)`: the two lists are separate flows, so a reader can
+     * observe them between writes. `FinalSegment` is the frozen `:stt` contract and carries none of this.
+     */
+    internal val rowMeta: StateFlow<List<RowMeta>> = _rowMeta.asStateFlow()
 
     private val _error = MutableStateFlow<SttError?>(null)
 
@@ -165,13 +178,16 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
     // --- events in from the screen -------------------------------------------------------------------
 
     /**
-     * Append a committed segment. Called from the screen's single collector.
+     * Append a committed segment and the engine snapshot taken with it. Called from the screen's
+     * single collector, which reads [backend] and [reason] from its OWN engine instance at the moment
+     * the final arrives (D-08).
      *
      * Appending — never mutating the tail — is the visual grammar the reference web demo established
      * and the reason finals read as settled: a block that can still change is a partial wearing a
      * final's clothes.
      */
-    fun onSegmentCommitted(segment: FinalSegment) {
+    fun onSegmentCommitted(segment: FinalSegment, backend: Backend, reason: FallbackReason?) {
+        _rowMeta.value = _rowMeta.value + RowMeta(backend, reason)
         _committed.value = _committed.value + segment
         _lastSegmentId.value = segment.segmentId
     }
@@ -241,6 +257,7 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
             // (19-REVIEWS.md cycle 1, Codex MEDIUM #1).
             _error.value = null
             _committed.value = emptyList()
+            _rowMeta.value = emptyList()
             _lastSegmentId.value = null
             // Same rationale, extended to the trace-derived diagnostics: a same-spec restart reuses
             // the engine instance (ensureEngine() no-ops when the whole EngineSpec matches) and

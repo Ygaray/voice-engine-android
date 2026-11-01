@@ -84,6 +84,26 @@ internal object TestTags {
      * cycle 1, WR-01).
      */
     const val SEGMENT_ID = "stt-segment-id"
+
+    /**
+     * The `languageSource` value (`DETECTED` / `FALLBACK`, or an em dash) of a committed segment's
+     * metadata line (DEMO-01). Rendered once PER committed segment, like [LANGUAGE]; pair it with
+     * the sibling [SEGMENT_ID] rather than assuming one node exists on screen.
+     */
+    const val SOURCE = "stt-source"
+
+    /**
+     * The backend (`Server` / `Native`, or an em dash) the engine reported when that segment's
+     * final arrived. Rendered once PER committed segment; pair it with the sibling [SEGMENT_ID].
+     */
+    const val BACKEND = "stt-backend"
+
+    /**
+     * The typed fallback reason (`busy`, `timeout`, `unreachable`, `rejected`, `dropped`, any other
+     * value raw, or an em dash) snapshotted with that segment's final. Rendered once PER committed
+     * segment; pair it with the sibling [SEGMENT_ID].
+     */
+    const val REASON = "stt-reason"
 }
 
 /**
@@ -111,6 +131,7 @@ internal fun DictationScreen(
     val partial by engine.partial.collectAsStateWithLifecycle()
 
     val committed by viewModel.committed.collectAsStateWithLifecycle()
+    val rowMeta by viewModel.rowMeta.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val level by viewModel.level.collectAsStateWithLifecycle()
 
@@ -126,7 +147,15 @@ internal fun DictationScreen(
     // that buffer: everything spoken while the app was backgrounded arrives on reattach, in order.
     LaunchedEffect(engine, lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            launch { engine.finals.collect(viewModel::onSegmentCommitted) }
+            launch {
+                // The backend and reason are snapshotted HERE, from this collector's own `engine`
+                // (the LaunchedEffect key), at the moment the final arrives (D-08). Do not read the
+                // ViewModel's current engine instead: a debug run can swap it while this collector
+                // still drains the old one, which would stamp the wrong backend on the row.
+                engine.finals.collect {
+                    viewModel.onSegmentCommitted(it, engine.backend.value, engine.fallbackReason.value)
+                }
+            }
             launch { engine.errors.collect(viewModel::onEngineError) }
             launch { engine.level.collect(viewModel::onLevel) }
         }
@@ -168,6 +197,7 @@ internal fun DictationScreen(
 
             Transcript(
                 committed = committed,
+                rowMeta = rowMeta,
                 partial = partial,
                 isIdleAndEmpty = state == EngineState.Idle && committed.isEmpty(),
                 scrollState = scrollState,
@@ -345,6 +375,7 @@ private fun ErrorBanner(error: SttError) {
 @Composable
 private fun Transcript(
     committed: List<FinalSegment>,
+    rowMeta: List<RowMeta>,
     partial: String,
     isIdleAndEmpty: Boolean,
     scrollState: ScrollState,
@@ -373,8 +404,10 @@ private fun Transcript(
                 )
             }
 
-            committed.forEach { segment ->
-                FinalBlock(segment)
+            committed.forEachIndexed { index, segment ->
+                // getOrNull, never []: committed and rowMeta are separate flows, so a recomposition
+                // can land between the two writes. A missing entry renders em dashes, not a crash.
+                FinalBlock(segment, rowMeta.getOrNull(index))
             }
 
             // Always present, even when empty, so the anchor exists before the first word arrives —
@@ -394,7 +427,8 @@ private fun Transcript(
 }
 
 @Composable
-private fun FinalBlock(segment: FinalSegment) {
+private fun FinalBlock(segment: FinalSegment, meta: RowMeta?) {
+    val labels = rowLabels(segment, meta)
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
             text = "#${segment.segmentId}",
@@ -421,7 +455,55 @@ private fun FinalBlock(segment: FinalSegment) {
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.outline,
         )
+        // The metadata line (DEMO-01, D-10): a NEW fourth child, so the three nodes above keep their
+        // tag, text, style, order and parent Column. Each value is its own tagged node holding only
+        // the value, so a uiautomator text read returns exactly `DETECTED`, `Native`, `—` and so on.
+        // Values are plain Text, never markup: a reason the build does not name is shown raw.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                MetaLabel("src")
+                MetaValue(labels.source, labels.sourceLoud, TestTags.SOURCE)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                MetaLabel("backend")
+                MetaValue(labels.backend, loud = false, tag = TestTags.BACKEND)
+            }
+            // weight(fill = false): a long unknown reason soft-wraps inside its own pair.
+            Row(
+                modifier = Modifier.weight(1f, fill = false),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                MetaLabel("reason")
+                MetaValue(labels.reason, labels.reasonLoud, TestTags.REASON)
+            }
+        }
     }
+}
+
+@Composable
+private fun MetaLabel(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        fontFamily = FontFamily.Monospace,
+        color = MaterialTheme.colorScheme.outline,
+    )
+}
+
+/** A metadata value: `error` colour when [loud], the readout `outline` colour otherwise. */
+@Composable
+private fun MetaValue(text: String, loud: Boolean, tag: String) {
+    Text(
+        text = text,
+        modifier = Modifier.testTag(tag),
+        style = MaterialTheme.typography.labelSmall,
+        fontFamily = FontFamily.Monospace,
+        color = if (loud) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline,
+    )
 }
 
 // --- controls -------------------------------------------------------------------------------------
