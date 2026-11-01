@@ -11,7 +11,9 @@ package io.github.ygaray.sttengine
  * "no claim", never as a fallback:
  *
  * - the segment has no language label at all (every segment of a session whose language is not
- *   `"auto"`, and an `"auto"` segment for which no detection was produced);
+ *   `"auto"`, and an `"auto"` segment for which no detection was produced). The second case is
+ *   common for a short final on the native on-device backend, and it is an accepted gap: no label is
+ *   carried forward from an earlier segment;
  * - the segment has a label but no source, which is what a label from an older server that predates
  *   this field looks like. The label is real; the engine just cannot say where it came from.
  *

@@ -165,6 +165,7 @@ API 34**, native `"auto"` falls back to the configured default language rather t
 Each committed final's `languageSource` says whether its label was detected or is a default stamp:
 use `LanguageSource.DETECTED` when the label drives per-language handling, treat
 `LanguageSource.FALLBACK` as a default stamp rather than a detection, and treat `null` as no claim.
+A short native-auto final with no confident detection commits with both fields `null` by design, so a host that routes by language should leave such text unrouted rather than reuse the previous label.
 The field is `null` on every non-`"auto"` session.
 
 Configuration is fixed at construction. A language change or a diagnostic run mints a **new** engine
