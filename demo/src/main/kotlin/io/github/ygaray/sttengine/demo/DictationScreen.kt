@@ -465,11 +465,11 @@ private fun FinalBlock(segment: FinalSegment, meta: RowMeta?) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                MetaLabel("src")
+                ReadoutLabel("src")
                 MetaValue(labels.source, labels.sourceLoud, TestTags.SOURCE)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                MetaLabel("backend")
+                ReadoutLabel("backend")
                 MetaValue(labels.backend, loud = false, tag = TestTags.BACKEND)
             }
             // weight(fill = false): a long unknown reason soft-wraps inside its own pair.
@@ -477,21 +477,11 @@ private fun FinalBlock(segment: FinalSegment, meta: RowMeta?) {
                 modifier = Modifier.weight(1f, fill = false),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                MetaLabel("reason")
+                ReadoutLabel("reason")
                 MetaValue(labels.reason, labels.reasonLoud, TestTags.REASON)
             }
         }
     }
-}
-
-@Composable
-private fun MetaLabel(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelSmall,
-        fontFamily = FontFamily.Monospace,
-        color = MaterialTheme.colorScheme.outline,
-    )
 }
 
 /** A metadata value: `error` colour when [loud], the readout `outline` colour otherwise. */

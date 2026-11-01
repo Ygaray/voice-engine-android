@@ -115,13 +115,7 @@ internal fun DiagnosticsPanel(viewModel: DictationViewModel, modifier: Modifier 
 @Composable
 private fun DiagnosticRow(label: String, value: String, tag: String) {
     Row(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = label,
-            modifier = Modifier.width(72.dp),
-            style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
-            color = MaterialTheme.colorScheme.outline,
-        )
+        ReadoutLabel(label, Modifier.width(72.dp))
         Text(
             text = value,
             modifier = Modifier
@@ -131,6 +125,23 @@ private fun DiagnosticRow(label: String, value: String, tag: String) {
             fontFamily = FontFamily.Monospace,
         )
     }
+}
+
+/**
+ * A readout label: the muted monospace caption in front of a value a human or driver reads back.
+ * One home for the style, shared by [DiagnosticRow]'s label and the per-row metadata line in
+ * `DictationScreen.kt` so "label: value" reads the same in both places. The caller supplies any
+ * width (DiagnosticRow passes 72.dp), so extracting this does not change DiagnosticRow's rendering.
+ */
+@Composable
+internal fun ReadoutLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        modifier = modifier,
+        style = MaterialTheme.typography.labelSmall,
+        fontFamily = FontFamily.Monospace,
+        color = MaterialTheme.colorScheme.outline,
+    )
 }
 
 /**
