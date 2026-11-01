@@ -21,7 +21,11 @@ package io.github.ygaray.sttengine
  *   session — `en`/`es` on the server backend (per-segment server detection) or on the native
  *   backend on an API 34+ device (per-segment on-device detection, from a `HIGHLY_CONFIDENT`
  *   event only); `null` when no label was produced, which is always the case for a non-`"auto"`
- *   session on either backend.
+ *   session on either backend. In a native on-device `"auto"` session a short final often gets no
+ *   confident detection event, so it commits with both this and [languageSource] `null`. This is a
+ *   known and accepted gap, and the engine never carries an earlier segment's label forward,
+ *   because a host that routes text by language would then route a short code-switched phrase the
+ *   wrong way.
  * @property languageSource The provenance of [language]; see [LanguageSource]. It is only ever set
  *   together with a language: a source never appears on a segment that has no language. The engine
  *   sets both together, so a segment from the native engine or from a current server carries either
@@ -31,7 +35,9 @@ package io.github.ygaray.sttengine
  *   (including a label the server kept because a challenger did not clear its switch margin), and
  *   [LanguageSource.FALLBACK] for the configured-default stamp on a runtime without detection or for
  *   a server segment that had no usable detection evidence. **Equality includes the source**: a
- *   segment that carries one does not equal an otherwise identical segment built without it.
+ *   segment that carries one does not equal an otherwise identical segment built without it. A short
+ *   native `"auto"` final with no confident detection (see [language]) has both fields `null`; read
+ *   that `null` as "no claim".
  *
  * **`@JvmOverloads` is required** on this constructor, exactly as [SttConfig] documents: without
  * it, adding [language] (and later [languageSource]) as trailing-defaulted parameters would silently

@@ -786,6 +786,13 @@ from. `null` must never be read as `FALLBACK`.
 | 9 | a server that predates the field, or a frame without the key | the label, if the frame carried one | `null` |
 | 10 | a segment committed by a mid-session server-to-native handoff, or by a stop-flush timeout | `null` | `null` |
 
+**Short native finals (row 2).** In a native on-device `"auto"` session on API 34 and above, a short
+final often gets no confident detection event, so it commits with `language` and `languageSource`
+both `null` (row 2). This is expected and accepted, not a fault. The engine never carries an earlier
+segment's label forward, because a host that routes text by language would then route a short
+code-switched phrase the wrong way. Route on the label only when it is present, and leave a `null`
+final unrouted rather than reusing the previous label.
+
 **Migration for `languageSource`:** the parameter is trailing and defaulted, so Kotlin and Java call
 sites compile unchanged and every earlier constructor overload and getter stays. Two things are not
 purely additive. First, the synthetic default-arguments constructor that Kotlin callers use is
