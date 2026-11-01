@@ -161,11 +161,53 @@ class RowMetaTest {
         assertTrue("rowMeta must be appended before committed (RF-1)", metaAt < committedAt)
     }
 
-    private fun viewModelSource(): String {
-        val rel = "src/main/kotlin/io/github/ygaray/sttengine/demo/DictationViewModel.kt"
+    /**
+     * The new row tags are pinned exactly and collide with nothing: a driver matching on
+     * `stt-language` must still hit only the per-row language node, so none of them starts with it,
+     * and no TestTags or DiagnosticsTags constant repeats another.
+     */
+    @Test
+    fun `new row tags are exact and distinct`() {
+        assertEquals("stt-source", TestTags.SOURCE)
+        assertEquals("stt-backend", TestTags.BACKEND)
+        assertEquals("stt-reason", TestTags.REASON)
+        for (tag in listOf(TestTags.SOURCE, TestTags.BACKEND, TestTags.REASON)) {
+            assertFalse("$tag must not start with stt-language", tag.startsWith("stt-language"))
+        }
+        val all = listOf(
+            TestTags.PARTIAL, TestTags.FINAL, TestTags.ERROR, TestTags.STATE, TestTags.LEVEL,
+            TestTags.TRANSCRIPT, TestTags.START, TestTags.STOP, TestTags.LANGUAGE,
+            TestTags.SEGMENT_ID, TestTags.SOURCE, TestTags.BACKEND, TestTags.REASON,
+            DiagnosticsTags.SERVICES, DiagnosticsTags.SELECTED, DiagnosticsTags.SEGMENT,
+            DiagnosticsTags.RESTARTS, DiagnosticsTags.RUNG, DiagnosticsTags.DEAF_WINDOW,
+        )
+        assertEquals("duplicate tag among $all", all.size, all.toSet().size)
+    }
+
+    /**
+     * The readout label style has one home (UI-SPEC unification rule): DiagnosticsPanel.kt defines
+     * `ReadoutLabel`, DiagnosticRow's label and the three metadata labels call it. A Compose UI test
+     * library may not be added, so this is a source assertion; the pixels are a Gate-2 backstop.
+     */
+    @Test
+    fun `readout label has one home and the metadata labels use it`() {
+        val panel = demoSource("DiagnosticsPanel.kt")
+        val screen = demoSource("DictationScreen.kt")
+        assertEquals(1, Regex("""fun ReadoutLabel\(""").findAll(panel).count())
+        assertEquals(0, Regex("""fun ReadoutLabel\(""").findAll(screen).count())
+        assertTrue(panel.contains("ReadoutLabel(label, Modifier.width(72.dp))"))
+        for (word in listOf("src", "backend", "reason")) {
+            assertTrue("metadata label $word must use ReadoutLabel", screen.contains("ReadoutLabel(\"$word\")"))
+        }
+    }
+
+    private fun viewModelSource(): String = demoSource("DictationViewModel.kt")
+
+    private fun demoSource(name: String): String {
+        val rel = "src/main/kotlin/io/github/ygaray/sttengine/demo/$name"
         val candidates = listOf(File(rel), File("android/demo/$rel"), File("demo/$rel"))
         val f = candidates.firstOrNull { it.isFile }
-            ?: error("DictationViewModel.kt not found from ${File(".").absolutePath}")
+            ?: error("$name not found from ${File(".").absolutePath}")
         return f.readText()
     }
 }
