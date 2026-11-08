@@ -22,6 +22,8 @@ class DemoSettingsTest {
 
     private val url = "wss://host.example/"
 
+    private val DEFAULTS = DemoSelection(DemoLanguage.En, BackendPreference.OnDevice, "")
+
     // --- Task 1: the selection model and the Start arguments ------------------------------------
 
     @Test
@@ -180,6 +182,237 @@ class DemoSettingsTest {
             "wss://[::1]:8444/",
         )) {
             assertEquals(good, ServerUrlInput.Valid(good), parseServerUrl(good))
+        }
+    }
+
+    // --- Task 2: supporting text, enablement, notes, hint, placeholder -------------------------
+
+    @Test
+    fun `supporting text is exact and never echoes`() {
+        assertEquals(
+            "Needed for Server and Auto. Saved on this device only.",
+            supportingText(ServerUrlInput.Empty),
+        )
+        assertEquals("Saved on this device only.", supportingText(ServerUrlInput.Valid(url)))
+        assertEquals(
+            "Too long (max 2048 characters).",
+            supportingText(invalid(InvalidReason.TooLong)),
+        )
+        assertEquals("Must start with wss://", supportingText(invalid(InvalidReason.NotWss)))
+        assertEquals("Must not contain spaces.", supportingText(invalid(InvalidReason.Whitespace)))
+        assertEquals(
+            "Must include a host after wss://",
+            supportingText(invalid(InvalidReason.NoHost)),
+        )
+
+        // For every invalid sample the text contains neither the input nor any run of it longer than
+        // 6 characters other than the literal scheme.
+        val samples = listOf(
+            "ws://secret-looking-host-name/",
+            "https://another-host-name.example/path",
+            "WSS://UpperCaseHost.example/",
+            "wss://spaced out host/",
+            "wss://?query-material",
+            "wss://:8444",
+            "x".repeat(3000),
+        )
+        for (sample in samples) {
+            val text = supportingText(parseServerUrl(sample))
+            assertFalse(text, text.contains(sample))
+            for (start in 0..sample.length - 7) {
+                val window = sample.substring(start, start + 7)
+                assertFalse("$text echoes a run of the input", text.contains(window))
+            }
+        }
+    }
+
+    @Test
+    fun `segment enablement matrix`() {
+        val inputs = listOf(
+            ServerUrlInput.Empty,
+            ServerUrlInput.Invalid(InvalidReason.NotWss),
+            ServerUrlInput.Valid(url),
+        )
+        for (option in BackendPreference.entries) {
+            for (input in inputs) {
+                for (live in listOf(false, true)) {
+                    val expected = !live &&
+                        (option == BackendPreference.OnDevice || input is ServerUrlInput.Valid)
+                    assertEquals(
+                        "$option $input live=$live",
+                        expected,
+                        backendSegmentEnabled(option, input, live),
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `backend note variants`() {
+        val noUrl = listOf(ServerUrlInput.Empty, ServerUrlInput.Invalid(InvalidReason.Whitespace))
+        for (input in noUrl) {
+            assertEquals(BackendNote.NoUrl, backendNote(BackendPreference.OnDevice, input))
+            assertEquals(BackendNote.Coerced, backendNote(BackendPreference.Server, input))
+            assertEquals(BackendNote.Coerced, backendNote(BackendPreference.Auto, input))
+        }
+        for (stored in BackendPreference.entries) {
+            assertEquals(BackendNote.UrlSet, backendNote(stored, ServerUrlInput.Valid(url)))
+        }
+        assertEquals("no server URL", BackendNote.NoUrl.text)
+        assertFalse(BackendNote.NoUrl.loud)
+        assertEquals("no server URL \u2014 using On-device", BackendNote.Coerced.text)
+        assertTrue(BackendNote.Coerced.loud)
+        assertEquals("server URL set", BackendNote.UrlSet.text)
+        assertFalse(BackendNote.UrlSet.loud)
+        // The note never carries the URL.
+        assertFalse(BackendNote.entries.any { it.text.contains("host.example") })
+    }
+
+    @Test
+    fun `settings hint copy`() {
+        assertEquals("Changes apply at the next Start.", settingsHint(sessionLive = false))
+        assertEquals(
+            "Locked during a session. Rows show what it used.",
+            settingsHint(sessionLive = true),
+        )
+    }
+
+    @Test
+    fun `placeholder is a single-label example host`() {
+        assertEquals("wss://host.example/", SERVER_URL_PLACEHOLDER)
+        assertFalse(SERVER_URL_PLACEHOLDER.contains("ts.net"))
+        assertEquals(2048, MAX_SERVER_URL_CHARS)
+        // The placeholder is itself a valid URL, so what the field hints at parses.
+        assertEquals(
+            ServerUrlInput.Valid(SERVER_URL_PLACEHOLDER),
+            parseServerUrl(SERVER_URL_PLACEHOLDER),
+        )
+    }
+
+    @Test
+    fun `backend order labels and tag suffixes are pinned`() {
+        assertEquals(
+            listOf(BackendPreference.Auto, BackendPreference.Server, BackendPreference.OnDevice),
+            BACKEND_OPTIONS,
+        )
+        assertEquals(listOf("Auto", "Server", "On-device"), BACKEND_OPTIONS.map(::backendLabel))
+        assertEquals(
+            listOf("stt-pick-backend-auto", "stt-pick-backend-server", "stt-pick-backend-ondevice"),
+            BACKEND_OPTIONS.map(::pickBackendTag),
+        )
+        assertEquals(
+            listOf("stt-pick-lang-auto", "stt-pick-lang-en", "stt-pick-lang-es"),
+            DemoLanguage.entries.map(::pickLangTag),
+        )
+    }
+
+    // --- Task 2: the settings store -------------------------------------------------------------
+
+    @Test
+    fun `store read returns defaults on an empty backend`() {
+        assertEquals(DEFAULTS, DemoSettingsStore(FakeBackend()).read())
+    }
+
+    @Test
+    fun `store read never throws on wrong types`() {
+        val throwing = object : SettingsBackend {
+            override fun getString(key: String): String? = throw ClassCastException(key)
+            override fun putStrings(values: Map<String, String>) = Unit
+        }
+        assertEquals(DEFAULTS, DemoSettingsStore(throwing).read())
+
+        // One bad key does not spoil the others.
+        val onlyUrlBad = object : SettingsBackend {
+            override fun getString(key: String): String? =
+                if (key == KEY_SERVER_URL) throw ClassCastException(key) else if (key == KEY_LANGUAGE) "Es" else "Server"
+            override fun putStrings(values: Map<String, String>) = Unit
+        }
+        assertEquals(
+            DemoSelection(DemoLanguage.Es, BackendPreference.Server, ""),
+            DemoSettingsStore(onlyUrlBad).read(),
+        )
+    }
+
+    @Test
+    fun `store read maps unknown names to defaults`() {
+        val bogus = FakeBackend(KEY_LANGUAGE to "Bogus", KEY_BACKEND to "Bogus")
+        assertEquals(DEFAULTS, DemoSettingsStore(bogus).read())
+        // Names are matched exactly: a wire tag or a different case is not a name.
+        val wire = FakeBackend(KEY_LANGUAGE to "es", KEY_BACKEND to "server")
+        assertEquals(DEFAULTS, DemoSettingsStore(wire).read())
+
+        val real = FakeBackend(
+            KEY_LANGUAGE to "Es",
+            KEY_BACKEND to "Server",
+            KEY_SERVER_URL to " wss://host.example/ ",
+        )
+        assertEquals(
+            DemoSelection(DemoLanguage.Es, BackendPreference.Server, "wss://host.example/"),
+            DemoSettingsStore(real).read(),
+        )
+    }
+
+    @Test
+    fun `store write uses exact keys and trims the url`() {
+        assertEquals("stt-demo-settings", PREFS_NAME)
+        val backend = FakeBackend()
+        DemoSettingsStore(backend).write(
+            DemoSelection(DemoLanguage.Auto, BackendPreference.Auto, " wss://host.example/x "),
+        )
+        assertEquals(
+            mapOf(
+                "language" to "Auto",
+                "backend" to "Auto",
+                "serverUrl" to "wss://host.example/x",
+            ),
+            backend.values,
+        )
+    }
+
+    /** RF-3 (31-FOUNDATION-NOTE.md section 5, R1-06-M2): one write is one transaction, never three. */
+    @Test
+    fun `store write commits all three keys in one transaction`() {
+        val backend = FakeBackend()
+        DemoSettingsStore(backend).write(
+            DemoSelection(DemoLanguage.Es, BackendPreference.Server, url),
+        )
+        assertEquals(1, backend.transactions.size)
+        assertEquals(
+            setOf(KEY_LANGUAGE, KEY_BACKEND, KEY_SERVER_URL),
+            backend.transactions.single().keys,
+        )
+    }
+
+    @Test
+    fun `store round trips a selection`() {
+        val backend = FakeBackend()
+        val store = DemoSettingsStore(backend)
+        for (language in DemoLanguage.entries) {
+            for (preference in BackendPreference.entries) {
+                val selection = DemoSelection(language, preference, "wss://half-typed")
+                store.write(selection)
+                assertEquals(selection, store.read())
+            }
+        }
+    }
+
+    @Test
+    fun `settings files never log and never use the synchronous commit`() {
+        for (name in listOf("DemoSettings.kt", "DemoSettingsStore.kt")) {
+            val src = demoSource(name)
+            assertFalse("$name logs", Regex("""\bLog\.|println\(|Timber""").containsMatchIn(src))
+        }
+        assertFalse(demoSource("DemoSettingsStore.kt").contains("commit()"))
+    }
+
+    private class FakeBackend(vararg initial: Pair<String, String>) : SettingsBackend {
+        val values: MutableMap<String, String> = mutableMapOf(*initial)
+        val transactions = mutableListOf<Map<String, String>>()
+        override fun getString(key: String): String? = values[key]
+        override fun putStrings(values: Map<String, String>) {
+            transactions += values
+            this.values.putAll(values)
         }
     }
 
