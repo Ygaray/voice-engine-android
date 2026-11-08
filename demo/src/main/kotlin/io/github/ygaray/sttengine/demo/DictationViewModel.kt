@@ -1,6 +1,7 @@
 package io.github.ygaray.sttengine.demo
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.ygaray.sttengine.Backend
@@ -86,12 +87,17 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
      */
     internal val rowMeta: StateFlow<List<RowMeta>> = _rowMeta.asStateFlow()
 
-    private val _selection =
-        MutableStateFlow(DemoSelection(DemoLanguage.En, BackendPreference.OnDevice, ""))
+    /** App-private storage for the next-Start choice. Built once; read once, synchronously, below. */
+    private val store = DemoSettingsStore(
+        SharedPreferencesSettingsBackend(app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)),
+    )
+
+    private val _selection = MutableStateFlow(store.read())
 
     /**
      * The human's next-Start choice (Phase 31, DEMO-02): language, backend preference and the server
-     * URL as typed. It lives here, not in `remember`, so a rotation keeps it. It is a choice about
+     * URL as typed. It lives here, not in `remember`, so a rotation keeps it, and it is restored
+     * from [store] after process death. It is a choice about
      * the NEXT session, never a mirror of the running one: the rows show what a session used.
      * `DemoSelection.toString` redacts the URL; nothing here logs the selection.
      */
@@ -311,11 +317,11 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
     internal fun setServerUrl(raw: String) = change(SelectionChange.ServerUrl(raw))
 
     private fun change(change: SelectionChange) {
-        _selection.value = applySelectionChange(
-            _selection.value,
-            change,
-            sessionLive(_engine.value.state.value),
-        )
+        val current = _selection.value
+        val next = applySelectionChange(current, change, sessionLive(_engine.value.state.value))
+        if (next == current) return
+        _selection.value = next
+        store.write(next)
     }
 
     /** End the session. Safe in any state, including from a terminal error. */

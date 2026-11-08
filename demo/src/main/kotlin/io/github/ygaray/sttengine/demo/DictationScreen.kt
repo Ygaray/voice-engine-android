@@ -20,10 +20,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -39,12 +42,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -115,6 +121,23 @@ internal object TestTags {
 
     /** The backend picker's `SingleChoiceSegmentedButtonRow` (DEMO-02); segments use [pickBackendTag]. */
     const val PICK_BACKEND = "stt-pick-backend"
+
+    /**
+     * The server URL `OutlinedTextField` (DEMO-02). **A uiautomator dump of this node contains the
+     * typed URL**: redact its `text` before a dump is committed anywhere, and never commit a dump or
+     * screenshot with a real URL under `android/` (public mirror). The TESTER leg is native-only, so
+     * the field is normally empty there.
+     */
+    const val SERVER_URL = "stt-server-url"
+
+    /** The URL field's supporting text: fixed copy per validation result, never the input. */
+    const val SERVER_URL_NOTE = "stt-server-url-note"
+
+    /** The note beside the backend caption: `no server URL`, the coerced variant, or `server URL set`. */
+    const val PICK_BACKEND_NOTE = "stt-pick-backend-note"
+
+    /** The hint under the pickers: when a change applies, or that the controls are locked. */
+    const val SETTINGS_HINT = "stt-settings-hint"
 }
 
 /** The tag of one language segment: `stt-pick-lang-` + the bare wire tag (`auto` / `en` / `es`). */
@@ -231,6 +254,7 @@ internal fun DictationScreen(
                 sessionLive = viewModel.sessionLive(state),
                 onLanguage = viewModel::selectLanguage,
                 onBackend = viewModel::selectBackend,
+                onServerUrl = viewModel::setServerUrl,
             )
 
             Controls(
@@ -528,13 +552,15 @@ private fun MetaValue(text: String, loud: Boolean, tag: String) {
 // --- session settings -----------------------------------------------------------------------------
 
 /**
- * The language and backend pickers (DEMO-02, D-05, D-06), directly above Start / Stop: they are inputs
- * to the next Start and nothing else. Plain `Column`, no container, so it reads as part of the
- * controls area. Disabled while a session is live with the selected segment still filled (the
- * Material defaults keep it readable); the ViewModel also ignores changes while live.
+ * The server URL field and the language and backend pickers (DEMO-02, D-05 to D-07), directly above
+ * Start / Stop: they are inputs to the next Start and nothing else. Plain `Column`, no container, so
+ * it reads as part of the controls area rather than a third panel next to Diagnostics.
  *
- * Every decision (which backend shows as selected, which segments are enabled) comes from the pure
- * functions in `DemoSettings.kt`; this only renders the answers.
+ * Everything is disabled while a session is live with the selected segment still filled (the
+ * Material defaults keep it readable); the ViewModel also ignores changes while live. Every decision
+ * (what is selected, what is enabled, which words, which colour) comes from the pure functions in
+ * `DemoSettings.kt`; this only renders the answers. The URL is typed text on a field and is never
+ * logged or echoed into any supporting text.
  */
 @Composable
 private fun SessionSettings(
@@ -542,47 +568,100 @@ private fun SessionSettings(
     sessionLive: Boolean,
     onLanguage: (DemoLanguage) -> Unit,
     onBackend: (BackendPreference) -> Unit,
+    onServerUrl: (String) -> Unit,
 ) {
     val url = parseServerUrl(selection.serverUrlRaw)
     val effective = effectiveBackend(selection.backend, url)
+    val note = backendNote(selection.backend, url)
+    val focus = LocalFocusManager.current
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        SingleChoiceSegmentedButtonRow(
+        OutlinedTextField(
+            value = selection.serverUrlRaw,
+            onValueChange = onServerUrl,
             modifier = Modifier
                 .fillMaxWidth()
-                .testTag(TestTags.PICK_LANG),
-        ) {
-            DemoLanguage.entries.forEachIndexed { index, option ->
-                SegmentedButton(
-                    selected = selection.language == option,
-                    onClick = { onLanguage(option) },
-                    shape = SegmentedButtonDefaults.itemShape(index, DemoLanguage.entries.size),
-                    modifier = Modifier.testTag(pickLangTag(option)),
-                    enabled = !sessionLive,
-                    icon = {},
-                    label = { Text(option.wire, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                )
+                .testTag(TestTags.SERVER_URL),
+            enabled = !sessionLive,
+            label = { Text("Server URL") },
+            placeholder = { Text(SERVER_URL_PLACEHOLDER) },
+            supportingText = {
+                Text(supportingText(url), modifier = Modifier.testTag(TestTags.SERVER_URL_NOTE))
+            },
+            isError = url is ServerUrlInput.Invalid,
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Uri,
+                imeAction = ImeAction.Done,
+                autoCorrectEnabled = false,
+            ),
+            keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            ReadoutLabel("language")
+            SingleChoiceSegmentedButtonRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag(TestTags.PICK_LANG),
+            ) {
+                DemoLanguage.entries.forEachIndexed { index, option ->
+                    SegmentedButton(
+                        selected = selection.language == option,
+                        onClick = { onLanguage(option) },
+                        shape = SegmentedButtonDefaults.itemShape(index, DemoLanguage.entries.size),
+                        modifier = Modifier.testTag(pickLangTag(option)),
+                        enabled = !sessionLive,
+                        icon = {},
+                        label = { Text(option.wire, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    )
+                }
             }
         }
-        SingleChoiceSegmentedButtonRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag(TestTags.PICK_BACKEND),
-        ) {
-            BACKEND_OPTIONS.forEachIndexed { index, option ->
-                SegmentedButton(
-                    selected = effective == option,
-                    onClick = { onBackend(option) },
-                    shape = SegmentedButtonDefaults.itemShape(index, BACKEND_OPTIONS.size),
-                    modifier = Modifier.testTag(pickBackendTag(option)),
-                    enabled = backendSegmentEnabled(option, url, sessionLive),
-                    icon = {},
-                    label = { Text(backendLabel(option), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(modifier = Modifier.fillMaxWidth()) {
+                ReadoutLabel("backend")
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = note.text,
+                    modifier = Modifier.testTag(TestTags.PICK_BACKEND_NOTE),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = if (note.loud) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    },
                 )
             }
+            SingleChoiceSegmentedButtonRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag(TestTags.PICK_BACKEND),
+            ) {
+                BACKEND_OPTIONS.forEachIndexed { index, option ->
+                    SegmentedButton(
+                        selected = effective == option,
+                        onClick = { onBackend(option) },
+                        shape = SegmentedButtonDefaults.itemShape(index, BACKEND_OPTIONS.size),
+                        modifier = Modifier.testTag(pickBackendTag(option)),
+                        enabled = backendSegmentEnabled(option, url, sessionLive),
+                        icon = {},
+                        label = {
+                            Text(backendLabel(option), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        },
+                    )
+                }
+            }
         }
+        Text(
+            text = settingsHint(sessionLive),
+            modifier = Modifier.testTag(TestTags.SETTINGS_HINT),
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.outline,
+        )
     }
 }
 

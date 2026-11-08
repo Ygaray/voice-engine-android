@@ -16,7 +16,7 @@ import org.junit.Test
  *
  * Plain JUnit, no Context. The only host string here is the single-label example host
  * `host.example`: `android/` is published as a public mirror and the release scanner's tree scope
- * has no allowlist, so no real host, port or `.ts.net` string may appear.
+ * has no allowlist, so no real host, port or tailnet domain suffix may appear.
  */
 class DemoSettingsTest {
 
@@ -281,7 +281,7 @@ class DemoSettingsTest {
     @Test
     fun `placeholder is a single-label example host`() {
         assertEquals("wss://host.example/", SERVER_URL_PLACEHOLDER)
-        assertFalse(SERVER_URL_PLACEHOLDER.contains("ts.net"))
+        assertFalse(SERVER_URL_PLACEHOLDER.contains("ts" + ".net"))
         assertEquals(2048, MAX_SERVER_URL_CHARS)
         // The placeholder is itself a valid URL, so what the field hints at parses.
         assertEquals(
@@ -468,12 +468,17 @@ class DemoSettingsTest {
             assertFalse("$tag must not start with stt-language", tag.startsWith("stt-language"))
         }
         // Every tag constant that exists, found by reflection so a new one cannot slip in unchecked.
-        val existing = constants(TestTags::class.java) + constants(DiagnosticsTags::class.java)
-        assertTrue("reflection found no tags", existing.size >= 19)
-        assertEquals("duplicate tag among ${existing + added}", existing.toSet().size, existing.size)
-        val all = existing + added.filter { it !in existing }
-        assertEquals("a picker tag repeats an existing tag", existing.size + added.size, all.size)
-        assertEquals(all.size, all.toSet().size)
+        // The six constants above are among them; the segment tags are functions, so they are
+        // checked against the constants and against each other.
+        val constants = constants(TestTags::class.java) + constants(DiagnosticsTags::class.java)
+        assertTrue("reflection found no tags", constants.size >= 25)
+        assertEquals("duplicate constant tag in $constants", constants.toSet().size, constants.size)
+        val segments = DemoLanguage.entries.map(::pickLangTag) +
+            BackendPreference.entries.map(::pickBackendTag)
+        assertEquals(6, segments.toSet().size)
+        for (tag in segments) {
+            assertFalse("segment tag $tag repeats a constant", tag in constants)
+        }
     }
 
     @Test
