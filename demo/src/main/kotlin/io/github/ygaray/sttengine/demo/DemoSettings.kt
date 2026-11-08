@@ -195,3 +195,48 @@ internal fun startArgs(
     }
     return StartArgs(language = language.wire, prefer = prefer, serverUrl = serverUrl)
 }
+
+/** The URL field's placeholder: a single-label example host, never a real one (public mirror). */
+internal const val SERVER_URL_PLACEHOLDER = "wss://host.example/"
+
+/**
+ * The URL field's supporting text: fixed copy per result. It never contains the input, so a typed
+ * private host cannot be echoed back onto the screen or into a dump of it.
+ */
+internal fun supportingText(input: ServerUrlInput): String = when (input) {
+    ServerUrlInput.Empty -> "Needed for Server and Auto. Saved on this device only."
+    is ServerUrlInput.Valid -> "Saved on this device only."
+    is ServerUrlInput.Invalid -> when (input.reason) {
+        InvalidReason.TooLong -> "Too long (max $MAX_SERVER_URL_CHARS characters)."
+        InvalidReason.NotWss -> "Must start with wss://"
+        InvalidReason.Whitespace -> "Must not contain spaces."
+        InvalidReason.NoHost -> "Must include a host after wss://"
+    }
+}
+
+/** The note beside the backend caption. [loud] means the `error` colour (a coerced choice). */
+internal enum class BackendNote(val text: String, val loud: Boolean) {
+    /** No usable URL and the stored choice is already On-device: nothing is being overridden. */
+    NoUrl("no server URL", false),
+
+    /** No usable URL but the stored choice is Server or Auto: the screen says it is overriding it. */
+    Coerced("no server URL — using On-device", true),
+
+    /** A valid URL is set. Never shows the URL itself. */
+    UrlSet("server URL set", false),
+}
+
+/** Which [BackendNote] applies to the stored choice and the current URL. */
+internal fun backendNote(stored: BackendPreference, url: ServerUrlInput): BackendNote = when {
+    url is ServerUrlInput.Valid -> BackendNote.UrlSet
+    stored == BackendPreference.OnDevice -> BackendNote.NoUrl
+    else -> BackendNote.Coerced
+}
+
+/** The hint under the pickers: when the controls apply, and why they are locked while live. */
+internal fun settingsHint(sessionLive: Boolean): String =
+    if (sessionLive) {
+        "Locked during a session. Rows show what it used."
+    } else {
+        "Changes apply at the next Start."
+    }
