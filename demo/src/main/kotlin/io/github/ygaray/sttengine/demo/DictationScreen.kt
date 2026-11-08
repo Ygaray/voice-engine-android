@@ -24,6 +24,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,11 +45,13 @@ import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import io.github.ygaray.sttengine.BackendPreference
 import io.github.ygaray.sttengine.EngineState
 import io.github.ygaray.sttengine.FinalSegment
 import io.github.ygaray.sttengine.SttError
@@ -104,6 +109,22 @@ internal object TestTags {
      * segment; pair it with the sibling [SEGMENT_ID].
      */
     const val REASON = "stt-reason"
+
+    /** The language picker's `SingleChoiceSegmentedButtonRow` (DEMO-02); segments use [pickLangTag]. */
+    const val PICK_LANG = "stt-pick-lang"
+
+    /** The backend picker's `SingleChoiceSegmentedButtonRow` (DEMO-02); segments use [pickBackendTag]. */
+    const val PICK_BACKEND = "stt-pick-backend"
+}
+
+/** The tag of one language segment: `stt-pick-lang-` + the bare wire tag (`auto` / `en` / `es`). */
+internal fun pickLangTag(language: DemoLanguage): String = "stt-pick-lang-" + language.wire
+
+/** The tag of one backend segment: `stt-pick-backend-` + `auto` / `server` / `ondevice`. */
+internal fun pickBackendTag(preference: BackendPreference): String = "stt-pick-backend-" + when (preference) {
+    BackendPreference.Auto -> "auto"
+    BackendPreference.Server -> "server"
+    BackendPreference.OnDevice -> "ondevice"
 }
 
 /**
@@ -132,6 +153,7 @@ internal fun DictationScreen(
 
     val committed by viewModel.committed.collectAsStateWithLifecycle()
     val rowMeta by viewModel.rowMeta.collectAsStateWithLifecycle()
+    val selection by viewModel.selection.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val level by viewModel.level.collectAsStateWithLifecycle()
 
@@ -202,6 +224,13 @@ internal fun DictationScreen(
                 isIdleAndEmpty = state == EngineState.Idle && committed.isEmpty(),
                 scrollState = scrollState,
                 modifier = Modifier.weight(1f),
+            )
+
+            SessionSettings(
+                selection = selection,
+                sessionLive = viewModel.sessionLive(state),
+                onLanguage = viewModel::selectLanguage,
+                onBackend = viewModel::selectBackend,
             )
 
             Controls(
@@ -494,6 +523,67 @@ private fun MetaValue(text: String, loud: Boolean, tag: String) {
         fontFamily = FontFamily.Monospace,
         color = if (loud) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline,
     )
+}
+
+// --- session settings -----------------------------------------------------------------------------
+
+/**
+ * The language and backend pickers (DEMO-02, D-05, D-06), directly above Start / Stop: they are inputs
+ * to the next Start and nothing else. Plain `Column`, no container, so it reads as part of the
+ * controls area. Disabled while a session is live with the selected segment still filled (the
+ * Material defaults keep it readable); the ViewModel also ignores changes while live.
+ *
+ * Every decision (which backend shows as selected, which segments are enabled) comes from the pure
+ * functions in `DemoSettings.kt`; this only renders the answers.
+ */
+@Composable
+private fun SessionSettings(
+    selection: DemoSelection,
+    sessionLive: Boolean,
+    onLanguage: (DemoLanguage) -> Unit,
+    onBackend: (BackendPreference) -> Unit,
+) {
+    val url = parseServerUrl(selection.serverUrlRaw)
+    val effective = effectiveBackend(selection.backend, url)
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag(TestTags.PICK_LANG),
+        ) {
+            DemoLanguage.entries.forEachIndexed { index, option ->
+                SegmentedButton(
+                    selected = selection.language == option,
+                    onClick = { onLanguage(option) },
+                    shape = SegmentedButtonDefaults.itemShape(index, DemoLanguage.entries.size),
+                    modifier = Modifier.testTag(pickLangTag(option)),
+                    enabled = !sessionLive,
+                    icon = {},
+                    label = { Text(option.wire, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                )
+            }
+        }
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag(TestTags.PICK_BACKEND),
+        ) {
+            BACKEND_OPTIONS.forEachIndexed { index, option ->
+                SegmentedButton(
+                    selected = effective == option,
+                    onClick = { onBackend(option) },
+                    shape = SegmentedButtonDefaults.itemShape(index, BACKEND_OPTIONS.size),
+                    modifier = Modifier.testTag(pickBackendTag(option)),
+                    enabled = backendSegmentEnabled(option, url, sessionLive),
+                    icon = {},
+                    label = { Text(backendLabel(option), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                )
+            }
+        }
+    }
 }
 
 // --- controls -------------------------------------------------------------------------------------

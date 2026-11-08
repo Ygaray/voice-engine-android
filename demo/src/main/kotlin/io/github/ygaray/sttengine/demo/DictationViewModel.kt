@@ -86,6 +86,17 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
      */
     internal val rowMeta: StateFlow<List<RowMeta>> = _rowMeta.asStateFlow()
 
+    private val _selection =
+        MutableStateFlow(DemoSelection(DemoLanguage.En, BackendPreference.OnDevice, ""))
+
+    /**
+     * The human's next-Start choice (Phase 31, DEMO-02): language, backend preference and the server
+     * URL as typed. It lives here, not in `remember`, so a rotation keeps it. It is a choice about
+     * the NEXT session, never a mirror of the running one: the rows show what a session used.
+     * `DemoSelection.toString` redacts the URL; nothing here logs the selection.
+     */
+    internal val selection: StateFlow<DemoSelection> = _selection.asStateFlow()
+
     private val _error = MutableStateFlow<SttError?>(null)
 
     /** The session's terminal error, if one has been emitted. At most one per session. */
@@ -273,6 +284,38 @@ class DictationViewModel(app: Application) : AndroidViewModel(app) {
             _warningCount.value = 0
             _engine.value.start()
         }
+    }
+
+    /**
+     * Begin a session from the pickers (DEMO-02): the language wire tag, the effective backend and
+     * the URL only when it is valid and the backend can use it ([startArgs]).
+     *
+     * The selection is read ONCE, synchronously, before [start] launches its coroutine, so a picker
+     * change landing between the tap and the engine build cannot change what this Start runs.
+     */
+    internal fun startFromSelection() {
+        val selection = _selection.value
+        val args = startArgs(selection.language, selection.backend, parseServerUrl(selection.serverUrlRaw))
+        start(language = args.language, prefer = args.prefer, serverUrl = args.serverUrl)
+    }
+
+    /** Pick the recognition language for the next Start. Ignored while a session is live. */
+    internal fun selectLanguage(language: DemoLanguage) =
+        change(SelectionChange.Language(language))
+
+    /** Pick the backend preference for the next Start. Ignored while a session is live. */
+    internal fun selectBackend(backend: BackendPreference) =
+        change(SelectionChange.Backend(backend))
+
+    /** Set the server URL text exactly as typed. Ignored while a session is live. */
+    internal fun setServerUrl(raw: String) = change(SelectionChange.ServerUrl(raw))
+
+    private fun change(change: SelectionChange) {
+        _selection.value = applySelectionChange(
+            _selection.value,
+            change,
+            sessionLive(_engine.value.state.value),
+        )
     }
 
     /** End the session. Safe in any state, including from a terminal error. */

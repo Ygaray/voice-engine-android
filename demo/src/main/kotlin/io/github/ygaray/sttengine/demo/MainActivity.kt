@@ -56,14 +56,14 @@ class MainActivity : ComponentActivity() {
                     // Start either way. On a grant this is the session the user asked for; on a
                     // denial the engine reports `mic-denied` in the loud banner, which is a better
                     // answer than a button that silently does nothing.
-                    viewModel.start()
+                    viewModel.startFromSelection()
                 }
 
                 DictationScreen(
                     viewModel = viewModel,
                     onStartRequested = {
                         if (hasMicPermission(context)) {
-                            viewModel.start()
+                            viewModel.startFromSelection()
                         } else {
                             micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         }
