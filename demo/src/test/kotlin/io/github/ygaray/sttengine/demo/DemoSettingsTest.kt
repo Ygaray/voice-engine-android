@@ -441,6 +441,97 @@ class DemoSettingsTest {
         assertNull(Regex("""_selection\.value""").findAll(body).drop(1).firstOrNull())
     }
 
+    // --- Task 3: tags, store wiring, receiver ----------------------------------------------------
+
+    @Test
+    fun `picker and url tags are exact and distinct`() {
+        assertEquals("stt-server-url", TestTags.SERVER_URL)
+        assertEquals("stt-server-url-note", TestTags.SERVER_URL_NOTE)
+        assertEquals("stt-pick-lang", TestTags.PICK_LANG)
+        assertEquals("stt-pick-backend", TestTags.PICK_BACKEND)
+        assertEquals("stt-pick-backend-note", TestTags.PICK_BACKEND_NOTE)
+        assertEquals("stt-settings-hint", TestTags.SETTINGS_HINT)
+        assertEquals(
+            listOf("stt-pick-lang-auto", "stt-pick-lang-en", "stt-pick-lang-es"),
+            DemoLanguage.entries.map(::pickLangTag),
+        )
+        assertEquals(
+            listOf("stt-pick-backend-auto", "stt-pick-backend-server", "stt-pick-backend-ondevice"),
+            BackendPreference.entries.sortedBy { BACKEND_OPTIONS.indexOf(it) }.map(::pickBackendTag),
+        )
+        val added = listOf(
+            TestTags.SERVER_URL, TestTags.SERVER_URL_NOTE, TestTags.PICK_LANG, TestTags.PICK_BACKEND,
+            TestTags.PICK_BACKEND_NOTE, TestTags.SETTINGS_HINT,
+        ) + DemoLanguage.entries.map(::pickLangTag) + BackendPreference.entries.map(::pickBackendTag)
+        assertEquals(12, added.size)
+        for (tag in added) {
+            assertFalse("$tag must not start with stt-language", tag.startsWith("stt-language"))
+        }
+        // Every tag constant that exists, found by reflection so a new one cannot slip in unchecked.
+        val existing = constants(TestTags::class.java) + constants(DiagnosticsTags::class.java)
+        assertTrue("reflection found no tags", existing.size >= 19)
+        assertEquals("duplicate tag among ${existing + added}", existing.toSet().size, existing.size)
+        val all = existing + added.filter { it !in existing }
+        assertEquals("a picker tag repeats an existing tag", existing.size + added.size, all.size)
+        assertEquals(all.size, all.toSet().size)
+    }
+
+    @Test
+    fun `selection is read from the store and every accepted change is written`() {
+        val vm = demoSource("DictationViewModel.kt")
+        assertTrue(vm.contains("MutableStateFlow(store.read())"))
+        assertEquals(1, Regex("""getSharedPreferences\(PREFS_NAME, Context\.MODE_PRIVATE\)""").findAll(vm).count())
+        val from = vm.indexOf("private fun change(")
+        assertTrue("change() not found", from >= 0)
+        val body = vm.substring(from, vm.indexOf("\n    }\n", from))
+        val apply = body.indexOf("applySelectionChange(")
+        val write = body.indexOf("store.write(")
+        assertTrue("change() must apply through applySelectionChange", apply >= 0)
+        assertTrue("change() must write the accepted value", write > apply)
+        for (call in listOf("change(SelectionChange.Language(", "change(SelectionChange.Backend(", "change(SelectionChange.ServerUrl(")) {
+            assertEquals(call, 1, Regex(Regex.escape(call)).findAll(vm).count())
+        }
+        // The only place the store is used is the ViewModel: nothing in the screen reads or writes it.
+        assertFalse(demoSource("DictationScreen.kt").contains("DemoSettingsStore"))
+        assertEquals(1, Regex("""getSharedPreferences""").findAll(allMainSources()).count())
+    }
+
+    @Test
+    fun `the debug receiver never touches the selection or the store`() {
+        val receiver = sourceAt("src/debug/kotlin/io/github/ygaray/sttengine/demo/debug/DemoControlReceiver.kt")
+        for (word in listOf("selection", "DemoSettingsStore", "selectLanguage", "selectBackend", "setServerUrl", "startFromSelection")) {
+            assertFalse("receiver mentions $word", receiver.contains(word))
+        }
+        assertTrue(receiver.contains("viewModel.start("))
+    }
+
+    @Test
+    fun `no host other than the example host appears in main sources`() {
+        val all = allMainSources()
+        val hosts = Regex("""wss://([A-Za-z0-9.-]+)""").findAll(all).map { it.groupValues[1] }.toSet()
+        assertTrue("unexpected hosts $hosts", hosts.all { it == "host.example" })
+        assertFalse(all.contains("ts" + ".net"))
+    }
+
+    private fun constants(type: Class<*>): List<String> =
+        type.declaredFields
+            .filter { java.lang.reflect.Modifier.isStatic(it.modifiers) && it.type == String::class.java }
+            .map { it.isAccessible = true; it.get(null) as String }
+
+    private fun allMainSources(): String =
+        File(sourcesRoot()).walkTopDown().filter { it.isFile && it.extension == "kt" }
+            .joinToString("\n") { it.readText() }
+
+    private fun sourcesRoot(): String {
+        val rel = "src/main/kotlin/io/github/ygaray/sttengine/demo"
+        return listOf(File(rel), File("android/demo/$rel"), File("demo/$rel")).first { it.isDirectory }.path
+    }
+
+    private fun sourceAt(rel: String): String {
+        val candidates = listOf(File(rel), File("android/demo/$rel"), File("demo/$rel"))
+        return (candidates.firstOrNull { it.isFile } ?: error("$rel not found")).readText()
+    }
+
     private fun invalid(reason: InvalidReason) = ServerUrlInput.Invalid(reason)
 
     private fun demoSource(name: String): String {
