@@ -45,11 +45,11 @@ release, not something this phase's growth introduced or is scoped to close.)_
 
 ---
 
-## Migrating to the next release (unreleased)
+## Migrating to v0.9.0
 
-Every change a host can see since `v0.8.1`, one row each. No version number is claimed yet: the
-release that ships these changes renames this heading. The `v0.8.1` and `v0.8.0` sections below are
-unchanged and still describe those releases.
+Every change a host can see since `v0.8.1`, one row each. No code change is required: the public API
+only gains `SttEngine.fallbackReason` and `FallbackReason`. The `v0.8.1` and `v0.8.0` sections below
+are unchanged and still describe those releases.
 
 | ID | Kind | Surface | Change | What hosts do |
 |---|---|---|---|---|
@@ -57,6 +57,7 @@ unchanged and still describe those releases.
 | MIG-18 | behaviour | busy server at session start | A server that answers `busy` (it is still serving another session) is now retried inside the try window with the existing backoff, instead of falling back at once. Only a busy that lasts past `serverTryTimeoutMs` falls back, with `fallbackReason` `busy`; under `prefer = Server` the `busy` error arrives when the window ends. | Nothing for the common case: a start issued right after another session's `stop()` now waits the busy out and lands on the server when the slot frees inside the window. But a server that stays busy because another long session is active now costs up to `serverTryTimeoutMs` (10 s by default) of deaf time in `Connecting`, with no audio captured, before the on-device fallback, where the previous release fell back at once. A host that cares should lower `serverTryTimeoutMs`. |
 | MIG-19 | behaviour | live server session liveness | Two separate outcomes. (a) A microphone stream that ends while the session is live and no stop was asked for, and a server that stops answering (WebSocket ping, detected within about 20 s), now hand the session off to on-device recognition silently, with `fallbackReason` `dropped`; the live partial is committed first, as on any handoff. (b) A server close 1000 after `ready`, including the server's idle close (reason `idle-timeout`, 300 s server default, no error frame), ends the session in `Idle` with no error, no handoff and `fallbackReason` `null`; a live partial is not committed. | Nothing for (a). For (b), call `start()` again to keep dictating. See "Idle close: 1000 with reason `idle-timeout`". |
 | MIG-20 | behaviour | `SttEngine.stop()` | On the server backend `stop()` can now wait up to about 5 s for the server's tail flush (was about 2.5 s). MIG-03 describes the `v0.8.0` behaviour and is unchanged. | Keep calling `stop()` from a coroutine, not from a blocking UI handler. See "`stop()` latency on the server backend". |
+| MIG-21 | behaviour | `SttConfig.language` on the server backend | The server path now takes `"es"` as well as `"en"` and `"auto"`, matched exactly and case-sensitively. `"es"` decodes as Spanish and, like `"en"`, its finals carry no language label. A server that has not been updated still rejects `"es"`. | Nothing unless you want Spanish on the server path; then pass `"es"`. |
 
 ---
 
