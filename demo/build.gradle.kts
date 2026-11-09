@@ -63,6 +63,12 @@ dependencies {
     // `explicitApi()` plus the frozen `.api` dump on :stt is what makes that mechanical.
     implementation(project(":stt"))
 
+    // D-1415 (31-FOUNDATION-NOTE.md Amendment 3): the demo's URL check ends with OkHttp's own parser
+    // (`toHttpUrlOrNull`), so `Valid` implies the engine's `Request.Builder().url()` cannot throw.
+    // The version comes from the same catalog entry :stt uses (`libs.okhttp`); no new version, no
+    // new catalog entry, and no new artifact in the APK (:stt already brings it in).
+    implementation(libs.okhttp)
+
     // The bill of materials aligns every Compose artifact below; none of them names a version.
     // libs.compose.bom resolves to androidx.compose:compose-bom:2026.06.00 — and 2026.06.00 is not
     // a rounding-down of something newer: a registry probe returned 404 for 2026.07.00, so .06 is

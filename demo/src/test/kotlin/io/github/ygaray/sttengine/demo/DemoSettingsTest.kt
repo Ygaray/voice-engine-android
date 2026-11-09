@@ -2,6 +2,7 @@ package io.github.ygaray.sttengine.demo
 
 import io.github.ygaray.sttengine.BackendPreference
 import java.io.File
+import okhttp3.Request
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -144,7 +145,9 @@ class DemoSettingsTest {
         assertEquals(ServerUrlInput.Valid(url), parseServerUrl("\n  $url \n"))
 
         // Length: 2048 is valid, 2049 is too long, and the length rule beats the scheme rule.
-        val at2048 = "wss://" + "a".repeat(2048 - 6)
+        // The 2048 boundary is a long PATH on a real host: a 2042-character host label is itself
+        // unusable (a label over 63 characters is rejected by the engine's URL parser, D-1415).
+        val at2048 = "wss://host.example/" + "a".repeat(2048 - "wss://host.example/".length)
         assertEquals(2048, at2048.length)
         assertEquals(ServerUrlInput.Valid(at2048), parseServerUrl(at2048))
         assertEquals(invalid(InvalidReason.TooLong), parseServerUrl(at2048 + "a"))
@@ -249,6 +252,81 @@ class DemoSettingsTest {
         )) {
             assertEquals(good, ServerUrlInput.Valid(good), parseServerUrl(good))
         }
+    }
+
+    /**
+     * D-1415 (31-FOUNDATION-NOTE.md Amendment 3, RV-001993 F1): shapes the hand-written host rules
+     * accept but OkHttp's URL parser rejects. `Valid` must imply `Request.Builder().url()` cannot
+     * throw, so each of these has to read `Invalid(NoHost)`.
+     */
+    @Test
+    fun `malformed IPv6 literal is rejected (D-1415)`() {
+        assertEquals(invalid(InvalidReason.NoHost), parseServerUrl("wss://[1:2:3]/"))
+    }
+
+    @Test
+    fun `empty host label is rejected (D-1415)`() {
+        assertEquals(invalid(InvalidReason.NoHost), parseServerUrl("wss://host..example/"))
+    }
+
+    @Test
+    fun `host label over 63 characters is rejected and 63 stays valid (D-1415)`() {
+        assertEquals(invalid(InvalidReason.NoHost), parseServerUrl("wss://" + "a".repeat(64) + ".example/"))
+        val at63 = "wss://" + "a".repeat(63) + ".example/"
+        assertEquals(ServerUrlInput.Valid(at63), parseServerUrl(at63))
+    }
+
+    @Test
+    fun `host that is invalid IDNA is rejected (D-1415)`() {
+        assertEquals(invalid(InvalidReason.NoHost), parseServerUrl("wss://host\uFFFDexample/"))
+    }
+
+    /**
+     * D-1415 agreement control: `parseServerUrl` returns `Valid` exactly when OkHttp's request
+     * builder accepts the string, which is the throw site `ServerBackend` hits on Start. The
+     * examples are every Valid shape this suite relies on plus the four red shapes above.
+     */
+    @Test
+    fun `valid agrees with the OkHttp request builder`() {
+        val examples = listOf(
+            url,
+            "wss://host.example",
+            "wss://host.example:8444/",
+            "wss://host.example?x=1",
+            "wss://host.example#frag",
+            "wss://user@host.example/",
+            "wss://[::1]:8444/",
+            "wss://host.example:1",
+            "wss://host.example:65535",
+            "wss://host.example:08444",
+            "wss://host-1.example_x/",
+            "wss://[::1]/",
+            "wss://[2001:db8::1]:8444/",
+            "wss://[::ffff:192.0.2.1]:8444/",
+            "wss://user:secret@host.example:8444/path",
+            "wss://" + "a".repeat(63) + ".example/",
+            "wss://host.example/" + "a".repeat(2048 - "wss://host.example/".length),
+            // The four D-1415 red shapes.
+            "wss://[1:2:3]/",
+            "wss://host..example/",
+            "wss://" + "a".repeat(64) + ".example/",
+            "wss://host\uFFFDexample/",
+        )
+        val disagree = mutableListOf<String>()
+        for (text in examples) {
+            val valid = parseServerUrl(text) is ServerUrlInput.Valid
+            val builds = try {
+                Request.Builder().url(text)
+                true
+            } catch (_: IllegalArgumentException) {
+                false
+            }
+            if (valid != builds) disagree += "len=${text.length} valid=$valid builds=$builds"
+        }
+        assertTrue("parseServerUrl and OkHttp disagree: $disagree", disagree.isEmpty())
+        // Not vacuous: the list holds both outcomes.
+        assertTrue(examples.any { parseServerUrl(it) is ServerUrlInput.Valid })
+        assertTrue(examples.any { parseServerUrl(it) !is ServerUrlInput.Valid })
     }
 
     // --- Task 2: supporting text, enablement, notes, hint, placeholder -------------------------
