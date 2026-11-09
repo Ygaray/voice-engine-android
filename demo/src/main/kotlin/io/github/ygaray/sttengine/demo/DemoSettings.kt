@@ -64,8 +64,9 @@ internal enum class InvalidReason { TooLong, NotWss, Whitespace, NoHost }
  * 2. longer than [MAX_SERVER_URL_CHARS] is `Invalid(TooLong)`;
  * 3. not starting with lowercase `wss://` (`ws://`, `https://`, garbage, `WSS://`) is `Invalid(NotWss)`;
  * 4. any whitespace inside is `Invalid(Whitespace)`;
- * 5. no host before the first `/`, `?`, `#` or port colon (`wss://`, `wss:///`, `wss://?x`,
- *    `wss://:8444`) is `Invalid(NoHost)`;
+ * 5. no usable host or port (`wss://`, `wss:///`, `wss://?x`, `wss://:8444`, an empty or
+ *    non-numeric or out-of-range port, an unclosed `[`, a bad host character) is `Invalid(NoHost)`;
+ *    see [hasHost] for the exact rule;
  * 6. otherwise [ServerUrlInput.Valid] holding the trimmed text.
  *
  * Total and side-effect free. The supporting text built from the result never echoes the input, and
@@ -84,19 +85,57 @@ internal fun parseServerUrl(raw: String?): ServerUrlInput {
 }
 
 /**
- * Whether [afterScheme] starts with a non-empty host: the authority is everything up to the first
- * `/`, `?` or `#`; any `user@` prefix is dropped; the host is what precedes the port colon (or sits
- * inside `[...]` for an IPv6 literal).
+ * Characters a (non-bracketed) host may never contain. These are the URL delimiters and the code
+ * points OkHttp's host parser refuses, plus `%` (a stray percent sign is how `ex%zzample` slips
+ * through; OkHttp would accept a well-formed escape, this validator is deliberately stricter) and
+ * the space. Control characters are refused separately.
+ */
+private const val FORBIDDEN_HOST_CHARS = " #%/:<>?@[\\]^|"
+
+/** The highest TCP port. */
+private const val MAX_PORT = 65535
+
+/**
+ * Whether [afterScheme] starts with a host and, when a port is present, a real port.
+ *
+ * `Valid` is the gate in front of `ServerBackend`, whose OkHttp request builder THROWS on a string
+ * its URL parser rejects, and nothing above the engine catches that (CR-01). So this check has to be
+ * at least as strict as that parser, and `:stt` is frozen so the guard lives here. The authority is
+ * everything up to the first `/`, `?` or `#`; any `user@` prefix is dropped; the host is what
+ * precedes the port colon (or sits inside `[...]` for an IPv6 literal). Then:
+ *
+ * - the host is non-empty and holds no delimiter, space, `%` or control character; a bracketed
+ *   literal must be closed, must hold only hex digits, `:` and `.`, and must contain a `:`;
+ * - a port, if there is a colon after the host, is 1 to 5 ASCII digits and in 1..65535 (so a
+ *   half-typed `host.example:`, `:abc`, `:0` and `:99999` are all refused).
  */
 private fun hasHost(afterScheme: String): Boolean {
     val authority = afterScheme.takeWhile { it != '/' && it != '?' && it != '#' }
     val hostAndPort = authority.substringAfterLast('@')
-    val host = if (hostAndPort.startsWith('[')) {
-        hostAndPort.removePrefix("[").substringBefore(']')
+    val host: String
+    val portText: String? // null = no port given
+    if (hostAndPort.startsWith('[')) {
+        val close = hostAndPort.indexOf(']')
+        if (close < 0) return false // unclosed IPv6 literal
+        host = hostAndPort.substring(1, close)
+        val rest = hostAndPort.substring(close + 1)
+        if (rest.isNotEmpty() && !rest.startsWith(':')) return false
+        portText = if (rest.isEmpty()) null else rest.substring(1)
+        if (host.isEmpty() || ':' !in host) return false
+        if (!host.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' || it == ':' || it == '.' }) {
+            return false
+        }
     } else {
-        hostAndPort.substringBefore(':')
+        host = hostAndPort.substringBefore(':')
+        portText = if (':' in hostAndPort) hostAndPort.substringAfter(':') else null
+        if (host.isEmpty()) return false
+        if (host.any { it in FORBIDDEN_HOST_CHARS || it.code < 0x20 || it.code == 0x7f }) return false
     }
-    return host.isNotEmpty()
+    if (portText != null) {
+        if (portText.isEmpty() || portText.length > 5 || !portText.all { it in '0'..'9' }) return false
+        if (portText.toInt() !in 1..MAX_PORT) return false
+    }
+    return true
 }
 
 /**
