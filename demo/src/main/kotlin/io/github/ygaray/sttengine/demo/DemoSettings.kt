@@ -1,6 +1,7 @@
 package io.github.ygaray.sttengine.demo
 
 import io.github.ygaray.sttengine.BackendPreference
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /*
  * The demo's session settings (Phase 31, DEMO-02): the language and backend a human picks on the main
@@ -67,7 +68,11 @@ internal enum class InvalidReason { TooLong, NotWss, Whitespace, NoHost }
  * 5. no usable host or port (`wss://`, `wss:///`, `wss://?x`, `wss://:8444`, an empty or
  *    non-numeric or out-of-range port, an unclosed `[`, a bad host character) is `Invalid(NoHost)`;
  *    see [hasHost] for the exact rule;
- * 6. otherwise [ServerUrlInput.Valid] holding the trimmed text.
+ * 6. OkHttp's own URL parser must accept the text (with the leading `wss://` read as `https://`,
+ *    which is what the engine's request builder does), otherwise `Invalid(NoHost)`. This is the
+ *    check that makes `Valid` imply the request builder cannot throw (D-1415); rules 1-5 only give
+ *    the human a precise reason for the common typing mistakes;
+ * 7. otherwise [ServerUrlInput.Valid] holding the trimmed text.
  *
  * Total and side-effect free. The supporting text built from the result never echoes the input, and
  * nothing here logs.
@@ -79,6 +84,12 @@ internal fun parseServerUrl(raw: String?): ServerUrlInput {
     if (!text.startsWith(WSS_SCHEME)) return ServerUrlInput.Invalid(InvalidReason.NotWss)
     if (text.any { it.isWhitespace() }) return ServerUrlInput.Invalid(InvalidReason.Whitespace)
     if (!hasHost(text.substring(WSS_SCHEME.length))) {
+        return ServerUrlInput.Invalid(InvalidReason.NoHost)
+    }
+    // Last check (D-1415): the real parser, so a shape no hand-written rule lists (a malformed IPv6
+    // literal, an empty or over-long host label, invalid IDNA) cannot become `Valid` and then throw
+    // in the engine's `Request.Builder().url()` on Start.
+    if (("https://" + text.substring(WSS_SCHEME.length)).toHttpUrlOrNull() == null) {
         return ServerUrlInput.Invalid(InvalidReason.NoHost)
     }
     return ServerUrlInput.Valid(text)
@@ -99,8 +110,11 @@ private const val MAX_PORT = 65535
  * Whether [afterScheme] starts with a host and, when a port is present, a real port.
  *
  * `Valid` is the gate in front of `ServerBackend`, whose OkHttp request builder THROWS on a string
- * its URL parser rejects, and nothing above the engine catches that (CR-01). So this check has to be
- * at least as strict as that parser, and `:stt` is frozen so the guard lives here. The authority is
+ * its URL parser rejects, and nothing above the engine catches that (CR-01). `:stt` is frozen, so
+ * the guard lives here. What guarantees "Valid implies the builder cannot throw" is NOT this
+ * function: it is the final OkHttp parse in [parseServerUrl] (D-1415). This function is the cheap
+ * first pass that gives the human a precise `NoHost` for the common typing mistakes, and it stays
+ * stricter than OkHttp in places (it refuses `%`, for one). The authority is
  * everything up to the first `/`, `?` or `#`; any `user@` prefix is dropped; the host is what
  * precedes the port colon (or sits inside `[...]` for an IPv6 literal). Then:
  *
