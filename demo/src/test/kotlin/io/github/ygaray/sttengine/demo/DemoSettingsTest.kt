@@ -185,6 +185,72 @@ class DemoSettingsTest {
         }
     }
 
+    /**
+     * CR-01 (31-REVIEW.md): `Valid` must imply the engine's WebSocket parser accepts the string.
+     * OkHttp rewrites `wss:` to `https:` and throws on a bad port or host character, and nothing
+     * above the engine catches it, so a `Valid` string it rejects crashes the app on Start. These
+     * are the shapes a human reaches while typing or pasting a URL; the host is the example host.
+     */
+    @Test
+    fun `url with a bad port or bad host characters is rejected`() {
+        val wrong = mutableListOf<String>()
+        for (bad in listOf(
+            "wss://host.example:",
+            "wss://host.example:/path",
+            "wss://host.example:abc",
+            "wss://host.example:99999",
+            "wss://host.example:65536",
+            "wss://host.example:0",
+            "wss://host.example:-1",
+            "wss://host.example:+8444",
+            "wss://host.example:8444:9",
+            "wss://user@host.example:abc/",
+            "wss://[::1",
+            "wss://[::1]x",
+            "wss://[::1]:",
+            "wss://[::1]:abc",
+            "wss://[::1]:99999/",
+            "wss://[zzz]/",
+            "wss://[]:8444",
+            "wss://ex%zzample",
+            "wss://ex%zzample:8444/",
+            "wss://host<example/",
+            "wss://host^example/",
+            "wss://host|example/",
+            "wss://host\u0000example/",
+        )) {
+            if (parseServerUrl(bad) != invalid(InvalidReason.NoHost)) wrong += "$bad -> ${parseServerUrl(bad)}"
+        }
+        // Collected, not asserted per case, so one run reports every shape that slips through.
+        assertTrue("accepted but unusable: $wrong", wrong.isEmpty())
+    }
+
+    /** The still-valid controls for CR-01: tightening the validator must not reject these. */
+    @Test
+    fun `url controls stay valid after the port and host check`() {
+        for (good in listOf(
+            "wss://host.example",
+            "wss://host.example/",
+            "wss://host.example:8444",
+            "wss://host.example:8444/path",
+            "wss://host.example:1",
+            "wss://host.example:65535",
+            "wss://host.example:08444",
+            "wss://host-1.example_x/",
+            "wss://[::1]:8444/path",
+            "wss://[::1]/",
+            "wss://[2001:db8::1]:8444/",
+            "wss://[::ffff:192.0.2.1]:8444/",
+            "wss://user@host.example",
+            "wss://user:secret@host.example:8444/path",
+            "wss://host.example?x=1",
+            "wss://host.example#frag",
+            "wss://host.example:8444?x=1",
+        )) {
+            assertEquals(good, ServerUrlInput.Valid(good), parseServerUrl(good))
+        }
+    }
+
     // --- Task 2: supporting text, enablement, notes, hint, placeholder -------------------------
 
     @Test
